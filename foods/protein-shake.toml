@@ -1,0 +1,37 @@
+title = "Protein Shake"
+servings = 1
+
+[[ingredients]]
+name = "ON Gold Standard Whey (Chocolate)"
+quantity = "2 scoops"
+protein_g = 48
+fiber_g = 0
+calories = 240
+
+[[ingredients]]
+name = "Creatine Monohydrate"
+quantity = "5g"
+protein_g = 0
+fiber_g = 0
+calories = 0
+
+[[ingredients]]
+name = "Psyllium Husk Powder"
+quantity = "10g"
+protein_g = 0
+fiber_g = 8
+calories = 35
+
+[[ingredients]]
+name = "Decaf Cold Brew"
+quantity = "80g"
+protein_g = 0
+fiber_g = 0
+calories = 0
+
+[[ingredients]]
+name = "Fage Total 2% Greek Yogurt"
+quantity = "50g"
+protein_g = 9
+fiber_g = 0
+calories = 48

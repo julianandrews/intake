@@ -1,0 +1,65 @@
+title = "Ramen"
+servings = 1
+
+[[ingredients]]
+name = "Mushrooms"
+quantity = "4 oz"
+protein_g = 3.5
+fiber_g = 1
+calories = 10
+
+[[ingredients]]
+name = "Bone Broth"
+quantity = "500g"
+protein_g = 19
+fiber_g = 0
+calories = 94
+
+[[ingredients]]
+name = "Eggs"
+quantity = "2"
+protein_g = 12
+fiber_g = 0
+calories = 156
+
+[[ingredients]]
+name = "Sesame Oil"
+quantity = "2g"
+protein_g = 0
+fiber_g = 0
+calories = 10
+
+[[ingredients]]
+name = "Ramen Powder"
+quantity = "some"
+protein_g = 0
+fiber_g = 0
+calories = 30
+
+[[ingredients]]
+name = "Broccoli"
+quantity = "150g"
+protein_g = 4.2
+fiber_g = 3.8
+calories = 50
+
+[[ingredients]]
+name = "Noodles"
+quantity = "1 packet"
+protein_g = 11
+fiber_g = 2
+calories = 300
+
+[[ingredients]]
+name = "Chili Oil"
+quantity = "1 tsp"
+protein_g = 0
+fiber_g = 0
+calories = 35
+
+[[ingredients]]
+name = "Chicken"
+quantity = "3.2 oz"
+protein_g = 24
+fiber_g = 0
+calories = 140

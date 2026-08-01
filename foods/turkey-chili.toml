@@ -1,0 +1,65 @@
+title = "Turkey Chili"
+servings = 6
+
+[[ingredients]]
+name = "90/10 ground turkey"
+quantity = "2 lbs"
+protein_g = 76
+fiber_g = 0
+calories = 720
+
+[[ingredients]]
+name = "Crushed or Diced tomatoes"
+quantity = "28oz-30oz"
+protein_g = 7
+fiber_g = 7
+calories = 175
+
+[[ingredients]]
+name = "Black Beans"
+quantity = "1 can"
+protein_g = 24
+fiber_g = 18
+calories = 390
+
+[[ingredients]]
+name = "Kidney Beans"
+quantity = "1 can"
+protein_g = 24
+fiber_g = 17
+calories = 380
+
+[[ingredients]]
+name = "Onion"
+quantity = "10 oz frozen"
+protein_g = 3
+fiber_g = 3
+calories = 122
+
+[[ingredients]]
+name = "Bell Pepper"
+quantity = "1"
+protein_g = 0
+fiber_g = 2
+calories = 31
+
+[[ingredients]]
+name = "Taco Seasoning"
+quantity = "1 packet"
+protein_g = 0
+fiber_g = 0
+calories = 90
+
+[[ingredients]]
+name = "Costco Bone Broth"
+quantity = "140g"
+protein_g = 5
+fiber_g = 0
+calories = 26
+
+[[ingredients]]
+name = "Canola Oil"
+quantity = "3 tbsp"
+protein_g = 0
+fiber_g = 0
+calories = 372

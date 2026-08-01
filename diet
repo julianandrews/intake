@@ -1,0 +1,5 @@
+#!/bin/sh
+exec cargo run --manifest-path "$(dirname "$0")/diet-tracker/Cargo.toml" -- \
+  --foods-dir "$(dirname "$0")/foods" \
+  --log-dir "$(dirname "$0")/log" \
+  "$@"

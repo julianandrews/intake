@@ -1,0 +1,16 @@
+title = "Cheesy Popcorn"
+servings = 1
+
+[[ingredients]]
+name = "Orville Redenbacher's Movie Theater Butter Mini Popcorn"
+quantity = "1 bag"
+protein_g = 3
+fiber_g = 3
+calories = 210
+
+[[ingredients]]
+name = "King Arthur Better Cheddar Cheese Powder"
+quantity = "1 tbsp"
+protein_g = 2
+fiber_g = 0
+calories = 35

@@ -1,0 +1,23 @@
+title = "Oatmeal"
+servings = 1
+
+[[ingredients]]
+name = "Bob's Red Mill Steel Cut Oats"
+quantity = "60g"
+protein_g = 7
+fiber_g = 7
+calories = 232
+
+[[ingredients]]
+name = "Fage 5% Greek Yogurt"
+quantity = "150g"
+protein_g = 14
+fiber_g = 0
+calories = 140
+
+[[ingredients]]
+name = "Blueberries"
+quantity = "80g"
+protein_g = 1
+fiber_g = 2
+calories = 46

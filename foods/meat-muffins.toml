@@ -1,0 +1,51 @@
+title = "Meat Muffins (90% + 93%)"
+servings = 12
+
+[[ingredients]]
+name = "Turkey 93% (Publix)"
+quantity = "1 lb"
+protein_g = 84
+fiber_g = 0
+calories = 680
+
+[[ingredients]]
+name = "Turkey 90% (Jennie-O)"
+quantity = "1 lb"
+protein_g = 84
+fiber_g = 0
+calories = 720
+
+[[ingredients]]
+name = "Breadcrumbs"
+quantity = "73g"
+protein_g = 10
+fiber_g = 3
+calories = 290
+
+[[ingredients]]
+name = "Onion"
+quantity = "175g"
+protein_g = 2
+fiber_g = 3
+calories = 70
+
+[[ingredients]]
+name = "Egg"
+quantity = "1 large"
+protein_g = 6
+fiber_g = 0
+calories = 70
+
+[[ingredients]]
+name = "Ketchup"
+quantity = "68g"
+protein_g = 1
+fiber_g = 0
+calories = 68
+
+[[ingredients]]
+name = "Spices (marjoram, baking soda, salt, pepper, worcestershire)"
+quantity = "to taste"
+protein_g = 0
+fiber_g = 0
+calories = 5

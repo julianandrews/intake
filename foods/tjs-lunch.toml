@@ -1,0 +1,23 @@
+title = "TJ's Lunch"
+servings = 1
+
+[[ingredients]]
+name = "Seapoint Farms Edamame Soybeans in Pods"
+quantity = "1 individual bag (5 oz)"
+protein_g = 9
+fiber_g = 6
+calories = 90
+
+[[ingredients]]
+name = "Trader Joe's Grilled Chimichurri Chicken Thigh Skewers"
+quantity = "1/2 package (3 skewers)"
+protein_g = 28.5
+fiber_g = 0
+calories = 210
+
+[[ingredients]]
+name = "Kimchi"
+quantity = "3 tbsp"
+protein_g = 0.5
+fiber_g = 0.7
+calories = 7

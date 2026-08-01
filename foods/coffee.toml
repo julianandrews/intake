@@ -1,0 +1,16 @@
+title = "Coffee"
+servings = 1
+
+[[ingredients]]
+name = "Cold Brew"
+quantity = "100g"
+protein_g = 0
+fiber_g = 0
+calories = 0
+
+[[ingredients]]
+name = "Oat Milk"
+quantity = "50g"
+protein_g = 1
+fiber_g = 0
+calories = 24

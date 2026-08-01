@@ -1,0 +1,9 @@
+title = "Edamame Snack"
+servings = 1
+
+[[ingredients]]
+name = "Seapoint Farms Edamame Soybeans in Pods"
+quantity = "1 individual bag (5 oz)"
+protein_g = 9
+fiber_g = 6
+calories = 90

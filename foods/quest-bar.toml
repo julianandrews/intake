@@ -1,0 +1,9 @@
+title = "Quest Bar"
+servings = 1
+
+[[ingredients]]
+name = "Quest Chocolate Peanut Butter Protein Bar"
+quantity = "1 bar (60g)"
+protein_g = 20
+fiber_g = 11
+calories = 190
