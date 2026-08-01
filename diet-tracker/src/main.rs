@@ -36,6 +36,11 @@ enum Commands {
     Log {
         date: String,
     },
+    /// Show a recipe with ingredients and per-serving values
+    Show {
+        /// Recipe slug (filename without .toml)
+        recipe: String,
+    },
     /// List all recipes with per-serving values
     List,
 }
@@ -54,6 +59,9 @@ fn main() -> Result<()> {
             let date = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
                 .context("date must be in YYYY-MM-DD format")?;
             cmd_show(&cli.foods_dir, &cli.log_dir, date)?;
+        }
+        Commands::Show { recipe } => {
+            cmd_show_recipe(&cli.foods_dir, &recipe)?;
         }
         Commands::List => {
             cmd_list(&cli.foods_dir)?;
@@ -148,6 +156,14 @@ fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result
         }
     }
 
+    Ok(())
+}
+
+fn cmd_show_recipe(foods_dir: &Path, slug: &str) -> Result<()> {
+    let recipe_path = foods_dir.join(format!("{}.toml", slug));
+    let recipe = recipe::load_recipe(&recipe_path)
+        .with_context(|| format!("recipe '{}' not found", slug))?;
+    println!("{}", recipe.display());
     Ok(())
 }
 
