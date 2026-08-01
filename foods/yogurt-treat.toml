@@ -1,0 +1,23 @@
+title = "Yogurt Treat"
+servings = 1
+
+[[ingredients]]
+name = "Fage 5% Greek Yogurt"
+quantity = "150g"
+protein_g = 14
+fiber_g = 0
+calories = 140
+
+[[ingredients]]
+name = "Blueberries"
+quantity = "80g"
+protein_g = 1
+fiber_g = 2
+calories = 46
+
+[[ingredients]]
+name = "Dark Brown Sugar"
+quantity = "2 tsp"
+protein_g = 0
+fiber_g = 0
+calories = 30
