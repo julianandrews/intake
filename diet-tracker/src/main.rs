@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{CompleteEnv, CompletionCandidate, Shell};
+use clap_complete::engine::ArgValueCandidates;
 use chrono::Local;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 mod config;
@@ -15,12 +18,12 @@ struct Cli {
     command: Commands,
 
     /// Directory containing recipe files
-    #[arg(long, default_value = "../foods")]
-    foods_dir: PathBuf,
+    #[arg(long)]
+    foods_dir: Option<PathBuf>,
 
     /// Directory containing log files
-    #[arg(long, default_value = "../log")]
-    log_dir: PathBuf,
+    #[arg(long)]
+    log_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -28,6 +31,7 @@ enum Commands {
     /// Add a recipe to today's log
     Add {
         /// Recipe slug (filename without .toml)
+        #[arg(add = ArgValueCandidates::new(complete_recipes))]
         recipe: String,
         /// Number of servings
         servings: f64,
@@ -41,10 +45,19 @@ enum Commands {
     /// Show a recipe with ingredients and per-serving values
     Show {
         /// Recipe slug (filename without .toml)
+        #[arg(add = ArgValueCandidates::new(complete_recipes))]
         recipe: String,
     },
     /// List all recipes with per-serving values
     List,
+    /// Generate shell completion script
+    Completions {
+        /// Shell to generate completions for (bash, zsh, fish, powershell, elvish)
+        shell: Shell,
+        /// Install to the standard completion directory for the shell
+        #[arg(long)]
+        install: bool,
+    },
     /// Search for recipe combinations to fill remaining calories
     Fill {
         /// Maximum calories remaining
@@ -60,10 +73,10 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
         /// Exclude a recipe slug (repeatable)
-        #[arg(long)]
+        #[arg(long, add = ArgValueCandidates::new(complete_recipes))]
         exclude: Vec<String>,
         /// Require a recipe slug (repeatable)
-        #[arg(long)]
+        #[arg(long, add = ArgValueCandidates::new(complete_recipes))]
         include: Vec<String>,
         /// Max servings of any single recipe
         #[arg(long, default_value = "3")]
@@ -77,29 +90,121 @@ enum Commands {
     },
 }
 
+fn complete_recipes() -> Vec<CompletionCandidate> {
+    let dir = std::env::var("DIET_FOODS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("foods")
+        });
+    match recipe::list_recipe_slugs(&dir) {
+        Ok(slugs) => slugs.into_iter().map(CompletionCandidate::new).collect(),
+        Err(e) => {
+            eprintln!("warning: failed to list recipes for completion: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn completion_path(shell: &Shell) -> Result<PathBuf> {
+    let (dir, filename) = match shell {
+        Shell::Bash => {
+            let base = std::env::var("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                    PathBuf::from(home).join(".local").join("share")
+                });
+            (base.join("bash-completion").join("completions"), "diet".to_string())
+        }
+        Shell::Zsh => {
+            let base = std::env::var("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                    PathBuf::from(home).join(".local").join("share")
+                });
+            (base.join("zsh").join("completions"), "_diet".to_string())
+        }
+        Shell::Fish => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            (PathBuf::from(home).join(".config").join("fish").join("completions"), "diet.fish".to_string())
+        }
+        _ => anyhow::bail!("install not supported for {} shell", shell),
+    };
+    Ok(dir.join(filename))
+}
+
 fn main() -> Result<()> {
+    let wrapper_path = {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("diet");
+        if p.is_file() {
+            Some(p)
+        } else {
+            None
+        }
+    };
+
+    CompleteEnv::with_factory(Cli::command)
+        .completer("diet")
+        .complete();
+
     let cli = Cli::parse();
+
+    let foods_dir = cli.foods_dir.unwrap_or_else(|| {
+        std::env::var("DIET_FOODS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("../foods"))
+    });
+
+    let log_dir = cli.log_dir.unwrap_or_else(|| {
+        std::env::var("DIET_LOG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("../log"))
+    });
 
     match cli.command {
         Commands::Add { recipe, servings } => {
-            cmd_add(&cli.foods_dir, &cli.log_dir, &recipe, servings)?;
+            cmd_add(&foods_dir, &log_dir, &recipe, servings)?;
         }
         Commands::Today => {
-            cmd_show(&cli.foods_dir, &cli.log_dir, Local::now().date_naive())?;
+            cmd_show(&foods_dir, &log_dir, Local::now().date_naive())?;
         }
         Commands::Log { date } => {
             let date = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
                 .context("date must be in YYYY-MM-DD format")?;
-            cmd_show(&cli.foods_dir, &cli.log_dir, date)?;
+            cmd_show(&foods_dir, &log_dir, date)?;
         }
         Commands::Show { recipe } => {
-            cmd_show_recipe(&cli.foods_dir, &recipe)?;
+            cmd_show_recipe(&foods_dir, &recipe)?;
         }
         Commands::List => {
-            cmd_list(&cli.foods_dir)?;
+            cmd_list(&foods_dir)?;
+        }
+        Commands::Completions { shell, install } => {
+            if install {
+                let path = completion_path(&shell)?;
+                fs::create_dir_all(path.parent().context("completion path has no parent")?)?;
+                let completer = wrapper_path.as_deref().unwrap_or(Path::new("diet"));
+                let output = std::process::Command::new(completer)
+                    .env("COMPLETE", shell.to_string())
+                    .output()
+                    .context("failed to generate completion script")?;
+                if !output.status.success() {
+                    anyhow::bail!("completion generation failed");
+                }
+                fs::write(&path, &output.stdout)
+                    .with_context(|| format!("failed to write {}", path.display()))?;
+                println!("Installed {} completions to {}", shell, path.display());
+            } else {
+                let mut cmd = Cli::command();
+                clap_complete::generate(shell, &mut cmd, "diet", &mut std::io::stdout());
+            }
         }
         Commands::Fill { max_cal, min_protein, min_fiber, limit, exclude, include, max_servings, remaining, config } => {
-            cmd_fill(&cli.foods_dir, &cli.log_dir, max_cal, min_protein, min_fiber, limit, &exclude, &include, max_servings, remaining, config)?;
+            cmd_fill(&foods_dir, &log_dir, max_cal, min_protein, min_fiber, limit, &exclude, &include, max_servings, remaining, config)?;
         }
     }
 

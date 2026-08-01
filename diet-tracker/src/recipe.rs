@@ -112,6 +112,29 @@ impl Recipe {
     }
 }
 
+fn toml_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let entries = fs::read_dir(dir).context("failed to read foods directory")?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().map_or(false, |e| e == "toml") {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+pub fn list_recipe_slugs(foods_dir: &Path) -> Result<Vec<String>> {
+    let mut slugs = Vec::new();
+    for path in toml_files_in(foods_dir)? {
+        if let Some(slug) = path.file_stem().and_then(|s| s.to_str()) {
+            slugs.push(slug.to_string());
+        }
+    }
+    Ok(slugs)
+}
+
 pub fn hash_content(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
@@ -296,18 +319,11 @@ mod tests {
 
 pub fn find_all_recipes(foods_dir: &Path) -> Result<Vec<(PathBuf, Recipe)>> {
     let mut recipes = Vec::new();
-    let entries = fs::read_dir(foods_dir).context("failed to read foods directory")?;
-
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().map_or(false, |e| e == "toml") {
-            match load_recipe(&path) {
-                Ok(recipe) => recipes.push((path, recipe)),
-                Err(e) => eprintln!("Warning: skipped {}: {}", path.display(), e),
-            }
+    for path in toml_files_in(foods_dir)? {
+        match load_recipe(&path) {
+            Ok(recipe) => recipes.push((path, recipe)),
+            Err(e) => eprintln!("Warning: skipped {}: {}", path.display(), e),
         }
     }
-
     Ok(recipes)
 }
