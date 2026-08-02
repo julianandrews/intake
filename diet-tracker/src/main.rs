@@ -276,24 +276,14 @@ fn cmd_add(foods_dir: &Path, log_dir: &Path, slug: &str, servings: f64) -> Resul
     Ok(())
 }
 
-struct ResolvedEntry {
-    title: String,
-    status: String,
-}
-
-fn resolve_entry(foods_dir: &Path, entry: &log::LogEntry) -> Result<ResolvedEntry> {
+fn resolve_title(foods_dir: &Path, entry: &log::LogEntry) -> Result<String> {
     if let Some(title) = &entry.title {
-        return Ok(ResolvedEntry { title: title.clone(), status: String::new() });
+        return Ok(title.clone());
     }
     let recipe_path = foods_dir.join(format!("{}.toml", entry.slug));
     let recipe = recipe::load_recipe(&recipe_path)
         .with_context(|| format!("recipe '{}' not found", entry.slug))?;
-    let status = if recipe.hash() == entry.hash {
-        String::new()
-    } else {
-        " ⚠ hash mismatch".to_string()
-    };
-    Ok(ResolvedEntry { title: recipe.title, status })
+    Ok(recipe.title)
 }
 
 fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result<()> {
@@ -302,37 +292,72 @@ fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result
     match day_log {
         None => println!("No entries for {}", date),
         Some(day_log) => {
-            println!("{}", day_log.date);
-            println!("{}", "-".repeat(60));
+            struct Row {
+                title: String,
+                serv_str: String,
+                cal_str: String,
+                prot_str: String,
+                fib_str: String,
+            }
+
+            let mut rows: Vec<Row> = Vec::new();
             let mut total_cal = 0.0;
             let mut total_protein = 0.0;
             let mut total_fiber = 0.0;
 
             for entry in &day_log.entries {
-                let resolved = resolve_entry(foods_dir, entry)?;
+                let title = resolve_title(foods_dir, entry)?;
                 let cal = entry.calories as f64 * entry.servings;
                 let prot = entry.protein_g * entry.servings;
                 let fib = entry.fiber_g * entry.servings;
 
                 let serv_str = if entry.servings.fract() == 0.0 {
-                    format!("{:>4}", entry.servings as u32)
+                    format!("{}", entry.servings as u32)
                 } else {
-                    format!("{:>4.1}", entry.servings)
+                    format!("{:.1}", entry.servings)
                 };
-                println!(
-                    "  {:<20} {} serv  {:>6.0} cal  {:>5.1}g prot  {:>4.1}g fiber{}",
-                    resolved.title, serv_str, cal, prot, fib, resolved.status
-                );
+
+                rows.push(Row {
+                    title,
+                    serv_str,
+                    cal_str: format!("{:.0}", cal),
+                    prot_str: format!("{:.1}", prot),
+                    fib_str: format!("{:.1}", fib),
+                });
 
                 total_cal += cal;
                 total_protein += prot;
                 total_fiber += fib;
             }
 
-            println!("{}", "-".repeat(60));
+            let c_title = rows.iter().map(|r| r.title.len()).chain(std::iter::once(5)).max().unwrap();
+            let c_serv = rows.iter().map(|r| r.serv_str.len()).chain(std::iter::once(7)).max().unwrap();
+            let c_cal = rows.iter().map(|r| r.cal_str.len()).chain(std::iter::once(3)).max().unwrap();
+            let c_prot = rows.iter().map(|r| r.prot_str.len()).chain(std::iter::once(5)).max().unwrap();
+            let c_fib = rows.iter().map(|r| r.fib_str.len()).chain(std::iter::once(4)).max().unwrap();
+
+            let sep_width = 2 + c_title + 1 + c_serv + 7 + c_cal + 6 + c_prot + 8 + c_fib + 7;
+
+            println!("{}", day_log.date);
+            println!("{}", "-".repeat(sep_width));
+
+            for row in &rows {
+                println!(
+                    "  {:<t$} {:>s$} serv  {:>c$} cal  {:>p$}g prot  {:>f$}g fiber",
+                    row.title, row.serv_str, row.cal_str, row.prot_str, row.fib_str,
+                    t = c_title, s = c_serv, c = c_cal, p = c_prot, f = c_fib
+                );
+            }
+
+            println!("{}", "-".repeat(sep_width));
+            let total_cal_str = format!("{:.0}", total_cal);
+            let total_prot_str = format!("{:.1}", total_protein);
+            let total_fib_str = format!("{:.1}", total_fiber);
+            let serv_pad = " ".repeat(c_serv + 8);
             println!(
-                "  {:<20}             {:>6.0} cal  {:>5.1}g prot  {:>4.1}g fiber",
-                "TOTAL", total_cal, total_protein, total_fiber
+                "  {:<t$}{}{:>c$} cal  {:>p$}g prot  {:>f$}g fiber",
+                "TOTAL", serv_pad, total_cal_str, total_prot_str, total_fib_str,
+                t = c_title, c = c_cal, p = c_prot, f = c_fib
             );
         }
     }
