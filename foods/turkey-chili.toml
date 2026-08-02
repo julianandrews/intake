@@ -1,65 +1,51 @@
-title = "Turkey Chili"
-servings = 6
+title = "Turkey Chili 98% Lean"
+servings = 5
 
 [[ingredients]]
-name = "90/10 ground turkey"
+name = "Turkey 98%"
 quantity = "2 lbs"
-protein_g = 76
+protein_g = 192
 fiber_g = 0
-calories = 720
+calories = 960
 
 [[ingredients]]
-name = "Crushed or Diced tomatoes"
-quantity = "28oz-30oz"
-protein_g = 7
-fiber_g = 7
-calories = 175
+name = "Oil"
+quantity = "42g"
+protein_g = 0
+fiber_g = 0
+calories = 360
 
 [[ingredients]]
-name = "Black Beans"
+name = "Petite diced tomato"
+quantity = "2 cans"
+protein_g = 6
+fiber_g = 8
+calories = 140
+
+[[ingredients]]
+name = "Onion"
+quantity = "10oz"
+protein_g = 3
+fiber_g = 5
+calories = 115
+
+[[ingredients]]
+name = "Black beans"
 quantity = "1 can"
 protein_g = 24
 fiber_g = 18
 calories = 390
 
 [[ingredients]]
-name = "Kidney Beans"
+name = "Kidney beans"
 quantity = "1 can"
 protein_g = 24
 fiber_g = 17
 calories = 380
 
 [[ingredients]]
-name = "Onion"
-quantity = "10 oz frozen"
-protein_g = 3
-fiber_g = 3
-calories = 122
-
-[[ingredients]]
-name = "Bell Pepper"
-quantity = "1"
-protein_g = 0
-fiber_g = 2
-calories = 31
-
-[[ingredients]]
-name = "Taco Seasoning"
-quantity = "1 packet"
-protein_g = 0
-fiber_g = 0
-calories = 90
-
-[[ingredients]]
-name = "Costco Bone Broth"
+name = "Bone broth"
 quantity = "140g"
 protein_g = 5
 fiber_g = 0
-calories = 26
-
-[[ingredients]]
-name = "Canola Oil"
-quantity = "3 tbsp"
-protein_g = 0
-fiber_g = 0
-calories = 372
+calories = 25
