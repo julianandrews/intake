@@ -5,6 +5,12 @@ use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_CYAN: &str = "\x1b[36m";
+const ANSI_BOLD_CYAN: &str = "\x1b[1;36m";
+const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
+const ANSI_BOLD_GREEN: &str = "\x1b[1;32m";
+
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct Ingredient {
@@ -50,63 +56,75 @@ impl Recipe {
 
     pub fn display(&self) -> String {
         let serving_label = if self.servings == 1 { "serving" } else { "servings" };
-        let mut out = format!("# {}\n{} {}\n\n", self.title, self.servings, serving_label);
+        let mut out = format!("{ANSI_BOLD_CYAN}{} ({} {}){ANSI_RESET}\n", self.title, self.servings, serving_label);
 
         let c_ing = self.ingredients.iter()
-            .map(|i| i.name.len()).chain(std::iter::once(10)).max().unwrap();
+            .map(|i| i.name.len()).chain([10, 5, 11]).max().unwrap();
         let c_qty = self.ingredients.iter()
             .filter_map(|i| i.quantity.as_deref().map(|q| q.len()))
-            .chain(std::iter::once(6)).max().unwrap();
+            .chain([6]).max().unwrap();
         let c_cal = self.ingredients.iter()
-            .map(|i| i.calories.to_string().len()).chain(std::iter::once(3)).max().unwrap();
+            .map(|i| i.calories.to_string().len()).chain([3, 8]).max().unwrap();
         let c_prot = self.ingredients.iter()
-            .map(|i| format!("{:.1}g", i.protein_g).len()).chain(std::iter::once(7)).max().unwrap();
+            .map(|i| format!("{:.1}g", i.protein_g).len()).chain([7, 10]).max().unwrap();
         let c_fib = self.ingredients.iter()
-            .map(|i| format!("{:.1}g", i.fiber_g).len()).chain(std::iter::once(5)).max().unwrap();
+            .map(|i| format!("{:.1}g", i.fiber_g).len()).chain([5, 8]).max().unwrap();
 
-        let _ = writeln!(
+        let sep_width = 2 + c_ing + 1 + c_qty + 2 + c_cal + 2 + c_prot + 2 + c_fib;
+
+        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
+
+        writeln!(
             out,
-            "| {:<i$} | {:<q$} | {:>c$} | {:>p$} | {:>f$} |",
-            "Ingredient", "Amount", "Cal", "Protein", "Fiber",
+            "  {ANSI_BOLD_YELLOW}{:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
+            "Ingredient", "Amount", "Calories", "Protein(g)", "Fiber(g)",
             i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
-        );
+        ).unwrap();
 
-        let _ = write!(out, "|");
-        let _ = write!(out, ":{}|", "-".repeat(c_ing + 1));
-        let _ = write!(out, ":{}|", "-".repeat(c_qty + 1));
-        let _ = write!(out, "{}:|", "-".repeat(c_cal + 1));
-        let _ = write!(out, "{}:|", "-".repeat(c_prot + 1));
-        let _ = write!(out, "{}:|", "-".repeat(c_fib + 1));
-        let _ = writeln!(out);
+        writeln!(
+            out,
+            "  {ANSI_CYAN}{:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
+            "-".repeat(c_ing), "-".repeat(c_qty), "-".repeat(c_cal), "-".repeat(c_prot), "-".repeat(c_fib),
+            i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
+        ).unwrap();
 
         for ing in &self.ingredients {
             let qty = ing.quantity.as_deref().unwrap_or("-");
             let prot = format!("{:.1}g", ing.protein_g);
             let fib = format!("{:.1}g", ing.fiber_g);
-            let _ = writeln!(
+            writeln!(
                 out,
-                "| {:<i$} | {:<q$} | {:>c$} | {:>p$} | {:>f$} |",
+                "  {:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}",
                 ing.name, qty, ing.calories, prot, fib,
                 i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
-            );
+            ).unwrap();
         }
+
+        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
 
         let total_cal: u32 = self.ingredients.iter().map(|i| i.calories).sum();
         let total_protein: f64 = self.ingredients.iter().map(|i| i.protein_g).sum();
         let total_fiber: f64 = self.ingredients.iter().map(|i| i.fiber_g).sum();
-        let ps = self.per_serving();
+        let total_prot_str = format!("{:.1}g", total_protein);
+        let total_fib_str = format!("{:.1}g", total_fiber);
 
-        let _ = writeln!(out);
-        let _ = writeln!(
+        writeln!(
             out,
-            "\x1b[1;32m**Total:** {} cal \u{b7} {:.1}g protein \u{b7} {:.1}g fiber\x1b[0m",
-            total_cal, total_protein, total_fiber
-        );
-        let _ = writeln!(
+            "  {ANSI_BOLD_GREEN}{:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
+            "Total", "", total_cal, total_prot_str, total_fib_str,
+            i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
+        ).unwrap();
+
+        let ps = self.per_serving();
+        let ps_prot_str = format!("{:.1}g", ps.protein_g);
+        let ps_fib_str = format!("{:.1}g", ps.fiber_g);
+
+        writeln!(
             out,
-            "\x1b[1;36m**Per serving:** {} cal \u{b7} {:.1}g protein \u{b7} {:.1}g fiber\x1b[0m",
-            ps.calories, ps.protein_g, ps.fiber_g
-        );
+            "  {ANSI_BOLD_CYAN}{:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
+            "Per serving", "", ps.calories, ps_prot_str, ps_fib_str,
+            i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
+        ).unwrap();
 
         out
     }
@@ -268,12 +286,12 @@ mod tests {
         };
 
         let md = recipe.display();
-        assert!(md.starts_with("# Oatmeal\n"));
-        assert!(md.contains("| Oats       | 100g   | 200 |   10.0g |  5.0g |"));
-        assert!(md.contains("| Milk       | 200ml  | 120 |    8.0g |  0.0g |"));
-        assert!(md.contains("|:-----------|:-------|----:|--------:|------:|"));
-        assert!(md.contains("\u{1b}[1;32m**Total:** 320 cal \u{b7} 18.0g protein \u{b7} 5.0g fiber\u{1b}[0m"));
-        assert!(md.contains("\u{1b}[1;36m**Per serving:** 160 cal \u{b7} 9.0g protein \u{b7} 2.5g fiber\u{1b}[0m"));
+        assert!(md.starts_with("\u{1b}[1;36mOatmeal (2 servings)\u{1b}[0m\n"));
+        assert!(md.contains("  Oats        100g         200       10.0g"));
+        assert!(md.contains("  Milk        200ml        120        8.0g"));
+        assert!(md.contains("----------- ------  --------  ----------  --------"));
+        assert!(md.contains("\u{1b}[1;32mTotal                    320       18.0g"));
+        assert!(md.contains("\u{1b}[1;36mPer serving              160        9.0g"));
     }
 
     #[test]
@@ -292,9 +310,8 @@ mod tests {
         };
 
         let md = recipe.display();
-        assert!(md.contains("# Coffee\n"));
-        assert!(md.contains("1 serving\n"));
-        assert!(md.contains("| Cold Brew  | -      |   0 |    0.0g |  0.0g |"));
+        assert!(md.starts_with("\u{1b}[1;36mCoffee (1 serving)\u{1b}[0m\n"));
+        assert!(md.contains("  Cold Brew"));
     }
 
     #[test]
@@ -313,7 +330,9 @@ mod tests {
         };
 
         let md = recipe.display();
-        assert!(md.contains("| Secret Spice | -      |   5 |    0.5g |  0.1g |"));
+        assert!(md.contains("  Secret Spice"));
+        assert!(md.contains("  0.5g"));
+        assert!(md.contains("  0.1g"));
     }
 }
 
