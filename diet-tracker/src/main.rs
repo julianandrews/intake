@@ -287,6 +287,12 @@ fn resolve_title(foods_dir: &Path, entry: &log::LogEntry) -> Result<String> {
     Ok(recipe.title)
 }
 
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_CYAN: &str = "\x1b[36m";
+const ANSI_BOLD_CYAN: &str = "\x1b[1;36m";
+const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
+const ANSI_BOLD_GREEN: &str = "\x1b[1;32m";
+
 fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result<()> {
     let day_log = log::load_day(log_dir, date)?;
 
@@ -331,34 +337,44 @@ fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result
                 total_fiber += fib;
             }
 
-            let c_title = rows.iter().map(|r| r.title.len()).chain(std::iter::once(5)).max().unwrap();
-            let c_serv = rows.iter().map(|r| r.serv_str.len()).chain(std::iter::once(7)).max().unwrap();
-            let c_cal = rows.iter().map(|r| r.cal_str.len()).chain(std::iter::once(3)).max().unwrap();
-            let c_prot = rows.iter().map(|r| r.prot_str.len()).chain(std::iter::once(5)).max().unwrap();
-            let c_fib = rows.iter().map(|r| r.fib_str.len()).chain(std::iter::once(4)).max().unwrap();
+            let c_title = rows.iter().map(|r| r.title.len()).chain([5, 4]).max().unwrap();
+            let c_serv = rows.iter().map(|r| r.serv_str.len()).chain([7, 8]).max().unwrap();
+            let c_cal = rows.iter().map(|r| r.cal_str.len()).chain([3, 8]).max().unwrap();
+            let c_prot = rows.iter().map(|r| r.prot_str.len()).chain([5, 10]).max().unwrap();
+            let c_fib = rows.iter().map(|r| r.fib_str.len()).chain([4, 8]).max().unwrap();
 
-            let sep_width = 2 + c_title + 1 + c_serv + 7 + c_cal + 6 + c_prot + 8 + c_fib + 7;
+            let sep_width = 2 + c_title + 1 + c_serv + 2 + c_cal + 2 + c_prot + 2 + c_fib;
 
-            println!("{}", day_log.date);
-            println!("{}", "-".repeat(sep_width));
+            println!("{ANSI_BOLD_CYAN}{}{ANSI_RESET}", day_log.date);
+            println!("{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width));
+
+            println!(
+                "  {ANSI_BOLD_YELLOW}{:<t$} {:>s$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
+                "Item", "Servings", "Calories", "Protein(g)", "Fiber(g)",
+                t = c_title, s = c_serv, c = c_cal, p = c_prot, f = c_fib
+            );
+            println!(
+                "  {ANSI_CYAN}{:<t$} {:>s$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
+                "-".repeat(c_title), "-".repeat(c_serv), "-".repeat(c_cal), "-".repeat(c_prot), "-".repeat(c_fib),
+                t = c_title, s = c_serv, c = c_cal, p = c_prot, f = c_fib
+            );
 
             for row in &rows {
                 println!(
-                    "  {:<t$} {:>s$} serv  {:>c$} cal  {:>p$}g prot  {:>f$}g fiber",
+                    "  {:<t$} {:>s$}  {:>c$}  {:>p$}  {:>f$}",
                     row.title, row.serv_str, row.cal_str, row.prot_str, row.fib_str,
                     t = c_title, s = c_serv, c = c_cal, p = c_prot, f = c_fib
                 );
             }
 
-            println!("{}", "-".repeat(sep_width));
+            println!("{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width));
             let total_cal_str = format!("{:.0}", total_cal);
             let total_prot_str = format!("{:.1}", total_protein);
             let total_fib_str = format!("{:.1}", total_fiber);
-            let serv_pad = " ".repeat(c_serv + 8);
             println!(
-                "  {:<t$}{}{:>c$} cal  {:>p$}g prot  {:>f$}g fiber",
-                "TOTAL", serv_pad, total_cal_str, total_prot_str, total_fib_str,
-                t = c_title, c = c_cal, p = c_prot, f = c_fib
+                "  {ANSI_BOLD_GREEN}{:<t$} {:>s$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
+                "TOTAL", "", total_cal_str, total_prot_str, total_fib_str,
+                t = c_title, s = c_serv, c = c_cal, p = c_prot, f = c_fib
             );
         }
     }
