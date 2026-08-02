@@ -33,7 +33,8 @@ enum Commands {
         /// Recipe slug (filename without .toml)
         #[arg(add = ArgValueCandidates::new(complete_recipes))]
         recipe: String,
-        /// Number of servings
+        /// Number of servings (default: 1)
+        #[arg(default_value = "1")]
         servings: f64,
     },
     /// Show today's totals
