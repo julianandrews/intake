@@ -1,0 +1,16 @@
+title = "Asian Cabbage"
+servings = 2
+
+[[ingredients]]
+name = "Cabbage"
+quantity = "300g"
+protein_g = 4
+fiber_g = 7.5
+calories = 75
+
+[[ingredients]]
+name = "Oil"
+quantity = "5g"
+protein_g = 0
+fiber_g = 0
+calories = 40

@@ -58,6 +58,22 @@ enum Commands {
         #[arg(long)]
         install: bool,
     },
+    /// Add an ad-hoc entry with custom macros (no recipe file needed)
+    Adhoc {
+        /// Name of the item
+        name: String,
+        /// Number of servings (default: 1)
+        servings: Option<f64>,
+        /// Calories
+        #[arg(long)]
+        calories: u32,
+        /// Protein in grams
+        #[arg(long)]
+        protein: f64,
+        /// Fiber in grams
+        #[arg(long)]
+        fiber: f64,
+    },
     /// Search for recipe combinations to fill remaining calories
     Fill {
         /// Maximum calories remaining
@@ -203,11 +219,32 @@ fn main() -> Result<()> {
                 clap_complete::generate(shell, &mut cmd, "diet", &mut std::io::stdout());
             }
         }
+        Commands::Adhoc { name, servings, calories, protein, fiber } => {
+            cmd_adhoc(&log_dir, &name, servings.unwrap_or(1.0), calories, protein, fiber)?;
+        }
         Commands::Fill { max_cal, min_protein, min_fiber, limit, exclude, include, max_servings, remaining, config } => {
             cmd_fill(&foods_dir, &log_dir, max_cal, min_protein, min_fiber, limit, &exclude, &include, max_servings, remaining, config)?;
         }
     }
 
+    Ok(())
+}
+
+fn cmd_adhoc(log_dir: &Path, name: &str, servings: f64, calories: u32, protein_g: f64, fiber_g: f64) -> Result<()> {
+    let entry = log::LogEntry {
+        slug: name.to_lowercase().replace(' ', "-"),
+        hash: String::new(),
+        servings,
+        calories,
+        protein_g,
+        fiber_g,
+        title: Some(name.to_string()),
+    };
+
+    let date = Local::now().date_naive();
+    log::append_entry(log_dir, date, &entry)?;
+
+    println!("Added {} serving(s) of {} to {}", servings, name, date);
     Ok(())
 }
 
@@ -226,6 +263,7 @@ fn cmd_add(foods_dir: &Path, log_dir: &Path, slug: &str, servings: f64) -> Resul
         calories: ps.calories,
         protein_g: ps.protein_g,
         fiber_g: ps.fiber_g,
+        title: None,
     };
 
     let date = Local::now().date_naive();
@@ -244,6 +282,9 @@ struct ResolvedEntry {
 }
 
 fn resolve_entry(foods_dir: &Path, entry: &log::LogEntry) -> Result<ResolvedEntry> {
+    if let Some(title) = &entry.title {
+        return Ok(ResolvedEntry { title: title.clone(), status: String::new() });
+    }
     let recipe_path = foods_dir.join(format!("{}.toml", entry.slug));
     let recipe = recipe::load_recipe(&recipe_path)
         .with_context(|| format!("recipe '{}' not found", entry.slug))?;

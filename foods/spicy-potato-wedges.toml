@@ -1,0 +1,16 @@
+title = "Spicy Potato Wedges"
+servings = 2
+
+[[ingredients]]
+name = "Potato"
+quantity = "400g"
+protein_g = 8
+fiber_g = 6
+calories = 308
+
+[[ingredients]]
+name = "Oil"
+quantity = "5g"
+protein_g = 0
+fiber_g = 0
+calories = 40

@@ -12,6 +12,7 @@ pub struct LogEntry {
     pub calories: u32,
     pub protein_g: f64,
     pub fiber_g: f64,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -84,6 +85,7 @@ mod tests {
             calories: 200,
             protein_g: 15.0,
             fiber_g: 5.0,
+            title: None,
         };
 
         append_entry(&dir, date, &entry)?;
@@ -115,6 +117,7 @@ mod tests {
             calories: 12,
             protein_g: 0.0,
             fiber_g: 0.0,
+            title: None,
         })?;
 
         append_entry(&dir, date, &LogEntry {
@@ -124,6 +127,7 @@ mod tests {
             calories: 418,
             protein_g: 22.0,
             fiber_g: 9.0,
+            title: None,
         })?;
 
         let loaded = load_day(&dir, date)?.expect("day log should exist");
