@@ -125,9 +125,7 @@ mod tests {
 
     #[test]
     fn test_log_entry_roundtrip() -> Result<()> {
-        let dir = std::env::temp_dir().join("intake-test-log");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir)?;
+        let dir = tempfile::TempDir::new()?;
 
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         let entry = LogEntry {
@@ -139,8 +137,8 @@ mod tests {
             title: None,
         };
 
-        append_entry(&dir, date, &entry)?;
-        let loaded = load_day(&dir, date)?.expect("day log should exist");
+        append_entry(dir.path(), date, &entry)?;
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
 
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].slug, "oatmeal");
@@ -149,19 +147,17 @@ mod tests {
         assert!((loaded.entries[0].protein_g - 15.0).abs() < 0.001);
         assert!((loaded.entries[0].fiber_g - 5.0).abs() < 0.001);
 
-        std::fs::remove_dir_all(&dir).context("cleanup failed")
+        Ok(())
     }
 
     #[test]
     fn test_log_entry_append_multiple() -> Result<()> {
-        let dir = std::env::temp_dir().join("intake-test-log-multi");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir)?;
+        let dir = tempfile::TempDir::new()?;
 
         let date = NaiveDate::from_ymd_opt(2026, 8, 2).unwrap();
 
         append_entry(
-            &dir,
+            dir.path(),
             date,
             &LogEntry {
                 slug: "coffee".to_string(),
@@ -174,7 +170,7 @@ mod tests {
         )?;
 
         append_entry(
-            &dir,
+            dir.path(),
             date,
             &LogEntry {
                 slug: "oatmeal".to_string(),
@@ -186,24 +182,22 @@ mod tests {
             },
         )?;
 
-        let loaded = load_day(&dir, date)?.expect("day log should exist");
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
         assert_eq!(loaded.entries.len(), 2);
         assert_eq!(loaded.entries[0].slug, "coffee");
         assert_eq!(loaded.entries[1].slug, "oatmeal");
 
-        std::fs::remove_dir_all(&dir).context("cleanup failed")
+        Ok(())
     }
 
     #[test]
     fn test_load_nonexistent_day() -> Result<()> {
-        let dir = std::env::temp_dir().join("intake-test-nonexistent");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir)?;
+        let dir = tempfile::TempDir::new()?;
 
         let date = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        let result = load_day(&dir, date)?;
+        let result = load_day(dir.path(), date)?;
         assert!(result.is_none());
 
-        std::fs::remove_dir_all(&dir).context("cleanup failed")
+        Ok(())
     }
 }

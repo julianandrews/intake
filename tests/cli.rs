@@ -23,22 +23,14 @@ fn run(args: &[&str]) -> (String, bool) {
     (stdout, success)
 }
 
-fn temp_log_dir(name: &str) -> (String, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("intake-test-{}-{}", name, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    (dir.to_string_lossy().to_string(), dir)
-}
-
 fn run_with_log_dir(args: &[&str]) -> (String, bool) {
-    let (log_dir_str, dir) = temp_log_dir("run");
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
 
     let mut all_args = vec!["--foods-dir", &fd_str, "--log-dir", &log_dir_str];
     all_args.extend(args);
-    let result = run(&all_args);
-    let _ = std::fs::remove_dir_all(&dir);
-    result
+    run(&all_args)
 }
 
 #[test]
@@ -75,7 +67,8 @@ fn test_log_no_entries() {
 
 #[test]
 fn test_add_and_log_workflow() {
-    let (log_dir_str, dir) = temp_log_dir("add_and_log");
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
 
     let (add_out, add_ok) = run(&[
         "--foods-dir",
@@ -99,13 +92,12 @@ fn test_add_and_log_workflow() {
     assert!(log_ok, "log failed: {}", log_out);
     assert!(log_out.contains("Coffee"));
     assert!(log_out.contains("48")); // 2 servings × 24 cal
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_adhoc_entry() {
-    let (log_dir_str, dir) = temp_log_dir("adhoc");
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
 
     let (adhoc_out, adhoc_ok) = run(&[
         "--foods-dir",
@@ -134,13 +126,12 @@ fn test_adhoc_entry() {
     ]);
     assert!(log_ok, "log failed: {}", log_out);
     assert!(log_out.contains("Greek yogurt"));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_exercise_recording() {
-    let (log_dir_str, dir) = temp_log_dir("exercise");
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
 
     let (ex_out, ex_ok) = run(&[
         "--foods-dir",
@@ -163,13 +154,12 @@ fn test_exercise_recording() {
     assert!(log_ok, "log failed: {}", log_out);
     assert!(log_out.contains("300"));
     assert!(log_out.contains("Exercise"));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_add_multiple_and_ungrouped() {
-    let (log_dir_str, dir) = temp_log_dir("multi");
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
 
     run(&[
@@ -213,6 +203,4 @@ fn test_add_multiple_and_ungrouped() {
         "--ungrouped",
     ]);
     assert!(ungrouped.contains("Coffee"));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
