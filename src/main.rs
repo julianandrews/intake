@@ -372,7 +372,7 @@ fn cmd_show(
                     "Exercise",
                     vec![
                         String::new(),
-                        format!("-{}", day_log.exercise_calories),
+                        format!("{ANSI_BOLD_RED}{}{ANSI_RESET}", day_log.exercise_calories),
                         String::new(),
                         String::new(),
                     ],
@@ -380,17 +380,6 @@ fn cmd_show(
             }
 
             let net_cal = total_cal - day_log.exercise_calories as f64;
-            if day_log.exercise_calories > 0 {
-                table.add_footer(
-                    "Net",
-                    vec![
-                        String::new(),
-                        format!("{:.0}", net_cal),
-                        format!("{:.1}", total_protein),
-                        format!("{:.1}", total_fiber),
-                    ],
-                );
-            }
 
             if let Some(mc) = config.maintenance_calories {
                 let tdee = mc + day_log.exercise_calories;
