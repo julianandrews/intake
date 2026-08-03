@@ -1,17 +1,13 @@
 use anyhow::{Context, Result};
-use chrono::{Local, Timelike};
+use chrono::Local;
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::engine::ArgValueCandidates;
 use clap_complete::{CompleteEnv, CompletionCandidate, Shell};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-
-const ANSI_RESET: &str = "\x1b[0m";
-const ANSI_BOLD_GREEN: &str = "\x1b[1;32m";
-const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
-const ANSI_BOLD_RED: &str = "\x1b[1;31m";
 
 const CLAP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
@@ -20,10 +16,11 @@ const CLAP_STYLES: Styles = Styles::styled()
     .placeholder(AnsiColor::Green.on_default());
 
 mod config;
+mod display;
 mod log;
 mod recipe;
 use config::Config;
-use recipe::Table;
+use display::Table;
 
 #[derive(Parser)]
 #[command(name = "intake", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
@@ -99,7 +96,13 @@ enum Commands {
 }
 
 fn complete_recipes() -> Vec<CompletionCandidate> {
-    let config = Config::resolve();
+    let config = match Config::resolve() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("warning: failed to load config for completion: {e}");
+            return Vec::new();
+        }
+    };
     let dir = config.foods_dir();
     match recipe::list_recipe_slugs(&dir) {
         Ok(slugs) => slugs.into_iter().map(CompletionCandidate::new).collect(),
@@ -111,7 +114,13 @@ fn complete_recipes() -> Vec<CompletionCandidate> {
 }
 
 fn complete_log_dates() -> Vec<CompletionCandidate> {
-    let config = Config::resolve();
+    let config = match Config::resolve() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("warning: failed to load config for completion: {e}");
+            return Vec::new();
+        }
+    };
     let dir = config.log_dir();
     match log::list_log_dates(&dir) {
         Ok(dates) => dates.into_iter().map(CompletionCandidate::new).collect(),
@@ -124,37 +133,27 @@ fn complete_log_dates() -> Vec<CompletionCandidate> {
 
 fn completion_path(shell: &Shell) -> Result<PathBuf> {
     let (dir, filename) = match shell {
-        Shell::Bash => {
-            let base = std::env::var("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                    PathBuf::from(home).join(".local").join("share")
-                });
-            (
-                base.join("bash-completion").join("completions"),
-                "intake".to_string(),
-            )
-        }
-        Shell::Zsh => {
-            let base = std::env::var("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                    PathBuf::from(home).join(".local").join("share")
-                });
-            (base.join("zsh").join("completions"), "_intake".to_string())
-        }
-        Shell::Fish => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            (
-                PathBuf::from(home)
-                    .join(".config")
-                    .join("fish")
-                    .join("completions"),
-                "intake.fish".to_string(),
-            )
-        }
+        Shell::Bash => (
+            dirs::data_dir()
+                .context("no data directory found")?
+                .join("bash-completion")
+                .join("completions"),
+            "intake".to_string(),
+        ),
+        Shell::Zsh => (
+            dirs::data_dir()
+                .context("no data directory found")?
+                .join("zsh")
+                .join("completions"),
+            "_intake".to_string(),
+        ),
+        Shell::Fish => (
+            dirs::config_dir()
+                .context("no config directory found")?
+                .join("fish")
+                .join("completions"),
+            "intake.fish".to_string(),
+        ),
         _ => anyhow::bail!("install not supported for {} shell", shell),
     };
     Ok(dir.join(filename))
@@ -166,13 +165,21 @@ fn main() -> Result<()> {
         .complete();
 
     let cli = Cli::parse();
-    let config = Config::resolve().with_cli_overrides(cli.foods_dir, cli.log_dir);
+    let config = Config::resolve()?.with_cli_overrides(cli.foods_dir, cli.log_dir);
     let foods_dir = config.foods_dir();
     let log_dir = config.log_dir();
+    let mut stdout = std::io::stdout();
 
     match cli.command {
         Commands::Add { recipe, servings } => {
-            cmd_add(&foods_dir, &log_dir, &recipe, servings, &config)?;
+            cmd_add(
+                &mut stdout,
+                &foods_dir,
+                &log_dir,
+                &recipe,
+                servings,
+                &config,
+            )?;
         }
         Commands::Log { date, ungrouped } => {
             let date = match date {
@@ -180,18 +187,22 @@ fn main() -> Result<()> {
                     .context("date must be in YYYY-MM-DD format")?,
                 None => Local::now().date_naive(),
             };
-            cmd_show(&foods_dir, &log_dir, date, ungrouped, &config)?;
+            cmd_show(&mut stdout, &foods_dir, &log_dir, date, ungrouped, &config)?;
         }
         Commands::Show { recipe } => {
-            cmd_show_recipe(&foods_dir, &recipe)?;
+            cmd_show_recipe(&mut stdout, &foods_dir, &recipe)?;
         }
         Commands::List => {
-            cmd_list(&foods_dir)?;
+            cmd_list(&mut stdout, &foods_dir)?;
         }
         Commands::Exercise { calories } => {
             let date = Local::now().date_naive();
             log::set_exercise_calories(&log_dir, date, calories)?;
-            println!("Recorded {} exercise calories for {}", calories, date);
+            writeln!(
+                stdout,
+                "Recorded {} exercise calories for {}",
+                calories, date
+            )?;
         }
         Commands::Completions { shell, install } => {
             if install {
@@ -207,7 +218,12 @@ fn main() -> Result<()> {
                 }
                 fs::write(&path, &output.stdout)
                     .with_context(|| format!("failed to write {}", path.display()))?;
-                println!("Installed {} completions to {}", shell, path.display());
+                writeln!(
+                    stdout,
+                    "Installed {} completions to {}",
+                    shell,
+                    path.display()
+                )?;
             } else {
                 let mut cmd = Cli::command();
                 clap_complete::generate(shell, &mut cmd, "intake", &mut std::io::stdout());
@@ -221,6 +237,7 @@ fn main() -> Result<()> {
             fiber,
         } => {
             cmd_adhoc(
+                &mut stdout,
                 &log_dir,
                 &name,
                 servings.unwrap_or(1.0),
@@ -235,6 +252,7 @@ fn main() -> Result<()> {
 }
 
 fn cmd_adhoc(
+    writer: &mut impl Write,
     log_dir: &Path,
     name: &str,
     servings: f64,
@@ -255,11 +273,16 @@ fn cmd_adhoc(
     let date = Local::now().date_naive();
     log::append_entry(log_dir, date, &entry)?;
 
-    println!("Added {} serving(s) of {} to {}", servings, name, date);
+    writeln!(
+        writer,
+        "Added {} serving(s) of {} to {}",
+        servings, name, date
+    )?;
     Ok(())
 }
 
 fn cmd_add(
+    writer: &mut impl Write,
     foods_dir: &Path,
     log_dir: &Path,
     slug: &str,
@@ -286,33 +309,37 @@ fn cmd_add(
     let date = Local::now().date_naive();
     log::append_entry(log_dir, date, &entry)?;
 
-    println!(
+    writeln!(
+        writer,
         "Added {} servings of {} to {}",
         servings, recipe.title, date
-    );
-    println!();
-    cmd_show(foods_dir, log_dir, date, false, config)?;
+    )?;
+    writeln!(writer)?;
+    cmd_show(writer, foods_dir, log_dir, date, false, config)?;
 
     Ok(())
 }
 
-fn resolve_title(foods_dir: &Path, entry: &log::LogEntry) -> Result<String> {
+fn resolve_title(
+    foods_dir: &Path,
+    entry: &log::LogEntry,
+    cache: &mut HashMap<String, String>,
+) -> Result<String> {
     if let Some(title) = &entry.title {
+        return Ok(title.clone());
+    }
+    if let Some(title) = cache.get(&entry.slug) {
         return Ok(title.clone());
     }
     let recipe_path = foods_dir.join(format!("{}.toml", entry.slug));
     let recipe = recipe::load_recipe(&recipe_path)
         .with_context(|| format!("recipe '{}' not found", entry.slug))?;
+    cache.insert(entry.slug.clone(), recipe.title.clone());
     Ok(recipe.title)
 }
 
-fn day_proportion() -> f64 {
-    let now = Local::now();
-    let elapsed = now.hour() * 3600 + now.minute() * 60 + now.second();
-    elapsed as f64 / 86400.0
-}
-
 fn cmd_show(
+    writer: &mut impl Write,
     foods_dir: &Path,
     log_dir: &Path,
     date: chrono::NaiveDate,
@@ -322,7 +349,7 @@ fn cmd_show(
     let day_log = log::load_day(log_dir, date)?;
 
     match day_log {
-        None => println!("No entries for {}", date),
+        None => writeln!(writer, "No entries for {}", date)?,
         Some(day_log) => {
             let mut table = Table::new(&["Item", "Servings", "Calories", "Protein(g)", "Fiber(g)"]);
             table.set_title(&date.to_string());
@@ -374,109 +401,27 @@ fn cmd_show(
                 tdee - net_cal
             });
 
-            println!("{}", table.format());
+            write!(writer, "{}", table.format())?;
 
-            let is_today = date == Local::now().date_naive();
-            let dp = day_proportion();
+            let now = (date == Local::now().date_naive()).then(|| Local::now().time());
 
-            let mut line1: Vec<String> = Vec::new();
-
-            if let Some(target) = config.max_calories {
-                let color = if net_cal > target as f64 {
-                    ANSI_BOLD_RED
-                } else if !is_today {
-                    ANSI_BOLD_GREEN
-                } else {
-                    ANSI_BOLD_YELLOW
-                };
-                line1.push(format!(
-                    "Calories: {color}{:.0}{}/{}",
-                    net_cal, ANSI_RESET, target
-                ));
-            }
-            if let Some(target) = config.min_protein {
-                let color = if total_protein >= target {
-                    ANSI_BOLD_GREEN
-                } else if !is_today {
-                    ANSI_BOLD_RED
-                } else {
-                    let ratio = total_protein / target;
-                    if ratio >= dp {
-                        ANSI_BOLD_YELLOW
-                    } else {
-                        ANSI_BOLD_RED
-                    }
-                };
-                line1.push(format!(
-                    "Protein: {color}{:.1}{}/{}g",
-                    total_protein, ANSI_RESET, target
-                ));
-            }
-            if let Some(target) = config.min_fiber {
-                let color = if total_fiber >= target {
-                    ANSI_BOLD_GREEN
-                } else if !is_today {
-                    ANSI_BOLD_RED
-                } else {
-                    let ratio = total_fiber / target;
-                    if ratio >= dp {
-                        ANSI_BOLD_YELLOW
-                    } else {
-                        ANSI_BOLD_RED
-                    }
-                };
-                line1.push(format!(
-                    "Fiber: {color}{:.1}{}/{}g",
-                    total_fiber, ANSI_RESET, target
-                ));
-            }
-
-            let mut line2: Vec<String> = Vec::new();
-
-            if day_log.exercise_calories > 0 {
-                line2.push(format!(
-                    "Exercise: {ANSI_BOLD_RED}{}{ANSI_RESET}",
-                    day_log.exercise_calories
-                ));
-            }
-            if let Some(mc) = config.maintenance_calories {
-                let tdee = mc + day_log.exercise_calories;
-                line2.push(format!("TDEE: {}", tdee));
-            }
-            if let Some(d) = deficit {
-                let color = if d >= 0.0 {
-                    ANSI_BOLD_GREEN
-                } else {
-                    ANSI_BOLD_RED
-                };
-                line2.push(format!("Deficit: {color}{:.0}{}", d, ANSI_RESET));
-            }
-
-            let max_len = line1.len().max(line2.len());
-            for i in 0..max_len {
-                let w1 = line1.get(i).map(|s| recipe::visible_width(s)).unwrap_or(0);
-                let w2 = line2.get(i).map(|s| recipe::visible_width(s)).unwrap_or(0);
-                let mw = w1.max(w2);
-                if let Some(s) = line1.get_mut(i) {
-                    let pad = mw - recipe::visible_width(s);
-                    for _ in 0..pad {
-                        s.push(' ');
-                    }
-                }
-                if let Some(s) = line2.get_mut(i) {
-                    let pad = mw - recipe::visible_width(s);
-                    for _ in 0..pad {
-                        s.push(' ');
-                    }
-                }
-            }
-
-            if !line1.is_empty() {
-                println!("  {}", line1.join("    "));
-            }
-            if !line2.is_empty() {
-                println!("  {}", line2.join("    "));
-            }
+            let summary = display::render_day_summary(
+                now,
+                &display::DayTotals {
+                    protein: total_protein,
+                    fiber: total_fiber,
+                },
+                day_log.exercise_calories,
+                net_cal,
+                &display::DayTargets {
+                    max_calories: config.max_calories,
+                    min_protein: config.min_protein,
+                    min_fiber: config.min_fiber,
+                    maintenance_calories: config.maintenance_calories,
+                },
+                deficit,
+            );
+            write!(writer, "{}", summary)?;
         }
     }
 
@@ -493,14 +438,15 @@ struct DisplayRow {
 
 fn build_ungrouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
     let mut rows = Vec::with_capacity(entries.len());
+    let mut cache = HashMap::new();
     for entry in entries {
-        let title = resolve_title(foods_dir, entry)?;
+        let title = resolve_title(foods_dir, entry, &mut cache)?;
         rows.push(DisplayRow {
             title,
             servings: entry.servings,
-            calories: entry.calories as f64 * entry.servings,
-            protein_g: entry.protein_g * entry.servings,
-            fiber_g: entry.fiber_g * entry.servings,
+            calories: entry.total_calories(),
+            protein_g: entry.total_protein(),
+            fiber_g: entry.total_fiber(),
         });
     }
     Ok(rows)
@@ -509,31 +455,32 @@ fn build_ungrouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<V
 fn build_grouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
     let mut rows: Vec<DisplayRow> = Vec::new();
     let mut slug_to_idx: HashMap<&str, usize> = HashMap::new();
+    let mut cache = HashMap::new();
 
     for entry in entries {
         if let Some(title) = entry.title.clone() {
             rows.push(DisplayRow {
                 title,
                 servings: entry.servings,
-                calories: entry.calories as f64 * entry.servings,
-                protein_g: entry.protein_g * entry.servings,
-                fiber_g: entry.fiber_g * entry.servings,
+                calories: entry.total_calories(),
+                protein_g: entry.total_protein(),
+                fiber_g: entry.total_fiber(),
             });
         } else if let Some(&idx) = slug_to_idx.get(entry.slug.as_str()) {
             let row = &mut rows[idx];
             row.servings += entry.servings;
-            row.calories += entry.calories as f64 * entry.servings;
-            row.protein_g += entry.protein_g * entry.servings;
-            row.fiber_g += entry.fiber_g * entry.servings;
+            row.calories += entry.total_calories();
+            row.protein_g += entry.total_protein();
+            row.fiber_g += entry.total_fiber();
         } else {
-            let title = resolve_title(foods_dir, entry)?;
+            let title = resolve_title(foods_dir, entry, &mut cache)?;
             slug_to_idx.insert(entry.slug.as_str(), rows.len());
             rows.push(DisplayRow {
                 title,
                 servings: entry.servings,
-                calories: entry.calories as f64 * entry.servings,
-                protein_g: entry.protein_g * entry.servings,
-                fiber_g: entry.fiber_g * entry.servings,
+                calories: entry.total_calories(),
+                protein_g: entry.total_protein(),
+                fiber_g: entry.total_fiber(),
             });
         }
     }
@@ -661,15 +608,15 @@ mod tests {
     }
 }
 
-fn cmd_show_recipe(foods_dir: &Path, slug: &str) -> Result<()> {
+fn cmd_show_recipe(writer: &mut impl Write, foods_dir: &Path, slug: &str) -> Result<()> {
     let recipe_path = foods_dir.join(format!("{}.toml", slug));
     let recipe = recipe::load_recipe(&recipe_path)
         .with_context(|| format!("recipe '{}' not found", slug))?;
-    println!("{}", recipe.display());
+    write!(writer, "{}", recipe.display())?;
     Ok(())
 }
 
-fn cmd_list(foods_dir: &Path) -> Result<()> {
+fn cmd_list(writer: &mut impl Write, foods_dir: &Path) -> Result<()> {
     let recipes = recipe::find_all_recipes(foods_dir)?;
 
     let mut table = Table::new(&["Recipe", "Servings", "Cal/serv", "Protein(g)", "Fiber(g)"]);
@@ -686,6 +633,6 @@ fn cmd_list(foods_dir: &Path) -> Result<()> {
         ]);
     }
 
-    println!("{}", table.format());
+    write!(writer, "{}", table.format())?;
     Ok(())
 }

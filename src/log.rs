@@ -15,16 +15,24 @@ pub struct LogEntry {
     pub title: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct LogFile {
-    entries: Vec<LogEntry>,
-    #[serde(default)]
-    exercise_calories: u32,
+impl LogEntry {
+    pub fn total_calories(&self) -> f64 {
+        self.calories as f64 * self.servings
+    }
+
+    pub fn total_protein(&self) -> f64 {
+        self.protein_g * self.servings
+    }
+
+    pub fn total_fiber(&self) -> f64 {
+        self.fiber_g * self.servings
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DayLog {
     pub entries: Vec<LogEntry>,
+    #[serde(default)]
     pub exercise_calories: u32,
 }
 
@@ -35,21 +43,21 @@ fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
 pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result<()> {
     let path = log_path(log_dir, date);
 
-    let mut log_file: LogFile = if path.exists() {
+    let mut day_log: DayLog = if path.exists() {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read log: {}", path.display()))?;
         toml::from_str(&content)
             .with_context(|| format!("failed to parse log: {}", path.display()))?
     } else {
-        LogFile {
+        DayLog {
             entries: Vec::new(),
             exercise_calories: 0,
         }
     };
 
-    log_file.entries.push(entry.clone());
+    day_log.entries.push(entry.clone());
 
-    let content = toml::to_string(&log_file).context("failed to serialize log")?;
+    let content = toml::to_string(&day_log).context("failed to serialize log")?;
     fs::write(&path, &content)
         .with_context(|| format!("failed to write log: {}", path.display()))?;
 
@@ -81,33 +89,30 @@ pub fn load_day(log_dir: &Path, date: NaiveDate) -> Result<Option<DayLog>> {
     let content = fs::read_to_string(&path)
         .with_context(|| format!("failed to read log: {}", path.display()))?;
 
-    let log_file: LogFile = toml::from_str(&content)
+    let day_log: DayLog = toml::from_str(&content)
         .with_context(|| format!("failed to parse log: {}", path.display()))?;
 
-    Ok(Some(DayLog {
-        entries: log_file.entries,
-        exercise_calories: log_file.exercise_calories,
-    }))
+    Ok(Some(day_log))
 }
 
 pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: u32) -> Result<()> {
     let path = log_path(log_dir, date);
 
-    let mut log_file: LogFile = if path.exists() {
+    let mut day_log: DayLog = if path.exists() {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read log: {}", path.display()))?;
         toml::from_str(&content)
             .with_context(|| format!("failed to parse log: {}", path.display()))?
     } else {
-        LogFile {
+        DayLog {
             entries: Vec::new(),
             exercise_calories: 0,
         }
     };
 
-    log_file.exercise_calories = calories;
+    day_log.exercise_calories = calories;
 
-    let content = toml::to_string(&log_file).context("failed to serialize log")?;
+    let content = toml::to_string(&day_log).context("failed to serialize log")?;
     fs::write(&path, &content)
         .with_context(|| format!("failed to write log: {}", path.display()))?;
 

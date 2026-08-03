@@ -1,194 +1,9 @@
+use crate::display::{Align, Table};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-const ANSI_RESET: &str = "\x1b[0m";
-const ANSI_CYAN: &str = "\x1b[36m";
-const ANSI_BOLD_CYAN: &str = "\x1b[1;36m";
-const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
-const ANSI_BOLD_GREEN: &str = "\x1b[1;32m";
-
-#[derive(Debug, Clone)]
-pub enum Align {
-    Left,
-    Right,
-}
-
-#[derive(Debug)]
-pub struct Table {
-    headers: Vec<String>,
-    align: Vec<Align>,
-    rows: Vec<Vec<String>>,
-    title: Option<String>,
-    footers: Vec<(String, Vec<String>)>,
-}
-
-pub fn visible_width(s: &str) -> usize {
-    // Strip ANSI escape sequences for column-width calculation
-    let mut len = 0;
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' && chars.peek() == Some(&'[') {
-            // consume until 'm'
-            for n in chars.by_ref() {
-                if n == 'm' {
-                    break;
-                }
-            }
-        } else {
-            len += 1;
-        }
-    }
-    len
-}
-
-fn format_cells(cells: &[String], widths: &[usize], align: &[Align]) -> String {
-    let mut line = String::new();
-    for (i, (cell, width)) in cells.iter().zip(widths).enumerate() {
-        let vis = visible_width(cell);
-        let pad = width.saturating_sub(vis);
-        match align[i] {
-            Align::Left => {
-                write!(line, "{}", cell).unwrap();
-                for _ in 0..pad {
-                    line.push(' ');
-                }
-            }
-            Align::Right => {
-                for _ in 0..pad {
-                    line.push(' ');
-                }
-                write!(line, "{}", cell).unwrap();
-            }
-        }
-        if i == 0 {
-            line.push(' ');
-        } else if i < cells.len() - 1 {
-            line.push_str("  ");
-        }
-    }
-    line
-}
-
-impl Table {
-    pub fn new(headers: &[&str]) -> Self {
-        let n = headers.len();
-        let mut align = vec![Align::Right; n];
-        if n > 0 {
-            align[0] = Align::Left;
-        }
-        Table {
-            headers: headers.iter().map(|h| h.to_string()).collect(),
-            align,
-            rows: Vec::new(),
-            title: None,
-            footers: Vec::new(),
-        }
-    }
-
-    pub fn with_align(headers: &[&str], align: &[Align]) -> Self {
-        Table {
-            headers: headers.iter().map(|h| h.to_string()).collect(),
-            align: align.to_vec(),
-            rows: Vec::new(),
-            title: None,
-            footers: Vec::new(),
-        }
-    }
-
-    pub fn add_row(&mut self, cells: Vec<String>) {
-        self.rows.push(cells);
-    }
-
-    pub fn set_title(&mut self, title: &str) {
-        self.title = Some(title.to_string());
-    }
-
-    pub fn add_footer(&mut self, label: &str, cells: Vec<String>) {
-        assert_eq!(
-            cells.len(),
-            self.headers.len() - 1,
-            "add_footer expects {} cells (one per data column), got {}",
-            self.headers.len() - 1,
-            cells.len()
-        );
-        self.footers.push((label.to_string(), cells));
-    }
-
-    fn col_widths(&self) -> Vec<usize> {
-        let mut widths: Vec<usize> = self.headers.iter().map(|h| visible_width(h)).collect();
-        for row in &self.rows {
-            for (i, cell) in row.iter().enumerate() {
-                widths[i] = widths[i].max(visible_width(cell));
-            }
-        }
-        for (label, cells) in &self.footers {
-            widths[0] = widths[0].max(visible_width(label));
-            for (i, cell) in cells.iter().enumerate() {
-                widths[i] = widths[i].max(visible_width(cell));
-            }
-        }
-        widths
-    }
-
-    pub fn format(&self) -> String {
-        let widths = self.col_widths();
-        let n = widths.len();
-        let sep_total = if n <= 1 { 0 } else { 1 + 2 * (n - 2) };
-        let sep_width = 2 + widths.iter().sum::<usize>() + sep_total;
-
-        let mut out = String::new();
-
-        if let Some(title) = &self.title {
-            writeln!(out, "{ANSI_BOLD_CYAN}{title}{ANSI_RESET}").unwrap();
-        }
-
-        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
-
-        writeln!(
-            out,
-            "  {ANSI_BOLD_YELLOW}{}{ANSI_RESET}",
-            format_cells(&self.headers, &widths, &self.align)
-        )
-        .unwrap();
-
-        let dash_cells: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
-        writeln!(
-            out,
-            "  {ANSI_CYAN}{}{ANSI_RESET}",
-            format_cells(&dash_cells, &widths, &self.align)
-        )
-        .unwrap();
-
-        for row in &self.rows {
-            writeln!(out, "  {}", format_cells(row, &widths, &self.align)).unwrap();
-        }
-
-        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
-
-        for (i, (label, cells)) in self.footers.iter().enumerate() {
-            let mut full_row = vec![label.clone()];
-            full_row.extend(cells.iter().cloned());
-
-            let ansi = if i == 0 {
-                ANSI_BOLD_GREEN
-            } else {
-                ANSI_BOLD_CYAN
-            };
-            writeln!(
-                out,
-                "  {ansi}{}{ANSI_RESET}",
-                format_cells(&full_row, &widths, &self.align)
-            )
-            .unwrap();
-        }
-
-        out
-    }
-}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Ingredient {
@@ -209,22 +24,27 @@ pub struct Recipe {
 }
 
 #[derive(Debug, Clone)]
-pub struct PerServing {
+pub struct Macros {
     pub calories: u32,
     pub protein_g: f64,
     pub fiber_g: f64,
 }
 
 impl Recipe {
-    pub fn per_serving(&self) -> PerServing {
-        let total_cal: u32 = self.ingredients.iter().map(|i| i.calories).sum();
-        let total_protein: f64 = self.ingredients.iter().map(|i| i.protein_g).sum();
-        let total_fiber: f64 = self.ingredients.iter().map(|i| i.fiber_g).sum();
+    pub fn totals(&self) -> Macros {
+        Macros {
+            calories: self.ingredients.iter().map(|i| i.calories).sum(),
+            protein_g: self.ingredients.iter().map(|i| i.protein_g).sum(),
+            fiber_g: self.ingredients.iter().map(|i| i.fiber_g).sum(),
+        }
+    }
 
-        PerServing {
-            calories: (total_cal as f64 / self.servings as f64).round() as u32,
-            protein_g: total_protein / self.servings as f64,
-            fiber_g: total_fiber / self.servings as f64,
+    pub fn per_serving(&self) -> Macros {
+        let t = self.totals();
+        Macros {
+            calories: (t.calories as f64 / self.servings as f64).round() as u32,
+            protein_g: t.protein_g / self.servings as f64,
+            fiber_g: t.fiber_g / self.servings as f64,
         }
     }
 
@@ -265,17 +85,15 @@ impl Recipe {
             ]);
         }
 
-        let total_cal: u32 = self.ingredients.iter().map(|i| i.calories).sum();
-        let total_protein: f64 = self.ingredients.iter().map(|i| i.protein_g).sum();
-        let total_fiber: f64 = self.ingredients.iter().map(|i| i.fiber_g).sum();
+        let t = self.totals();
 
         table.add_footer(
             "Total",
             vec![
                 String::new(),
-                total_cal.to_string(),
-                format!("{:.1}g", total_protein),
-                format!("{:.1}g", total_fiber),
+                t.calories.to_string(),
+                format!("{:.1}g", t.protein_g),
+                format!("{:.1}g", t.fiber_g),
             ],
         );
 

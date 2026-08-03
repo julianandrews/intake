@@ -13,10 +13,10 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn resolve() -> Self {
-        let mut config = Self::load().unwrap_or_default();
+    pub fn resolve() -> Result<Self> {
+        let mut config = Self::load()?;
         config.apply_env_overrides();
-        config
+        Ok(config)
     }
 
     fn load() -> Result<Self> {
