@@ -52,6 +52,22 @@ pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result
     Ok(())
 }
 
+pub fn list_log_dates(log_dir: &Path) -> Result<Vec<String>> {
+    let mut dates = Vec::new();
+    let entries = fs::read_dir(log_dir).context("failed to read log directory")?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().map_or(false, |e| e == "toml") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                dates.push(stem.to_string());
+            }
+        }
+    }
+    dates.sort();
+    Ok(dates)
+}
+
 pub fn load_day(log_dir: &Path, date: NaiveDate) -> Result<Option<DayLog>> {
     let path = log_path(log_dir, date);
     if !path.exists() {

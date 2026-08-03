@@ -48,6 +48,7 @@ enum Commands {
     Today,
     /// Show totals for a specific date (YYYY-MM-DD)
     Log {
+        #[arg(add = ArgValueCandidates::new(complete_log_dates))]
         date: String,
     },
     /// Show a recipe with ingredients and per-serving values
@@ -124,6 +125,21 @@ fn complete_recipes() -> Vec<CompletionCandidate> {
         Ok(slugs) => slugs.into_iter().map(CompletionCandidate::new).collect(),
         Err(e) => {
             eprintln!("warning: failed to list recipes for completion: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn complete_log_dates() -> Vec<CompletionCandidate> {
+    let dir = std::env::var("DIET_LOG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("log")
+        });
+    match log::list_log_dates(&dir) {
+        Ok(dates) => dates.into_iter().map(CompletionCandidate::new).collect(),
+        Err(e) => {
+            eprintln!("warning: failed to list log dates for completion: {e}");
             Vec::new()
         }
     }
