@@ -96,7 +96,7 @@ enum Commands {
 }
 
 fn complete_recipes() -> Vec<CompletionCandidate> {
-    let config = match Config::resolve() {
+    let config = match Config::resolve(None, None) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("warning: failed to load config for completion: {e}");
@@ -114,7 +114,7 @@ fn complete_recipes() -> Vec<CompletionCandidate> {
 }
 
 fn complete_log_dates() -> Vec<CompletionCandidate> {
-    let config = match Config::resolve() {
+    let config = match Config::resolve(None, None) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("warning: failed to load config for completion: {e}");
@@ -165,7 +165,7 @@ fn main() -> Result<()> {
         .complete();
 
     let cli = Cli::parse();
-    let config = Config::resolve()?.with_cli_overrides(cli.foods_dir, cli.log_dir);
+    let config = Config::resolve(cli.foods_dir, cli.log_dir)?;
     let foods_dir = config.foods_dir();
     let log_dir = config.log_dir();
     let mut stdout = std::io::stdout();
@@ -187,7 +187,7 @@ fn main() -> Result<()> {
                     .context("date must be in YYYY-MM-DD format")?,
                 None => Local::now().date_naive(),
             };
-            cmd_show(&mut stdout, &foods_dir, &log_dir, date, ungrouped, &config)?;
+            cmd_log(&mut stdout, &foods_dir, &log_dir, date, ungrouped, &config)?;
         }
         Commands::Show { recipe } => {
             cmd_show_recipe(&mut stdout, &foods_dir, &recipe)?;
@@ -262,7 +262,6 @@ fn cmd_adhoc(
 ) -> Result<()> {
     let entry = log::LogEntry {
         slug: name.to_lowercase().replace(' ', "-"),
-        hash: String::new(),
         servings,
         calories,
         protein_g,
@@ -293,12 +292,10 @@ fn cmd_add(
     let recipe = recipe::load_recipe(&recipe_path)
         .with_context(|| format!("recipe '{}' not found", slug))?;
 
-    let hash = recipe.hash().to_string();
     let ps = recipe.per_serving();
 
     let entry = log::LogEntry {
         slug: slug.to_string(),
-        hash,
         servings,
         calories: ps.calories,
         protein_g: ps.protein_g,
@@ -315,7 +312,7 @@ fn cmd_add(
         servings, recipe.title, date
     )?;
     writeln!(writer)?;
-    cmd_show(writer, foods_dir, log_dir, date, false, config)?;
+    cmd_log(writer, foods_dir, log_dir, date, false, config)?;
 
     Ok(())
 }
@@ -338,7 +335,7 @@ fn resolve_title(
     Ok(recipe.title)
 }
 
-fn cmd_show(
+fn cmd_log(
     writer: &mut impl Write,
     foods_dir: &Path,
     log_dir: &Path,
@@ -500,7 +497,6 @@ mod tests {
     fn entry(slug: &str, servings: f64) -> LogEntry {
         LogEntry {
             slug: slug.to_string(),
-            hash: String::new(),
             servings,
             calories: 0,
             protein_g: 0.0,
@@ -512,7 +508,6 @@ mod tests {
     fn adhoc_entry(slug: &str, title: &str, servings: f64) -> LogEntry {
         LogEntry {
             slug: slug.to_string(),
-            hash: String::new(),
             servings,
             calories: 0,
             protein_g: 0.0,

@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LogEntry {
     pub slug: String,
-    pub hash: String,
     pub servings: f64,
     pub calories: u32,
     pub protein_g: f64,
@@ -66,7 +65,8 @@ pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result
 
 pub fn list_log_dates(log_dir: &Path) -> Result<Vec<String>> {
     let mut dates = Vec::new();
-    let entries = fs::read_dir(log_dir).context("failed to read log directory")?;
+    let entries = fs::read_dir(log_dir)
+        .with_context(|| format!("log directory not found: {}", log_dir.display()))?;
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
@@ -132,7 +132,6 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         let entry = LogEntry {
             slug: "oatmeal".to_string(),
-            hash: "abc123".to_string(),
             servings: 1.5,
             calories: 200,
             protein_g: 15.0,
@@ -145,7 +144,6 @@ mod tests {
 
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].slug, "oatmeal");
-        assert_eq!(loaded.entries[0].hash, "abc123");
         assert_eq!(loaded.entries[0].servings, 1.5);
         assert_eq!(loaded.entries[0].calories, 200);
         assert!((loaded.entries[0].protein_g - 15.0).abs() < 0.001);
@@ -167,7 +165,6 @@ mod tests {
             date,
             &LogEntry {
                 slug: "coffee".to_string(),
-                hash: "aaa".to_string(),
                 servings: 2.0,
                 calories: 12,
                 protein_g: 0.0,
@@ -181,7 +178,6 @@ mod tests {
             date,
             &LogEntry {
                 slug: "oatmeal".to_string(),
-                hash: "bbb".to_string(),
                 servings: 1.0,
                 calories: 418,
                 protein_g: 22.0,

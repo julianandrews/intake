@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -13,9 +13,23 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn resolve() -> Result<Self> {
+    pub fn resolve(foods_dir: Option<PathBuf>, log_dir: Option<PathBuf>) -> Result<Self> {
         let mut config = Self::load()?;
-        config.apply_env_overrides();
+
+        if let Ok(val) = std::env::var("INTAKE_FOODS_DIR") {
+            config.foods_dir = Some(PathBuf::from(val));
+        }
+        if let Ok(val) = std::env::var("INTAKE_LOG_DIR") {
+            config.log_dir = Some(PathBuf::from(val));
+        }
+
+        if let Some(dir) = foods_dir {
+            config.foods_dir = Some(dir);
+        }
+        if let Some(dir) = log_dir {
+            config.log_dir = Some(dir);
+        }
+
         Ok(config)
     }
 
@@ -24,34 +38,12 @@ impl Config {
 
         match config_path {
             Some(path) if path.exists() => {
-                let content = std::fs::read_to_string(&path)?;
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read config: {}", path.display()))?;
                 Ok(toml::from_str(&content)?)
             }
             _ => Ok(Config::default()),
         }
-    }
-
-    fn apply_env_overrides(&mut self) {
-        if let Ok(val) = std::env::var("INTAKE_FOODS_DIR") {
-            self.foods_dir = Some(PathBuf::from(val));
-        }
-        if let Ok(val) = std::env::var("INTAKE_LOG_DIR") {
-            self.log_dir = Some(PathBuf::from(val));
-        }
-    }
-
-    pub fn with_cli_overrides(
-        mut self,
-        foods_dir: Option<PathBuf>,
-        log_dir: Option<PathBuf>,
-    ) -> Self {
-        if let Some(dir) = foods_dir {
-            self.foods_dir = Some(dir);
-        }
-        if let Some(dir) = log_dir {
-            self.log_dir = Some(dir);
-        }
-        self
     }
 
     pub fn foods_dir(&self) -> PathBuf {

@@ -1,7 +1,6 @@
 use crate::display::{Align, Table};
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,8 +18,6 @@ pub struct Recipe {
     pub title: String,
     pub servings: u32,
     pub ingredients: Vec<Ingredient>,
-    #[serde(skip)]
-    pub content_hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -46,10 +43,6 @@ impl Recipe {
             protein_g: t.protein_g / self.servings as f64,
             fiber_g: t.fiber_g / self.servings as f64,
         }
-    }
-
-    pub fn hash(&self) -> &str {
-        &self.content_hash
     }
 
     pub fn display(&self) -> String {
@@ -114,7 +107,8 @@ impl Recipe {
 
 fn toml_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    let entries = fs::read_dir(dir).context("failed to read foods directory")?;
+    let entries = fs::read_dir(dir)
+        .with_context(|| format!("foods directory not found: {}", dir.display()))?;
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
@@ -135,21 +129,13 @@ pub fn list_recipe_slugs(foods_dir: &Path) -> Result<Vec<String>> {
     Ok(slugs)
 }
 
-pub fn hash_content(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    let result = hasher.finalize();
-    format!("{:x}", result)[..8].to_string()
-}
-
 pub fn load_recipe(path: &Path) -> Result<Recipe> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read recipe file: {}", path.display()))?;
 
-    let mut recipe: Recipe = toml::from_str(&content)
+    let recipe: Recipe = toml::from_str(&content)
         .with_context(|| format!("failed to parse TOML in: {}", path.display()))?;
 
-    recipe.content_hash = hash_content(&content);
     Ok(recipe)
 }
 
@@ -169,7 +155,6 @@ mod tests {
                 fiber_g: 5.0,
                 calories: 100,
             }],
-            content_hash: String::new(),
         };
         let ps = recipe.per_serving();
         assert_eq!(ps.calories, 33);
@@ -189,7 +174,6 @@ mod tests {
                 fiber_g: 6.0,
                 calories: 100,
             }],
-            content_hash: String::new(),
         };
         let ps = recipe.per_serving();
         assert_eq!(ps.calories, 50);
@@ -209,7 +193,6 @@ mod tests {
                 fiber_g: 0.3,
                 calories: 5,
             }],
-            content_hash: String::new(),
         };
         let ps = recipe.per_serving();
         assert_eq!(ps.calories, 5);
@@ -261,7 +244,6 @@ mod tests {
                     calories: 120,
                 },
             ],
-            content_hash: String::new(),
         };
 
         let md = recipe.display();
@@ -285,7 +267,6 @@ mod tests {
                 fiber_g: 0.0,
                 calories: 0,
             }],
-            content_hash: String::new(),
         };
 
         let md = recipe.display();
@@ -305,7 +286,6 @@ mod tests {
                 fiber_g: 0.1,
                 calories: 5,
             }],
-            content_hash: String::new(),
         };
 
         let md = recipe.display();
