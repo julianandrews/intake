@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const CLAP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
@@ -95,13 +96,22 @@ enum Commands {
     },
 }
 
+fn completion_config() -> Option<&'static Config> {
+    static CONFIG: OnceLock<Option<Config>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            Config::resolve(None, None).map(Some).unwrap_or_else(|e| {
+                eprintln!("warning: failed to load config for completion: {e}");
+                None
+            })
+        })
+        .as_ref()
+}
+
 fn complete_recipes() -> Vec<CompletionCandidate> {
-    let config = match Config::resolve(None, None) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("warning: failed to load config for completion: {e}");
-            return Vec::new();
-        }
+    let config = match completion_config() {
+        Some(c) => c,
+        None => return Vec::new(),
     };
     let dir = config.foods_dir();
     match recipe::list_recipe_slugs(&dir) {
@@ -114,12 +124,9 @@ fn complete_recipes() -> Vec<CompletionCandidate> {
 }
 
 fn complete_log_dates() -> Vec<CompletionCandidate> {
-    let config = match Config::resolve(None, None) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("warning: failed to load config for completion: {e}");
-            return Vec::new();
-        }
+    let config = match completion_config() {
+        Some(c) => c,
+        None => return Vec::new(),
     };
     let dir = config.log_dir();
     match log::list_log_dates(&dir) {
