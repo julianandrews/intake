@@ -48,9 +48,21 @@ fn visible_width(s: &str) -> usize {
 fn format_cells(cells: &[String], widths: &[usize], align: &[Align]) -> String {
     let mut line = String::new();
     for (i, (cell, width)) in cells.iter().zip(widths).enumerate() {
+        let vis = visible_width(cell);
+        let pad = width.saturating_sub(vis);
         match align[i] {
-            Align::Left => write!(line, "{:<w$}", cell, w = width).unwrap(),
-            Align::Right => write!(line, "{:>w$}", cell, w = width).unwrap(),
+            Align::Left => {
+                write!(line, "{}", cell).unwrap();
+                for _ in 0..pad {
+                    line.push(' ');
+                }
+            }
+            Align::Right => {
+                for _ in 0..pad {
+                    line.push(' ');
+                }
+                write!(line, "{}", cell).unwrap();
+            }
         }
         if i == 0 {
             line.push(' ');
