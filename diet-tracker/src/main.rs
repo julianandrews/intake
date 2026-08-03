@@ -12,7 +12,7 @@ mod recipe;
 mod search;
 
 #[derive(Parser)]
-#[command(name = "diet")]
+#[command(name = "diet", color = clap::ColorChoice::Always)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
