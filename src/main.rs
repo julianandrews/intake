@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::Local;
+use chrono::{Local, Timelike};
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::engine::ArgValueCandidates;
@@ -8,14 +8,21 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_BOLD_GREEN: &str = "\x1b[1;32m";
+const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
+const ANSI_BOLD_RED: &str = "\x1b[1;31m";
+
 const CLAP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
     .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .literal(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Green.on_default());
 
+mod config;
 mod log;
 mod recipe;
+use config::Config;
 use recipe::Table;
 
 #[derive(Parser)]
@@ -73,6 +80,11 @@ enum Commands {
         /// Install to the standard completion directory for the shell
         #[arg(long)]
         install: bool,
+    },
+    /// Record exercise calories for today
+    Exercise {
+        /// Calories burned
+        calories: u32,
     },
     /// Add an ad-hoc entry with custom macros (no recipe file needed)
     Adhoc {
@@ -162,36 +174,46 @@ fn main() -> Result<()> {
         .complete();
 
     let cli = Cli::parse();
+    let config = Config::resolve();
 
-    let foods_dir = cli.foods_dir.unwrap_or_else(|| {
-        std::env::var("INTAKE_FOODS_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("foods"))
-    });
+    let foods_dir = cli
+        .foods_dir
+        .or_else(|| config.foods_dir.clone())
+        .unwrap_or_else(|| PathBuf::from("foods"));
 
-    let log_dir = cli.log_dir.unwrap_or_else(|| {
-        std::env::var("INTAKE_LOG_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("log"))
-    });
+    let log_dir = cli
+        .log_dir
+        .or_else(|| config.log_dir.clone())
+        .unwrap_or_else(|| PathBuf::from("log"));
 
     match cli.command {
         Commands::Add { recipe, servings } => {
-            cmd_add(&foods_dir, &log_dir, &recipe, servings)?;
+            cmd_add(&foods_dir, &log_dir, &recipe, servings, &config)?;
         }
         Commands::Today { ungrouped } => {
-            cmd_show(&foods_dir, &log_dir, Local::now().date_naive(), ungrouped)?;
+            cmd_show(
+                &foods_dir,
+                &log_dir,
+                Local::now().date_naive(),
+                ungrouped,
+                &config,
+            )?;
         }
         Commands::Log { date, ungrouped } => {
             let date = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
                 .context("date must be in YYYY-MM-DD format")?;
-            cmd_show(&foods_dir, &log_dir, date, ungrouped)?;
+            cmd_show(&foods_dir, &log_dir, date, ungrouped, &config)?;
         }
         Commands::Show { recipe } => {
             cmd_show_recipe(&foods_dir, &recipe)?;
         }
         Commands::List => {
             cmd_list(&foods_dir)?;
+        }
+        Commands::Exercise { calories } => {
+            let date = Local::now().date_naive();
+            log::set_exercise_calories(&log_dir, date, calories)?;
+            println!("Recorded {} exercise calories for {}", calories, date);
         }
         Commands::Completions { shell, install } => {
             if install {
@@ -259,7 +281,13 @@ fn cmd_adhoc(
     Ok(())
 }
 
-fn cmd_add(foods_dir: &Path, log_dir: &Path, slug: &str, servings: f64) -> Result<()> {
+fn cmd_add(
+    foods_dir: &Path,
+    log_dir: &Path,
+    slug: &str,
+    servings: f64,
+    config: &Config,
+) -> Result<()> {
     let recipe_path = foods_dir.join(format!("{}.toml", slug));
     let recipe = recipe::load_recipe(&recipe_path)
         .with_context(|| format!("recipe '{}' not found", slug))?;
@@ -285,7 +313,7 @@ fn cmd_add(foods_dir: &Path, log_dir: &Path, slug: &str, servings: f64) -> Resul
         servings, recipe.title, date
     );
     println!();
-    cmd_show(foods_dir, log_dir, date, false)?;
+    cmd_show(foods_dir, log_dir, date, false, config)?;
 
     Ok(())
 }
@@ -300,11 +328,18 @@ fn resolve_title(foods_dir: &Path, entry: &log::LogEntry) -> Result<String> {
     Ok(recipe.title)
 }
 
+fn day_proportion() -> f64 {
+    let now = Local::now();
+    let elapsed = now.hour() * 3600 + now.minute() * 60 + now.second();
+    elapsed as f64 / 86400.0
+}
+
 fn cmd_show(
     foods_dir: &Path,
     log_dir: &Path,
     date: chrono::NaiveDate,
     ungrouped: bool,
+    config: &Config,
 ) -> Result<()> {
     let day_log = log::load_day(log_dir, date)?;
 
@@ -345,7 +380,7 @@ fn cmd_show(
             }
 
             table.add_footer(
-                "TOTAL",
+                "Total",
                 vec![
                     String::new(),
                     format!("{:.0}", total_cal),
@@ -354,7 +389,115 @@ fn cmd_show(
                 ],
             );
 
+            if day_log.exercise_calories > 0 {
+                table.add_footer(
+                    "Exercise",
+                    vec![
+                        String::new(),
+                        format!("-{}", day_log.exercise_calories),
+                        String::new(),
+                        String::new(),
+                    ],
+                );
+            }
+
+            let net_cal = total_cal - day_log.exercise_calories as f64;
+            if day_log.exercise_calories > 0 {
+                table.add_footer(
+                    "Net",
+                    vec![
+                        String::new(),
+                        format!("{:.0}", net_cal),
+                        format!("{:.1}", total_protein),
+                        format!("{:.1}", total_fiber),
+                    ],
+                );
+            }
+
+            if let Some(mc) = config.maintenance_calories {
+                let tdee = mc + day_log.exercise_calories;
+                table.add_footer(
+                    "TDEE",
+                    vec![
+                        String::new(),
+                        format!("{}", tdee),
+                        String::new(),
+                        String::new(),
+                    ],
+                );
+            }
+
+            let deficit = config.maintenance_calories.map(|mc| {
+                let tdee = mc as f64 + day_log.exercise_calories as f64;
+                tdee - net_cal
+            });
+
             println!("{}", table.format());
+
+            let is_today = date == Local::now().date_naive();
+            let dp = day_proportion();
+
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(target) = config.max_calories {
+                let color = if net_cal > target as f64 {
+                    ANSI_BOLD_RED
+                } else if !is_today {
+                    ANSI_BOLD_GREEN
+                } else {
+                    ANSI_BOLD_YELLOW
+                };
+                parts.push(format!(
+                    "Calories: {color}{:.0}{}/{}",
+                    net_cal, ANSI_RESET, target
+                ));
+            }
+            if let Some(target) = config.min_protein {
+                let color = if total_protein >= target {
+                    ANSI_BOLD_GREEN
+                } else if !is_today {
+                    ANSI_BOLD_RED
+                } else {
+                    let ratio = total_protein / target;
+                    if ratio >= dp {
+                        ANSI_BOLD_YELLOW
+                    } else {
+                        ANSI_BOLD_RED
+                    }
+                };
+                parts.push(format!(
+                    "Protein: {color}{:.1}{}/{}g",
+                    total_protein, ANSI_RESET, target
+                ));
+            }
+            if let Some(target) = config.min_fiber {
+                let color = if total_fiber >= target {
+                    ANSI_BOLD_GREEN
+                } else if !is_today {
+                    ANSI_BOLD_RED
+                } else {
+                    let ratio = total_fiber / target;
+                    if ratio >= dp {
+                        ANSI_BOLD_YELLOW
+                    } else {
+                        ANSI_BOLD_RED
+                    }
+                };
+                parts.push(format!(
+                    "Fiber: {color}{:.1}{}/{}g",
+                    total_fiber, ANSI_RESET, target
+                ));
+            }
+            if let Some(d) = deficit {
+                let color = if d >= 0.0 {
+                    ANSI_BOLD_GREEN
+                } else {
+                    ANSI_BOLD_RED
+                };
+                parts.push(format!("Deficit: {color}{:.0}{}", d, ANSI_RESET));
+            }
+            if !parts.is_empty() {
+                println!("  {}", parts.join("    "));
+            }
         }
     }
 

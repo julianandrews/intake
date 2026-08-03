@@ -18,11 +18,14 @@ pub struct LogEntry {
 #[derive(Debug, Deserialize, Serialize)]
 struct LogFile {
     entries: Vec<LogEntry>,
+    #[serde(default)]
+    exercise_calories: u32,
 }
 
 #[derive(Debug)]
 pub struct DayLog {
     pub entries: Vec<LogEntry>,
+    pub exercise_calories: u32,
 }
 
 fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
@@ -40,6 +43,7 @@ pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result
     } else {
         LogFile {
             entries: Vec::new(),
+            exercise_calories: 0,
         }
     };
 
@@ -82,7 +86,32 @@ pub fn load_day(log_dir: &Path, date: NaiveDate) -> Result<Option<DayLog>> {
 
     Ok(Some(DayLog {
         entries: log_file.entries,
+        exercise_calories: log_file.exercise_calories,
     }))
+}
+
+pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: u32) -> Result<()> {
+    let path = log_path(log_dir, date);
+
+    let mut log_file: LogFile = if path.exists() {
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read log: {}", path.display()))?;
+        toml::from_str(&content)
+            .with_context(|| format!("failed to parse log: {}", path.display()))?
+    } else {
+        LogFile {
+            entries: Vec::new(),
+            exercise_calories: 0,
+        }
+    };
+
+    log_file.exercise_calories = calories;
+
+    let content = toml::to_string(&log_file).context("failed to serialize log")?;
+    fs::write(&path, &content)
+        .with_context(|| format!("failed to write log: {}", path.display()))?;
+
+    Ok(())
 }
 
 #[cfg(test)]
