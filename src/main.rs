@@ -4,14 +4,15 @@ use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::engine::ArgValueCandidates;
 use clap_complete::{CompleteEnv, CompletionCandidate, Shell};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 const CLAP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
     .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .literal(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Green.on_default());
-use std::fs;
-use std::path::{Path, PathBuf};
 
 mod config;
 mod log;
@@ -46,11 +47,18 @@ enum Commands {
         servings: f64,
     },
     /// Show today's totals
-    Today,
+    Today {
+        /// Show entries as individual rows instead of grouping by recipe
+        #[arg(long)]
+        ungrouped: bool,
+    },
     /// Show totals for a specific date (YYYY-MM-DD)
     Log {
         #[arg(add = ArgValueCandidates::new(complete_log_dates))]
         date: String,
+        /// Show entries as individual rows instead of grouping by recipe
+        #[arg(long)]
+        ungrouped: bool,
     },
     /// Show a recipe with ingredients and per-serving values
     Show {
@@ -203,13 +211,13 @@ fn main() -> Result<()> {
         Commands::Add { recipe, servings } => {
             cmd_add(&foods_dir, &log_dir, &recipe, servings)?;
         }
-        Commands::Today => {
-            cmd_show(&foods_dir, &log_dir, Local::now().date_naive())?;
+        Commands::Today { ungrouped } => {
+            cmd_show(&foods_dir, &log_dir, Local::now().date_naive(), ungrouped)?;
         }
-        Commands::Log { date } => {
+        Commands::Log { date, ungrouped } => {
             let date = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
                 .context("date must be in YYYY-MM-DD format")?;
-            cmd_show(&foods_dir, &log_dir, date)?;
+            cmd_show(&foods_dir, &log_dir, date, ungrouped)?;
         }
         Commands::Show { recipe } => {
             cmd_show_recipe(&foods_dir, &recipe)?;
@@ -334,7 +342,7 @@ fn cmd_add(foods_dir: &Path, log_dir: &Path, slug: &str, servings: f64) -> Resul
         servings, recipe.title, date
     );
     println!();
-    cmd_show(foods_dir, log_dir, date)?;
+    cmd_show(foods_dir, log_dir, date, false)?;
 
     Ok(())
 }
@@ -349,7 +357,12 @@ fn resolve_title(foods_dir: &Path, entry: &log::LogEntry) -> Result<String> {
     Ok(recipe.title)
 }
 
-fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result<()> {
+fn cmd_show(
+    foods_dir: &Path,
+    log_dir: &Path,
+    date: chrono::NaiveDate,
+    ungrouped: bool,
+) -> Result<()> {
     let day_log = log::load_day(log_dir, date)?;
 
     match day_log {
@@ -358,33 +371,34 @@ fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result
             let mut table = Table::new(&["Item", "Servings", "Calories", "Protein(g)", "Fiber(g)"]);
             table.set_title(&date.to_string());
 
+            let rows = if ungrouped {
+                build_ungrouped_rows(foods_dir, &day_log.entries)?
+            } else {
+                build_grouped_rows(foods_dir, &day_log.entries)?
+            };
+
             let mut total_cal = 0.0;
             let mut total_protein = 0.0;
             let mut total_fiber = 0.0;
 
-            for entry in &day_log.entries {
-                let title = resolve_title(foods_dir, entry)?;
-                let cal = entry.calories as f64 * entry.servings;
-                let prot = entry.protein_g * entry.servings;
-                let fib = entry.fiber_g * entry.servings;
-
-                let serv_str = if entry.servings.fract() == 0.0 {
-                    format!("{}", entry.servings as u32)
+            for row in &rows {
+                let serv_str = if row.servings.fract() == 0.0 {
+                    format!("{}", row.servings as u32)
                 } else {
-                    format!("{:.1}", entry.servings)
+                    format!("{:.1}", row.servings)
                 };
 
                 table.add_row(vec![
-                    title,
+                    row.title.clone(),
                     serv_str,
-                    format!("{:.0}", cal),
-                    format!("{:.1}", prot),
-                    format!("{:.1}", fib),
+                    format!("{:.0}", row.calories),
+                    format!("{:.1}", row.protein_g),
+                    format!("{:.1}", row.fiber_g),
                 ]);
 
-                total_cal += cal;
-                total_protein += prot;
-                total_fiber += fib;
+                total_cal += row.calories;
+                total_protein += row.protein_g;
+                total_fiber += row.fiber_g;
             }
 
             table.add_footer(
@@ -402,6 +416,184 @@ fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result
     }
 
     Ok(())
+}
+
+struct DisplayRow {
+    title: String,
+    servings: f64,
+    calories: f64,
+    protein_g: f64,
+    fiber_g: f64,
+}
+
+fn build_ungrouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
+    let mut rows = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let title = resolve_title(foods_dir, entry)?;
+        rows.push(DisplayRow {
+            title,
+            servings: entry.servings,
+            calories: entry.calories as f64 * entry.servings,
+            protein_g: entry.protein_g * entry.servings,
+            fiber_g: entry.fiber_g * entry.servings,
+        });
+    }
+    Ok(rows)
+}
+
+fn build_grouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
+    let mut rows: Vec<DisplayRow> = Vec::new();
+    let mut slug_to_idx: HashMap<&str, usize> = HashMap::new();
+
+    for entry in entries {
+        if let Some(title) = entry.title.clone() {
+            rows.push(DisplayRow {
+                title,
+                servings: entry.servings,
+                calories: entry.calories as f64 * entry.servings,
+                protein_g: entry.protein_g * entry.servings,
+                fiber_g: entry.fiber_g * entry.servings,
+            });
+        } else if let Some(&idx) = slug_to_idx.get(entry.slug.as_str()) {
+            let row = &mut rows[idx];
+            row.servings += entry.servings;
+            row.calories += entry.calories as f64 * entry.servings;
+            row.protein_g += entry.protein_g * entry.servings;
+            row.fiber_g += entry.fiber_g * entry.servings;
+        } else {
+            let title = resolve_title(foods_dir, entry)?;
+            slug_to_idx.insert(entry.slug.as_str(), rows.len());
+            rows.push(DisplayRow {
+                title,
+                servings: entry.servings,
+                calories: entry.calories as f64 * entry.servings,
+                protein_g: entry.protein_g * entry.servings,
+                fiber_g: entry.fiber_g * entry.servings,
+            });
+        }
+    }
+
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::log::LogEntry;
+
+    fn foods_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("foods")
+    }
+
+    fn entry(slug: &str, servings: f64) -> LogEntry {
+        LogEntry {
+            slug: slug.to_string(),
+            hash: String::new(),
+            servings,
+            calories: 0,
+            protein_g: 0.0,
+            fiber_g: 0.0,
+            title: None,
+        }
+    }
+
+    fn adhoc_entry(slug: &str, title: &str, servings: f64) -> LogEntry {
+        LogEntry {
+            slug: slug.to_string(),
+            hash: String::new(),
+            servings,
+            calories: 0,
+            protein_g: 0.0,
+            fiber_g: 0.0,
+            title: Some(title.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_build_ungrouped_rows_one_per_entry() {
+        let entries = vec![
+            entry("coffee", 1.0),
+            entry("coffee", 2.0),
+            entry("oatmeal", 1.0),
+        ];
+        let rows = build_ungrouped_rows(&foods_dir(), &entries).unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_build_grouped_rows_slugs_are_merged() {
+        let entries = vec![
+            entry("coffee", 1.0),
+            entry("coffee", 2.0),
+            entry("oatmeal", 1.0),
+        ];
+        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter().find(|r| r.title == "Coffee").unwrap().servings,
+            3.0
+        );
+        assert_eq!(
+            rows.iter().find(|r| r.title == "Oatmeal").unwrap().servings,
+            1.0
+        );
+    }
+
+    #[test]
+    fn test_build_grouped_rows_adhoc_entries_not_grouped() {
+        let entries = vec![
+            adhoc_entry("cherries---155g", "Cherries - 155g", 1.0),
+            adhoc_entry("cherries---155g", "Cherries - 155g", 1.0),
+        ];
+        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn test_build_grouped_rows_mixed_adhoc_and_recipe() {
+        let entries = vec![
+            entry("coffee", 1.0),
+            entry("coffee", 1.0),
+            adhoc_entry("sour-cream---60g", "Sour Cream - 60g", 1.0),
+            entry("oatmeal", 2.0),
+        ];
+        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter().find(|r| r.title == "Coffee").unwrap().servings,
+            2.0
+        );
+        assert_eq!(
+            rows.iter().find(|r| r.title == "Oatmeal").unwrap().servings,
+            2.0
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.title == "Sour Cream - 60g")
+                .unwrap()
+                .servings,
+            1.0
+        );
+    }
+
+    #[test]
+    fn test_build_ungrouped_rows_calories_scaled_by_servings() {
+        let mut e = entry("coffee", 2.0);
+        e.calories = 24;
+        let rows = build_ungrouped_rows(&foods_dir(), &[e]).unwrap();
+        assert_eq!(rows[0].calories, 48.0);
+    }
+
+    #[test]
+    fn test_build_grouped_rows_calories_accumulated() {
+        let mut e1 = entry("coffee", 1.0);
+        e1.calories = 24;
+        let mut e2 = entry("coffee", 2.0);
+        e2.calories = 24;
+        let entries = vec![e1, e2];
+        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
+        assert_eq!(rows[0].calories, 72.0);
+    }
 }
 
 fn cmd_show_recipe(foods_dir: &Path, slug: &str) -> Result<()> {
