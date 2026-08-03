@@ -19,7 +19,7 @@ mod recipe;
 mod search;
 
 #[derive(Parser)]
-#[command(name = "diet", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
+#[command(name = "diet-tracker", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -154,7 +154,7 @@ fn completion_path(shell: &Shell) -> Result<PathBuf> {
                     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                     PathBuf::from(home).join(".local").join("share")
                 });
-            (base.join("bash-completion").join("completions"), "diet".to_string())
+            (base.join("bash-completion").join("completions"), "diet-tracker".to_string())
         }
         Shell::Zsh => {
             let base = std::env::var("XDG_DATA_HOME")
@@ -163,11 +163,11 @@ fn completion_path(shell: &Shell) -> Result<PathBuf> {
                     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                     PathBuf::from(home).join(".local").join("share")
                 });
-            (base.join("zsh").join("completions"), "_diet".to_string())
+            (base.join("zsh").join("completions"), "_diet-tracker".to_string())
         }
         Shell::Fish => {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            (PathBuf::from(home).join(".config").join("fish").join("completions"), "diet.fish".to_string())
+            (PathBuf::from(home).join(".config").join("fish").join("completions"), "diet-tracker.fish".to_string())
         }
         _ => anyhow::bail!("install not supported for {} shell", shell),
     };
@@ -188,7 +188,7 @@ fn main() -> Result<()> {
     };
 
     CompleteEnv::with_factory(Cli::command)
-        .completer("diet")
+        .completer("diet-tracker")
         .complete();
 
     let cli = Cli::parse();
@@ -227,7 +227,7 @@ fn main() -> Result<()> {
             if install {
                 let path = completion_path(&shell)?;
                 fs::create_dir_all(path.parent().context("completion path has no parent")?)?;
-                let completer = wrapper_path.as_deref().unwrap_or(Path::new("diet"));
+                let completer = wrapper_path.as_deref().unwrap_or(Path::new("diet-tracker"));
                 let output = std::process::Command::new(completer)
                     .env("COMPLETE", shell.to_string())
                     .output()
@@ -240,7 +240,7 @@ fn main() -> Result<()> {
                 println!("Installed {} completions to {}", shell, path.display());
             } else {
                 let mut cmd = Cli::command();
-                clap_complete::generate(shell, &mut cmd, "diet", &mut std::io::stdout());
+                clap_complete::generate(shell, &mut cmd, "diet-tracker", &mut std::io::stdout());
             }
         }
         Commands::Adhoc { name, servings, calories, protein, fiber } => {
