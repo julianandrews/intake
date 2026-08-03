@@ -1,8 +1,15 @@
 use anyhow::{Context, Result};
+use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{CompleteEnv, CompletionCandidate, Shell};
 use clap_complete::engine::ArgValueCandidates;
 use chrono::Local;
+
+const CLAP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
+    .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .literal(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .placeholder(AnsiColor::Green.on_default());
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,7 +19,7 @@ mod recipe;
 mod search;
 
 #[derive(Parser)]
-#[command(name = "diet", color = clap::ColorChoice::Always)]
+#[command(name = "diet", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
