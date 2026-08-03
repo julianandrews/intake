@@ -22,7 +22,6 @@ struct LogFile {
 
 #[derive(Debug)]
 pub struct DayLog {
-    pub date: NaiveDate,
     pub entries: Vec<LogEntry>,
 }
 
@@ -39,13 +38,14 @@ pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result
         toml::from_str(&content)
             .with_context(|| format!("failed to parse log: {}", path.display()))?
     } else {
-        LogFile { entries: Vec::new() }
+        LogFile {
+            entries: Vec::new(),
+        }
     };
 
     log_file.entries.push(entry.clone());
 
-    let content = toml::to_string(&log_file)
-        .context("failed to serialize log")?;
+    let content = toml::to_string(&log_file).context("failed to serialize log")?;
     fs::write(&path, &content)
         .with_context(|| format!("failed to write log: {}", path.display()))?;
 
@@ -58,7 +58,7 @@ pub fn list_log_dates(log_dir: &Path) -> Result<Vec<String>> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |e| e == "toml") {
+        if path.extension().is_some_and(|e| e == "toml") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 dates.push(stem.to_string());
             }
@@ -80,7 +80,9 @@ pub fn load_day(log_dir: &Path, date: NaiveDate) -> Result<Option<DayLog>> {
     let log_file: LogFile = toml::from_str(&content)
         .with_context(|| format!("failed to parse log: {}", path.display()))?;
 
-    Ok(Some(DayLog { date, entries: log_file.entries }))
+    Ok(Some(DayLog {
+        entries: log_file.entries,
+    }))
 }
 
 #[cfg(test)]
@@ -126,25 +128,33 @@ mod tests {
 
         let date = NaiveDate::from_ymd_opt(2026, 8, 2).unwrap();
 
-        append_entry(&dir, date, &LogEntry {
-            slug: "coffee".to_string(),
-            hash: "aaa".to_string(),
-            servings: 2.0,
-            calories: 12,
-            protein_g: 0.0,
-            fiber_g: 0.0,
-            title: None,
-        })?;
+        append_entry(
+            &dir,
+            date,
+            &LogEntry {
+                slug: "coffee".to_string(),
+                hash: "aaa".to_string(),
+                servings: 2.0,
+                calories: 12,
+                protein_g: 0.0,
+                fiber_g: 0.0,
+                title: None,
+            },
+        )?;
 
-        append_entry(&dir, date, &LogEntry {
-            slug: "oatmeal".to_string(),
-            hash: "bbb".to_string(),
-            servings: 1.0,
-            calories: 418,
-            protein_g: 22.0,
-            fiber_g: 9.0,
-            title: None,
-        })?;
+        append_entry(
+            &dir,
+            date,
+            &LogEntry {
+                slug: "oatmeal".to_string(),
+                hash: "bbb".to_string(),
+                servings: 1.0,
+                calories: 418,
+                protein_g: 22.0,
+                fiber_g: 9.0,
+                title: None,
+            },
+        )?;
 
         let loaded = load_day(&dir, date)?.expect("day log should exist");
         assert_eq!(loaded.entries.len(), 2);
@@ -166,5 +176,4 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).context("cleanup failed")
     }
-
 }

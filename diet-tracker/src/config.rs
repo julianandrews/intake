@@ -43,16 +43,16 @@ pub(crate) struct Config {
 
 #[allow(dead_code)]
 pub fn load_goals(path: &Path) -> Result<Goals> {
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("reading config: {}", path.display()))?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading config: {}", path.display()))?;
     let config: Config =
         toml::from_str(&content).with_context(|| format!("parsing config: {}", path.display()))?;
     Ok(config.goals)
 }
 
 pub fn load_config(path: &Path) -> Result<Config> {
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("reading config: {}", path.display()))?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading config: {}", path.display()))?;
     let config: Config =
         toml::from_str(&content).with_context(|| format!("parsing config: {}", path.display()))?;
     Ok(config)

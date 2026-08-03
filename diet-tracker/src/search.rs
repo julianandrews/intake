@@ -43,13 +43,16 @@ pub fn find_fills(config: &FillConfig) -> Result<Vec<FillResult>> {
         .into_iter()
         .filter(|(path, _)| {
             let slug = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            !config.exclude.iter().any(|e| e == slug)
-                || config.include.iter().any(|e| e == slug)
+            !config.exclude.iter().any(|e| e == slug) || config.include.iter().any(|e| e == slug)
         })
         .map(|(path, recipe)| {
             let ps = recipe.per_serving();
             RecipeInfo {
-                slug: path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string(),
+                slug: path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string(),
                 title: recipe.title,
                 cal: ps.calories,
                 prot: ps.protein_g,
@@ -67,12 +70,22 @@ pub fn find_fills(config: &FillConfig) -> Result<Vec<FillResult>> {
     info.sort_by(|a, b| {
         let a_inc = config.include.iter().any(|e| e == &a.slug);
         let b_inc = config.include.iter().any(|e| e == &b.slug);
-        let eff_a = if a.cal > 0 { (a.prot + a.fib) / a.cal as f64 } else { f64::MAX };
-        let eff_b = if b.cal > 0 { (b.prot + b.fib) / b.cal as f64 } else { f64::MAX };
+        let eff_a = if a.cal > 0 {
+            (a.prot + a.fib) / a.cal as f64
+        } else {
+            f64::MAX
+        };
+        let eff_b = if b.cal > 0 {
+            (b.prot + b.fib) / b.cal as f64
+        } else {
+            f64::MAX
+        };
         match (a_inc, b_inc) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => eff_b.partial_cmp(&eff_a).unwrap_or(std::cmp::Ordering::Equal),
+            _ => eff_b
+                .partial_cmp(&eff_a)
+                .unwrap_or(std::cmp::Ordering::Equal),
         }
     });
 
@@ -81,7 +94,11 @@ pub fn find_fills(config: &FillConfig) -> Result<Vec<FillResult>> {
     let mut max_fib_per_cal = vec![0.0; n];
     for i in (0..n).rev() {
         let r = &info[i];
-        let ppc = if r.cal > 0 { r.prot / r.cal as f64 } else { 0.0 };
+        let ppc = if r.cal > 0 {
+            r.prot / r.cal as f64
+        } else {
+            0.0
+        };
         let fpc = if r.cal > 0 { r.fib / r.cal as f64 } else { 0.0 };
         max_prot_per_cal[i] = ppc.max(*max_prot_per_cal.get(i + 1).unwrap_or(&0.0));
         max_fib_per_cal[i] = fpc.max(*max_fib_per_cal.get(i + 1).unwrap_or(&0.0));
@@ -97,6 +114,7 @@ pub fn find_fills(config: &FillConfig) -> Result<Vec<FillResult>> {
         fib: f64,
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn backtrack(
         idx: usize,
         state: &mut State,
@@ -133,16 +151,26 @@ pub fn find_fills(config: &FillConfig) -> Result<Vec<FillResult>> {
         }
 
         let r = &info[idx];
+        #[allow(clippy::manual_checked_ops)]
         let max_s = if r.cal > 0 {
             std::cmp::min(rem_cal / r.cal, config.max_servings_per_recipe)
         } else {
             0
         };
-        let min_s = if config.include.iter().any(|e| e == &r.slug) { 1 } else { 0 };
+        let min_s = if config.include.iter().any(|e| e == &r.slug) {
+            1
+        } else {
+            0
+        };
 
         for s in (min_s..=max_s).rev() {
-            let cal_delta = s.checked_mul(r.cal).context("calorie calculation overflow")?;
-            let new_cal = state.cal.checked_add(cal_delta).context("calorie calculation overflow")?;
+            let cal_delta = s
+                .checked_mul(r.cal)
+                .context("calorie calculation overflow")?;
+            let new_cal = state
+                .cal
+                .checked_add(cal_delta)
+                .context("calorie calculation overflow")?;
             if new_cal > config.max_calories {
                 continue;
             }
@@ -158,14 +186,22 @@ pub fn find_fills(config: &FillConfig) -> Result<Vec<FillResult>> {
             }
 
             backtrack(
-                idx + 1, state, config, info,
-                max_prot_per_cal, max_fib_per_cal,
-                solutions, nodes,
+                idx + 1,
+                state,
+                config,
+                info,
+                max_prot_per_cal,
+                max_fib_per_cal,
+                solutions,
+                nodes,
             )?;
 
             if s > 0 {
                 state.selections.pop();
-                state.cal = state.cal.checked_sub(cal_delta).context("calorie calculation underflow")?;
+                state.cal = state
+                    .cal
+                    .checked_sub(cal_delta)
+                    .context("calorie calculation underflow")?;
                 state.prot -= s as f64 * r.prot;
                 state.fib -= s as f64 * r.fib;
             }
@@ -182,16 +218,21 @@ pub fn find_fills(config: &FillConfig) -> Result<Vec<FillResult>> {
     };
 
     backtrack(
-        0, &mut state, config, &info,
-        &max_prot_per_cal, &max_fib_per_cal,
-        &mut solutions, &mut nodes,
+        0,
+        &mut state,
+        config,
+        &info,
+        &max_prot_per_cal,
+        &max_fib_per_cal,
+        &mut solutions,
+        &mut nodes,
     )?;
 
     solutions.sort_by(|a, b| {
-        let a_ok = a.total_protein_g >= config.min_protein_g
-            && a.total_fiber_g >= config.min_fiber_g;
-        let b_ok = b.total_protein_g >= config.min_protein_g
-            && b.total_fiber_g >= config.min_fiber_g;
+        let a_ok =
+            a.total_protein_g >= config.min_protein_g && a.total_fiber_g >= config.min_fiber_g;
+        let b_ok =
+            b.total_protein_g >= config.min_protein_g && b.total_fiber_g >= config.min_fiber_g;
         match (a_ok, b_ok) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
@@ -223,7 +264,15 @@ mod tests {
     use std::fs;
     use std::io::Write;
 
-    fn temp_recipe(dir: &Path, slug: &str, title: &str, servings: u32, cal: u32, prot: f64, fib: f64) {
+    fn temp_recipe(
+        dir: &Path,
+        slug: &str,
+        title: &str,
+        servings: u32,
+        cal: u32,
+        prot: f64,
+        fib: f64,
+    ) {
         let path = dir.join(format!("{}.toml", slug));
         let toml = format!(
             r#"title = "{}"
@@ -405,7 +454,10 @@ calories = {}
         };
 
         let results = find_fills(&config)?;
-        assert!(!results.is_empty(), "should find combos with included recipe");
+        assert!(
+            !results.is_empty(),
+            "should find combos with included recipe"
+        );
         for r in &results {
             let has_included = r.selections.iter().any(|s| s.title == "Must Have");
             assert!(has_included, "every solution must include 'Must Have'");

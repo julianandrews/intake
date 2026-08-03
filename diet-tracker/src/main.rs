@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
+use chrono::Local;
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{CommandFactory, Parser, Subcommand};
-use clap_complete::{CompleteEnv, CompletionCandidate, Shell};
 use clap_complete::engine::ArgValueCandidates;
-use chrono::Local;
+use clap_complete::{CompleteEnv, CompletionCandidate, Shell};
 
 const CLAP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
@@ -17,6 +17,7 @@ mod config;
 mod log;
 mod recipe;
 mod search;
+use recipe::Table;
 
 #[derive(Parser)]
 #[command(name = "diet-tracker", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
@@ -119,7 +120,9 @@ fn complete_recipes() -> Vec<CompletionCandidate> {
     let dir = std::env::var("DIET_FOODS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("foods")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("foods")
         });
     match recipe::list_recipe_slugs(&dir) {
         Ok(slugs) => slugs.into_iter().map(CompletionCandidate::new).collect(),
@@ -134,7 +137,9 @@ fn complete_log_dates() -> Vec<CompletionCandidate> {
     let dir = std::env::var("DIET_LOG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("log")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("log")
         });
     match log::list_log_dates(&dir) {
         Ok(dates) => dates.into_iter().map(CompletionCandidate::new).collect(),
@@ -154,7 +159,10 @@ fn completion_path(shell: &Shell) -> Result<PathBuf> {
                     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                     PathBuf::from(home).join(".local").join("share")
                 });
-            (base.join("bash-completion").join("completions"), "diet-tracker".to_string())
+            (
+                base.join("bash-completion").join("completions"),
+                "diet-tracker".to_string(),
+            )
         }
         Shell::Zsh => {
             let base = std::env::var("XDG_DATA_HOME")
@@ -163,11 +171,20 @@ fn completion_path(shell: &Shell) -> Result<PathBuf> {
                     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                     PathBuf::from(home).join(".local").join("share")
                 });
-            (base.join("zsh").join("completions"), "_diet-tracker".to_string())
+            (
+                base.join("zsh").join("completions"),
+                "_diet-tracker".to_string(),
+            )
         }
         Shell::Fish => {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            (PathBuf::from(home).join(".config").join("fish").join("completions"), "diet-tracker.fish".to_string())
+            (
+                PathBuf::from(home)
+                    .join(".config")
+                    .join("fish")
+                    .join("completions"),
+                "diet-tracker.fish".to_string(),
+            )
         }
         _ => anyhow::bail!("install not supported for {} shell", shell),
     };
@@ -243,18 +260,60 @@ fn main() -> Result<()> {
                 clap_complete::generate(shell, &mut cmd, "diet-tracker", &mut std::io::stdout());
             }
         }
-        Commands::Adhoc { name, servings, calories, protein, fiber } => {
-            cmd_adhoc(&log_dir, &name, servings.unwrap_or(1.0), calories, protein, fiber)?;
+        Commands::Adhoc {
+            name,
+            servings,
+            calories,
+            protein,
+            fiber,
+        } => {
+            cmd_adhoc(
+                &log_dir,
+                &name,
+                servings.unwrap_or(1.0),
+                calories,
+                protein,
+                fiber,
+            )?;
         }
-        Commands::Fill { max_cal, min_protein, min_fiber, limit, exclude, include, max_servings, remaining, config } => {
-            cmd_fill(&foods_dir, &log_dir, max_cal, min_protein, min_fiber, limit, &exclude, &include, max_servings, remaining, config)?;
+        Commands::Fill {
+            max_cal,
+            min_protein,
+            min_fiber,
+            limit,
+            exclude,
+            include,
+            max_servings,
+            remaining,
+            config,
+        } => {
+            cmd_fill(
+                &foods_dir,
+                &log_dir,
+                max_cal,
+                min_protein,
+                min_fiber,
+                limit,
+                &exclude,
+                &include,
+                max_servings,
+                remaining,
+                config,
+            )?;
         }
     }
 
     Ok(())
 }
 
-fn cmd_adhoc(log_dir: &Path, name: &str, servings: f64, calories: u32, protein_g: f64, fiber_g: f64) -> Result<()> {
+fn cmd_adhoc(
+    log_dir: &Path,
+    name: &str,
+    servings: f64,
+    calories: u32,
+    protein_g: f64,
+    fiber_g: f64,
+) -> Result<()> {
     let entry = log::LogEntry {
         slug: name.to_lowercase().replace(' ', "-"),
         hash: String::new(),
@@ -293,7 +352,10 @@ fn cmd_add(foods_dir: &Path, log_dir: &Path, slug: &str, servings: f64) -> Resul
     let date = Local::now().date_naive();
     log::append_entry(log_dir, date, &entry)?;
 
-    println!("Added {} servings of {} to {}", servings, recipe.title, date);
+    println!(
+        "Added {} servings of {} to {}",
+        servings, recipe.title, date
+    );
     println!();
     cmd_show(foods_dir, log_dir, date)?;
 
@@ -310,27 +372,15 @@ fn resolve_title(foods_dir: &Path, entry: &log::LogEntry) -> Result<String> {
     Ok(recipe.title)
 }
 
-const ANSI_RESET: &str = "\x1b[0m";
-const ANSI_CYAN: &str = "\x1b[36m";
-const ANSI_BOLD_CYAN: &str = "\x1b[1;36m";
-const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
-const ANSI_BOLD_GREEN: &str = "\x1b[1;32m";
-
 fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result<()> {
     let day_log = log::load_day(log_dir, date)?;
 
     match day_log {
         None => println!("No entries for {}", date),
         Some(day_log) => {
-            struct Row {
-                title: String,
-                serv_str: String,
-                cal_str: String,
-                prot_str: String,
-                fib_str: String,
-            }
+            let mut table = Table::new(&["Item", "Servings", "Calories", "Protein(g)", "Fiber(g)"]);
+            table.set_title(&date.to_string());
 
-            let mut rows: Vec<Row> = Vec::new();
             let mut total_cal = 0.0;
             let mut total_protein = 0.0;
             let mut total_fiber = 0.0;
@@ -347,58 +397,30 @@ fn cmd_show(foods_dir: &Path, log_dir: &Path, date: chrono::NaiveDate) -> Result
                     format!("{:.1}", entry.servings)
                 };
 
-                rows.push(Row {
+                table.add_row(vec![
                     title,
                     serv_str,
-                    cal_str: format!("{:.0}", cal),
-                    prot_str: format!("{:.1}", prot),
-                    fib_str: format!("{:.1}", fib),
-                });
+                    format!("{:.0}", cal),
+                    format!("{:.1}", prot),
+                    format!("{:.1}", fib),
+                ]);
 
                 total_cal += cal;
                 total_protein += prot;
                 total_fiber += fib;
             }
 
-            let c_title = rows.iter().map(|r| r.title.len()).chain([5, 4]).max().unwrap();
-            let c_serv = rows.iter().map(|r| r.serv_str.len()).chain([7, 8]).max().unwrap();
-            let c_cal = rows.iter().map(|r| r.cal_str.len()).chain([3, 8]).max().unwrap();
-            let c_prot = rows.iter().map(|r| r.prot_str.len()).chain([5, 10]).max().unwrap();
-            let c_fib = rows.iter().map(|r| r.fib_str.len()).chain([4, 8]).max().unwrap();
-
-            let sep_width = 2 + c_title + 1 + c_serv + 2 + c_cal + 2 + c_prot + 2 + c_fib;
-
-            println!("{ANSI_BOLD_CYAN}{}{ANSI_RESET}", day_log.date);
-            println!("{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width));
-
-            println!(
-                "  {ANSI_BOLD_YELLOW}{:<t$} {:>s$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
-                "Item", "Servings", "Calories", "Protein(g)", "Fiber(g)",
-                t = c_title, s = c_serv, c = c_cal, p = c_prot, f = c_fib
-            );
-            println!(
-                "  {ANSI_CYAN}{:<t$} {:>s$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
-                "-".repeat(c_title), "-".repeat(c_serv), "-".repeat(c_cal), "-".repeat(c_prot), "-".repeat(c_fib),
-                t = c_title, s = c_serv, c = c_cal, p = c_prot, f = c_fib
+            table.add_footer(
+                "TOTAL",
+                vec![
+                    String::new(),
+                    format!("{:.0}", total_cal),
+                    format!("{:.1}", total_protein),
+                    format!("{:.1}", total_fiber),
+                ],
             );
 
-            for row in &rows {
-                println!(
-                    "  {:<t$} {:>s$}  {:>c$}  {:>p$}  {:>f$}",
-                    row.title, row.serv_str, row.cal_str, row.prot_str, row.fib_str,
-                    t = c_title, s = c_serv, c = c_cal, p = c_prot, f = c_fib
-                );
-            }
-
-            println!("{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width));
-            let total_cal_str = format!("{:.0}", total_cal);
-            let total_prot_str = format!("{:.1}", total_protein);
-            let total_fib_str = format!("{:.1}", total_fiber);
-            println!(
-                "  {ANSI_BOLD_GREEN}{:<t$} {:>s$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
-                "TOTAL", "", total_cal_str, total_prot_str, total_fib_str,
-                t = c_title, s = c_serv, c = c_cal, p = c_prot, f = c_fib
-            );
+            println!("{}", table.format());
         }
     }
 
@@ -416,24 +438,25 @@ fn cmd_show_recipe(foods_dir: &Path, slug: &str) -> Result<()> {
 fn cmd_list(foods_dir: &Path) -> Result<()> {
     let recipes = recipe::find_all_recipes(foods_dir)?;
 
-    println!("{:<24} {:>8} {:>8} {:>6} {:>5}", "Recipe", "Servings", "Cal/serv", "Prot", "Fiber");
-    println!("{}", "-".repeat(55));
+    let mut table = Table::new(&["Recipe", "Servings", "Cal/serv", "Protein(g)", "Fiber(g)"]);
+    table.set_title("All Recipes");
 
     for (_, recipe) in &recipes {
         let ps = recipe.per_serving();
-        println!(
-            "{:<24} {:>8} {:>8} {:>5.1}g {:>4.1}g",
-            recipe.title,
-            recipe.servings,
-            ps.calories,
-            ps.protein_g,
-            ps.fiber_g,
-        );
+        table.add_row(vec![
+            recipe.title.clone(),
+            recipe.servings.to_string(),
+            ps.calories.to_string(),
+            format!("{:.1}g", ps.protein_g),
+            format!("{:.1}g", ps.fiber_g),
+        ]);
     }
 
+    println!("{}", table.format());
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_fill(
     foods_dir: &Path,
     log_dir: &Path,
@@ -448,7 +471,10 @@ fn cmd_fill(
     config_path: Option<PathBuf>,
 ) -> Result<()> {
     let config_path = config_path.unwrap_or_else(|| {
-        let base = foods_dir.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let base = foods_dir
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
         base.join("diet-config.toml")
     });
 
@@ -465,7 +491,11 @@ fn cmd_fill(
         let day_log = log::load_day(log_dir, today)?;
         let (consumed_cal, consumed_prot, consumed_fib) = match day_log {
             Some(log) => {
-                let cal: u32 = log.entries.iter().map(|e| (e.calories as f64 * e.servings).round() as u32).sum();
+                let cal: u32 = log
+                    .entries
+                    .iter()
+                    .map(|e| (e.calories as f64 * e.servings).round() as u32)
+                    .sum();
                 let prot: f64 = log.entries.iter().map(|e| e.protein_g * e.servings).sum();
                 let fib: f64 = log.entries.iter().map(|e| e.fiber_g * e.servings).sum();
                 (cal, prot, fib)

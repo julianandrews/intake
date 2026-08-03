@@ -11,6 +11,154 @@ const ANSI_BOLD_CYAN: &str = "\x1b[1;36m";
 const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
 const ANSI_BOLD_GREEN: &str = "\x1b[1;32m";
 
+#[derive(Debug, Clone)]
+pub enum Align {
+    Left,
+    Right,
+}
+
+#[derive(Debug)]
+pub struct Table {
+    headers: Vec<String>,
+    align: Vec<Align>,
+    rows: Vec<Vec<String>>,
+    title: Option<String>,
+    footers: Vec<(String, Vec<String>)>,
+}
+
+fn format_cells(cells: &[String], widths: &[usize], align: &[Align]) -> String {
+    let mut line = String::new();
+    for (i, (cell, width)) in cells.iter().zip(widths).enumerate() {
+        match align[i] {
+            Align::Left => write!(line, "{:<w$}", cell, w = width).unwrap(),
+            Align::Right => write!(line, "{:>w$}", cell, w = width).unwrap(),
+        }
+        if i == 0 {
+            line.push(' ');
+        } else if i < cells.len() - 1 {
+            line.push_str("  ");
+        }
+    }
+    line
+}
+
+impl Table {
+    pub fn new(headers: &[&str]) -> Self {
+        let n = headers.len();
+        let mut align = vec![Align::Right; n];
+        if n > 0 {
+            align[0] = Align::Left;
+        }
+        Table {
+            headers: headers.iter().map(|h| h.to_string()).collect(),
+            align,
+            rows: Vec::new(),
+            title: None,
+            footers: Vec::new(),
+        }
+    }
+
+    pub fn with_align(headers: &[&str], align: &[Align]) -> Self {
+        Table {
+            headers: headers.iter().map(|h| h.to_string()).collect(),
+            align: align.to_vec(),
+            rows: Vec::new(),
+            title: None,
+            footers: Vec::new(),
+        }
+    }
+
+    pub fn add_row(&mut self, cells: Vec<String>) {
+        self.rows.push(cells);
+    }
+
+    pub fn set_title(&mut self, title: &str) {
+        self.title = Some(title.to_string());
+    }
+
+    pub fn add_footer(&mut self, label: &str, cells: Vec<String>) {
+        assert_eq!(
+            cells.len(),
+            self.headers.len() - 1,
+            "add_footer expects {} cells (one per data column), got {}",
+            self.headers.len() - 1,
+            cells.len()
+        );
+        self.footers.push((label.to_string(), cells));
+    }
+
+    fn col_widths(&self) -> Vec<usize> {
+        let mut widths: Vec<usize> = self.headers.iter().map(|h| h.len()).collect();
+        for row in &self.rows {
+            for (i, cell) in row.iter().enumerate() {
+                widths[i] = widths[i].max(cell.len());
+            }
+        }
+        for (label, cells) in &self.footers {
+            widths[0] = widths[0].max(label.len());
+            for (i, cell) in cells.iter().enumerate() {
+                widths[i] = widths[i].max(cell.len());
+            }
+        }
+        widths
+    }
+
+    pub fn format(&self) -> String {
+        let widths = self.col_widths();
+        let n = widths.len();
+        let sep_total = if n <= 1 { 0 } else { 1 + 2 * (n - 2) };
+        let sep_width = 2 + widths.iter().sum::<usize>() + sep_total;
+
+        let mut out = String::new();
+
+        if let Some(title) = &self.title {
+            writeln!(out, "{ANSI_BOLD_CYAN}{title}{ANSI_RESET}").unwrap();
+        }
+
+        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
+
+        writeln!(
+            out,
+            "  {ANSI_BOLD_YELLOW}{}{ANSI_RESET}",
+            format_cells(&self.headers, &widths, &self.align)
+        )
+        .unwrap();
+
+        let dash_cells: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
+        writeln!(
+            out,
+            "  {ANSI_CYAN}{}{ANSI_RESET}",
+            format_cells(&dash_cells, &widths, &self.align)
+        )
+        .unwrap();
+
+        for row in &self.rows {
+            writeln!(out, "  {}", format_cells(row, &widths, &self.align)).unwrap();
+        }
+
+        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
+
+        for (i, (label, cells)) in self.footers.iter().enumerate() {
+            let mut full_row = vec![label.clone()];
+            full_row.extend(cells.iter().cloned());
+
+            let ansi = if i == 0 {
+                ANSI_BOLD_GREEN
+            } else {
+                ANSI_BOLD_CYAN
+            };
+            writeln!(
+                out,
+                "  {ansi}{}{ANSI_RESET}",
+                format_cells(&full_row, &widths, &self.align)
+            )
+            .unwrap();
+        }
+
+        out
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct Ingredient {
@@ -55,78 +203,64 @@ impl Recipe {
     }
 
     pub fn display(&self) -> String {
-        let serving_label = if self.servings == 1 { "serving" } else { "servings" };
-        let mut out = format!("{ANSI_BOLD_CYAN}{} ({} {}){ANSI_RESET}\n", self.title, self.servings, serving_label);
+        let serving_label = if self.servings == 1 {
+            "serving"
+        } else {
+            "servings"
+        };
 
-        let c_ing = self.ingredients.iter()
-            .map(|i| i.name.len()).chain([10, 5, 11]).max().unwrap();
-        let c_qty = self.ingredients.iter()
-            .filter_map(|i| i.quantity.as_deref().map(|q| q.len()))
-            .chain([6]).max().unwrap();
-        let c_cal = self.ingredients.iter()
-            .map(|i| i.calories.to_string().len()).chain([3, 8]).max().unwrap();
-        let c_prot = self.ingredients.iter()
-            .map(|i| format!("{:.1}g", i.protein_g).len()).chain([7, 10]).max().unwrap();
-        let c_fib = self.ingredients.iter()
-            .map(|i| format!("{:.1}g", i.fiber_g).len()).chain([5, 8]).max().unwrap();
-
-        let sep_width = 2 + c_ing + 1 + c_qty + 2 + c_cal + 2 + c_prot + 2 + c_fib;
-
-        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
-
-        writeln!(
-            out,
-            "  {ANSI_BOLD_YELLOW}{:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
-            "Ingredient", "Amount", "Calories", "Protein(g)", "Fiber(g)",
-            i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
-        ).unwrap();
-
-        writeln!(
-            out,
-            "  {ANSI_CYAN}{:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
-            "-".repeat(c_ing), "-".repeat(c_qty), "-".repeat(c_cal), "-".repeat(c_prot), "-".repeat(c_fib),
-            i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
-        ).unwrap();
+        let mut table = Table::with_align(
+            &["Ingredient", "Amount", "Calories", "Protein(g)", "Fiber(g)"],
+            &[
+                Align::Left,
+                Align::Left,
+                Align::Right,
+                Align::Right,
+                Align::Right,
+            ],
+        );
+        table.set_title(&format!(
+            "{} ({} {})",
+            self.title, self.servings, serving_label
+        ));
 
         for ing in &self.ingredients {
-            let qty = ing.quantity.as_deref().unwrap_or("-");
-            let prot = format!("{:.1}g", ing.protein_g);
-            let fib = format!("{:.1}g", ing.fiber_g);
-            writeln!(
-                out,
-                "  {:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}",
-                ing.name, qty, ing.calories, prot, fib,
-                i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
-            ).unwrap();
+            let qty = ing.quantity.as_deref().unwrap_or("-").to_string();
+            table.add_row(vec![
+                ing.name.clone(),
+                qty,
+                ing.calories.to_string(),
+                format!("{:.1}g", ing.protein_g),
+                format!("{:.1}g", ing.fiber_g),
+            ]);
         }
-
-        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
 
         let total_cal: u32 = self.ingredients.iter().map(|i| i.calories).sum();
         let total_protein: f64 = self.ingredients.iter().map(|i| i.protein_g).sum();
         let total_fiber: f64 = self.ingredients.iter().map(|i| i.fiber_g).sum();
-        let total_prot_str = format!("{:.1}g", total_protein);
-        let total_fib_str = format!("{:.1}g", total_fiber);
 
-        writeln!(
-            out,
-            "  {ANSI_BOLD_GREEN}{:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
-            "Total", "", total_cal, total_prot_str, total_fib_str,
-            i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
-        ).unwrap();
+        table.add_footer(
+            "Total",
+            vec![
+                String::new(),
+                total_cal.to_string(),
+                format!("{:.1}g", total_protein),
+                format!("{:.1}g", total_fiber),
+            ],
+        );
 
         let ps = self.per_serving();
-        let ps_prot_str = format!("{:.1}g", ps.protein_g);
-        let ps_fib_str = format!("{:.1}g", ps.fiber_g);
+        table.add_footer(
+            "Per serving",
+            vec![
+                String::new(),
+                ps.calories.to_string(),
+                format!("{:.1}g", ps.protein_g),
+                format!("{:.1}g", ps.fiber_g),
+            ],
+        );
 
-        writeln!(
-            out,
-            "  {ANSI_BOLD_CYAN}{:<i$} {:<q$}  {:>c$}  {:>p$}  {:>f$}{ANSI_RESET}",
-            "Per serving", "", ps.calories, ps_prot_str, ps_fib_str,
-            i = c_ing, q = c_qty, c = c_cal, p = c_prot, f = c_fib
-        ).unwrap();
-
-        out
+        table.format()
     }
 }
 
@@ -136,7 +270,7 @@ fn toml_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |e| e == "toml") {
+        if path.extension().is_some_and(|e| e == "toml") {
             files.push(path);
         }
     }
@@ -255,10 +389,7 @@ mod tests {
 
     #[test]
     fn test_slug_from_path_no_extension() {
-        assert_eq!(
-            slug_from_path(Path::new("foo")),
-            Some("foo".to_string())
-        );
+        assert_eq!(slug_from_path(Path::new("foo")), Some("foo".to_string()));
     }
 
     #[test]
