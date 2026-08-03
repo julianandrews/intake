@@ -20,7 +20,7 @@ mod search;
 use recipe::Table;
 
 #[derive(Parser)]
-#[command(name = "diet-tracker", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
+#[command(name = "intake", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -117,13 +117,9 @@ enum Commands {
 }
 
 fn complete_recipes() -> Vec<CompletionCandidate> {
-    let dir = std::env::var("DIET_FOODS_DIR")
+    let dir = std::env::var("INTAKE_FOODS_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("foods")
-        });
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("foods"));
     match recipe::list_recipe_slugs(&dir) {
         Ok(slugs) => slugs.into_iter().map(CompletionCandidate::new).collect(),
         Err(e) => {
@@ -134,13 +130,9 @@ fn complete_recipes() -> Vec<CompletionCandidate> {
 }
 
 fn complete_log_dates() -> Vec<CompletionCandidate> {
-    let dir = std::env::var("DIET_LOG_DIR")
+    let dir = std::env::var("INTAKE_LOG_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("log")
-        });
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("log"));
     match log::list_log_dates(&dir) {
         Ok(dates) => dates.into_iter().map(CompletionCandidate::new).collect(),
         Err(e) => {
@@ -161,7 +153,7 @@ fn completion_path(shell: &Shell) -> Result<PathBuf> {
                 });
             (
                 base.join("bash-completion").join("completions"),
-                "diet-tracker".to_string(),
+                "intake".to_string(),
             )
         }
         Shell::Zsh => {
@@ -171,10 +163,7 @@ fn completion_path(shell: &Shell) -> Result<PathBuf> {
                     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                     PathBuf::from(home).join(".local").join("share")
                 });
-            (
-                base.join("zsh").join("completions"),
-                "_diet-tracker".to_string(),
-            )
+            (base.join("zsh").join("completions"), "_intake".to_string())
         }
         Shell::Fish => {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -183,7 +172,7 @@ fn completion_path(shell: &Shell) -> Result<PathBuf> {
                     .join(".config")
                     .join("fish")
                     .join("completions"),
-                "diet-tracker.fish".to_string(),
+                "intake.fish".to_string(),
             )
         }
         _ => anyhow::bail!("install not supported for {} shell", shell),
@@ -192,34 +181,22 @@ fn completion_path(shell: &Shell) -> Result<PathBuf> {
 }
 
 fn main() -> Result<()> {
-    let wrapper_path = {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("diet");
-        if p.is_file() {
-            Some(p)
-        } else {
-            None
-        }
-    };
-
     CompleteEnv::with_factory(Cli::command)
-        .completer("diet-tracker")
+        .completer("intake")
         .complete();
 
     let cli = Cli::parse();
 
     let foods_dir = cli.foods_dir.unwrap_or_else(|| {
-        std::env::var("DIET_FOODS_DIR")
+        std::env::var("INTAKE_FOODS_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("../foods"))
+            .unwrap_or_else(|_| PathBuf::from("foods"))
     });
 
     let log_dir = cli.log_dir.unwrap_or_else(|| {
-        std::env::var("DIET_LOG_DIR")
+        std::env::var("INTAKE_LOG_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("../log"))
+            .unwrap_or_else(|_| PathBuf::from("log"))
     });
 
     match cli.command {
@@ -244,7 +221,7 @@ fn main() -> Result<()> {
             if install {
                 let path = completion_path(&shell)?;
                 fs::create_dir_all(path.parent().context("completion path has no parent")?)?;
-                let completer = wrapper_path.as_deref().unwrap_or(Path::new("diet-tracker"));
+                let completer = Path::new("intake");
                 let output = std::process::Command::new(completer)
                     .env("COMPLETE", shell.to_string())
                     .output()
@@ -257,7 +234,7 @@ fn main() -> Result<()> {
                 println!("Installed {} completions to {}", shell, path.display());
             } else {
                 let mut cmd = Cli::command();
-                clap_complete::generate(shell, &mut cmd, "diet-tracker", &mut std::io::stdout());
+                clap_complete::generate(shell, &mut cmd, "intake", &mut std::io::stdout());
             }
         }
         Commands::Adhoc {
@@ -475,7 +452,7 @@ fn cmd_fill(
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        base.join("diet-config.toml")
+        base.join("intake-config.toml")
     });
 
     let cfg_result = config::load_config(&config_path);
@@ -484,7 +461,7 @@ fn cmd_fill(
     let max_results = search_cfg.map(|c| c.search.max_results).unwrap_or(1000);
 
     let (max_calories, min_protein, min_fiber) = if remaining {
-        let cfg = cfg_result.context("config required for --remaining mode (provide --config or place diet-config.toml alongside foods dir)")?;
+        let cfg = cfg_result.context("config required for --remaining mode (provide --config or place intake-config.toml alongside foods dir)")?;
         let goals = &cfg.goals;
 
         let today = chrono::Local::now().date_naive();

@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn test_log_entry_roundtrip() -> Result<()> {
-        let dir = std::env::temp_dir().join("diet-test-log");
+        let dir = std::env::temp_dir().join("intake-test-log");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
 
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_log_entry_append_multiple() -> Result<()> {
-        let dir = std::env::temp_dir().join("diet-test-log-multi");
+        let dir = std::env::temp_dir().join("intake-test-log-multi");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
 
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_day() -> Result<()> {
-        let dir = std::env::temp_dir().join("diet-test-nonexistent");
+        let dir = std::env::temp_dir().join("intake-test-nonexistent");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
 
