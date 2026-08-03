@@ -191,7 +191,6 @@ impl Table {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct Ingredient {
     pub name: String,
     pub quantity: Option<String>,

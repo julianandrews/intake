@@ -3,10 +3,10 @@
 This project is a CLI diet tracker. Use the `intake` binary for all operations —
 run `intake --help` to see available subcommands and flags.
 
+## Adding a Recipe
 
-                                                              ## Adding a Recipe
-
-Create a `.toml` file in `foods/`. The filename (minus `.toml`) becomes the recipe slug.
+Create a `.toml` file in your foods directory. The filename (minus `.toml`)
+becomes the recipe slug.
 
 The file must match the `Recipe` and `Ingredient` structs in `src/recipe.rs`:
 
@@ -19,7 +19,8 @@ The file must match the `Recipe` and `Ingredient` structs in `src/recipe.rs`:
   - `fiber_g` (float or int)
   - `calories` (int)
 
-See `foods/cheesy-popcorn.toml` for a simple example, or `foods/turkey-chili.toml` for a multi-ingredient one.
+See `foods/cheesy-popcorn.toml` for a simple example, or `foods/turkey-chili.toml`
+for a multi-ingredient one.
 
 The `content_hash` field is computed automatically at load time — do not include it.
 
@@ -32,12 +33,39 @@ intake adhoc --calories N --protein N --fiber N <name> [servings]
 ```
 
 - Macros are specified inline — no recipe file needed
-- The entry is appended to today's log in `log/YYYY-MM-DD.toml`
+- The entry is appended to today's log
 - Slug is auto-derived from the name (lowercased, spaces → hyphens)
-- Check existing entries in `log/` for the exact TOML format to follow (especially adhoc entries with a `title` field)
-- See existing examples in `log/2026-08-01.toml` and `log/2026-08-02.toml`
+- Check existing entries in `log/` for the exact TOML format to follow
+  (especially adhoc entries with a `title` field)
 - Implementation: `src/main.rs` function `cmd_adhoc`
-- When you need to look up macros for a food, use `websearch` to find reliable nutrition data (e.g. from the USDA). Prefer data per 100g and scale by the serving size.
+- When you need to look up macros for a food, use `websearch` to find reliable
+  nutrition data (e.g. from the USDA). Prefer data per 100g and scale by the
+  serving size.
+
+## Configuration
+
+The config file lives at `~/.config/intake/config.toml`. Supported fields:
+
+- `foods_dir` / `log_dir` — override default data directories
+- `max_calories` — daily calorie target (u32)
+- `min_protein` — daily protein target in grams (f64)
+- `min_fiber` — daily fiber target in grams (f64)
+- `maintenance_calories` — TDEE for deficit calculation (u32)
+
+Paths can also be set via `INTAKE_FOODS_DIR` / `INTAKE_LOG_DIR` env vars, or
+`--foods-dir` / `--log-dir` CLI flags. Resolution order:
+config file → env var → CLI flag.
+
+The `Config` struct and its resolution logic live in `src/config.rs`.
+
+## Exercising
+
+```
+intake exercise 300
+```
+
+Records calories burned for today. Shows up in the log view as a red positive
+number subtracted from your TDEE for deficit calculation.
 
 ## Code Quality
 
