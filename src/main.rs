@@ -388,15 +388,13 @@ fn cmd_log(
                 total_fiber += row.fiber_g;
             }
 
-            table.add_footer(
-                "Total",
-                vec![
-                    String::new(),
-                    format!("{:.0}", total_cal),
-                    format!("{:.1}", total_protein),
-                    format!("{:.1}", total_fiber),
-                ],
-            );
+            table.add_footer(vec![
+                "Total".to_string(),
+                String::new(),
+                format!("{:.0}", total_cal),
+                format!("{:.1}", total_protein),
+                format!("{:.1}", total_fiber),
+            ]);
 
             let net_cal = total_cal - day_log.exercise_calories as f64;
 

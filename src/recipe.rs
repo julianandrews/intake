@@ -80,26 +80,22 @@ impl Recipe {
 
         let t = self.totals();
 
-        table.add_footer(
-            "Total",
-            vec![
-                String::new(),
-                t.calories.to_string(),
-                format!("{:.1}g", t.protein_g),
-                format!("{:.1}g", t.fiber_g),
-            ],
-        );
+        table.add_footer(vec![
+            "Total".to_string(),
+            String::new(),
+            t.calories.to_string(),
+            format!("{:.1}g", t.protein_g),
+            format!("{:.1}g", t.fiber_g),
+        ]);
 
         let ps = self.per_serving();
-        table.add_footer(
-            "Per serving",
-            vec![
-                String::new(),
-                ps.calories.to_string(),
-                format!("{:.1}g", ps.protein_g),
-                format!("{:.1}g", ps.fiber_g),
-            ],
-        );
+        table.add_footer(vec![
+            "Per serving".to_string(),
+            String::new(),
+            ps.calories.to_string(),
+            format!("{:.1}g", ps.protein_g),
+            format!("{:.1}g", ps.fiber_g),
+        ]);
 
         table.format()
     }

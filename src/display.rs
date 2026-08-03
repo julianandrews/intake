@@ -20,7 +20,7 @@ pub struct Table {
     align: Vec<Align>,
     rows: Vec<Vec<String>>,
     title: Option<String>,
-    footers: Vec<(String, Vec<String>)>,
+    footers: Vec<Vec<String>>,
 }
 
 pub fn visible_width(s: &str) -> usize {
@@ -102,15 +102,8 @@ impl Table {
         self.title = Some(title.to_string());
     }
 
-    pub fn add_footer(&mut self, label: &str, cells: Vec<String>) {
-        assert_eq!(
-            cells.len(),
-            self.headers.len() - 1,
-            "add_footer expects {} cells (one per data column), got {}",
-            self.headers.len() - 1,
-            cells.len()
-        );
-        self.footers.push((label.to_string(), cells));
+    pub fn add_footer(&mut self, row: Vec<String>) {
+        self.footers.push(row);
     }
 
     fn col_widths(&self) -> Vec<usize> {
@@ -120,9 +113,8 @@ impl Table {
                 widths[i] = widths[i].max(visible_width(cell));
             }
         }
-        for (label, cells) in &self.footers {
-            widths[0] = widths[0].max(visible_width(label));
-            for (i, cell) in cells.iter().enumerate() {
+        for row in &self.footers {
+            for (i, cell) in row.iter().enumerate() {
                 widths[i] = widths[i].max(visible_width(cell));
             }
         }
@@ -164,10 +156,7 @@ impl Table {
 
         writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
 
-        for (i, (label, cells)) in self.footers.iter().enumerate() {
-            let mut full_row = vec![label.clone()];
-            full_row.extend(cells.iter().cloned());
-
+        for (i, row) in self.footers.iter().enumerate() {
             let ansi = if i == 0 {
                 ANSI_BOLD_GREEN
             } else {
@@ -176,7 +165,7 @@ impl Table {
             writeln!(
                 out,
                 "  {ansi}{}{ANSI_RESET}",
-                format_cells(&full_row, &widths, &self.align)
+                format_cells(row, &widths, &self.align)
             )
             .unwrap();
         }
@@ -348,24 +337,20 @@ mod tests {
             "8.0g".to_string(),
             "0.0g".to_string(),
         ]);
-        table.add_footer(
-            "Total",
-            vec![
-                "".to_string(),
-                "320".to_string(),
-                "18.0g".to_string(),
-                "5.0g".to_string(),
-            ],
-        );
-        table.add_footer(
-            "Per serving",
-            vec![
-                "".to_string(),
-                "160".to_string(),
-                "9.0g".to_string(),
-                "2.5g".to_string(),
-            ],
-        );
+        table.add_footer(vec![
+            "Total".to_string(),
+            "".to_string(),
+            "320".to_string(),
+            "18.0g".to_string(),
+            "5.0g".to_string(),
+        ]);
+        table.add_footer(vec![
+            "Per serving".to_string(),
+            "".to_string(),
+            "160".to_string(),
+            "9.0g".to_string(),
+            "2.5g".to_string(),
+        ]);
 
         let md = table.format();
         assert!(md.starts_with("\u{1b}[1;36mOatmeal (2 servings)\u{1b}[0m\n"));
