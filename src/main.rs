@@ -367,32 +367,7 @@ fn cmd_show(
                 ],
             );
 
-            if day_log.exercise_calories > 0 {
-                table.add_footer(
-                    "Exercise",
-                    vec![
-                        String::new(),
-                        format!("{ANSI_BOLD_RED}{}{ANSI_RESET}", day_log.exercise_calories),
-                        String::new(),
-                        String::new(),
-                    ],
-                );
-            }
-
             let net_cal = total_cal - day_log.exercise_calories as f64;
-
-            if let Some(mc) = config.maintenance_calories {
-                let tdee = mc + day_log.exercise_calories;
-                table.add_footer(
-                    "TDEE",
-                    vec![
-                        String::new(),
-                        format!("{}", tdee),
-                        String::new(),
-                        String::new(),
-                    ],
-                );
-            }
 
             let deficit = config.maintenance_calories.map(|mc| {
                 let tdee = mc as f64 + day_log.exercise_calories as f64;
@@ -404,7 +379,8 @@ fn cmd_show(
             let is_today = date == Local::now().date_naive();
             let dp = day_proportion();
 
-            let mut parts: Vec<String> = Vec::new();
+            let mut line1: Vec<String> = Vec::new();
+
             if let Some(target) = config.max_calories {
                 let color = if net_cal > target as f64 {
                     ANSI_BOLD_RED
@@ -413,7 +389,7 @@ fn cmd_show(
                 } else {
                     ANSI_BOLD_YELLOW
                 };
-                parts.push(format!(
+                line1.push(format!(
                     "Calories: {color}{:.0}{}/{}",
                     net_cal, ANSI_RESET, target
                 ));
@@ -431,7 +407,7 @@ fn cmd_show(
                         ANSI_BOLD_RED
                     }
                 };
-                parts.push(format!(
+                line1.push(format!(
                     "Protein: {color}{:.1}{}/{}g",
                     total_protein, ANSI_RESET, target
                 ));
@@ -449,10 +425,23 @@ fn cmd_show(
                         ANSI_BOLD_RED
                     }
                 };
-                parts.push(format!(
+                line1.push(format!(
                     "Fiber: {color}{:.1}{}/{}g",
                     total_fiber, ANSI_RESET, target
                 ));
+            }
+
+            let mut line2: Vec<String> = Vec::new();
+
+            if day_log.exercise_calories > 0 {
+                line2.push(format!(
+                    "Exercise: {ANSI_BOLD_RED}{}{ANSI_RESET}",
+                    day_log.exercise_calories
+                ));
+            }
+            if let Some(mc) = config.maintenance_calories {
+                let tdee = mc + day_log.exercise_calories;
+                line2.push(format!("TDEE: {}", tdee));
             }
             if let Some(d) = deficit {
                 let color = if d >= 0.0 {
@@ -460,10 +449,33 @@ fn cmd_show(
                 } else {
                     ANSI_BOLD_RED
                 };
-                parts.push(format!("Deficit: {color}{:.0}{}", d, ANSI_RESET));
+                line2.push(format!("Deficit: {color}{:.0}{}", d, ANSI_RESET));
             }
-            if !parts.is_empty() {
-                println!("  {}", parts.join("    "));
+
+            let max_len = line1.len().max(line2.len());
+            for i in 0..max_len {
+                let w1 = line1.get(i).map(|s| recipe::visible_width(s)).unwrap_or(0);
+                let w2 = line2.get(i).map(|s| recipe::visible_width(s)).unwrap_or(0);
+                let mw = w1.max(w2);
+                if let Some(s) = line1.get_mut(i) {
+                    let pad = mw - recipe::visible_width(s);
+                    for _ in 0..pad {
+                        s.push(' ');
+                    }
+                }
+                if let Some(s) = line2.get_mut(i) {
+                    let pad = mw - recipe::visible_width(s);
+                    for _ in 0..pad {
+                        s.push(' ');
+                    }
+                }
+            }
+
+            if !line1.is_empty() {
+                println!("  {}", line1.join("    "));
+            }
+            if !line2.is_empty() {
+                println!("  {}", line2.join("    "));
             }
         }
     }

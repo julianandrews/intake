@@ -26,7 +26,7 @@ pub struct Table {
     footers: Vec<(String, Vec<String>)>,
 }
 
-fn visible_width(s: &str) -> usize {
+pub fn visible_width(s: &str) -> usize {
     // Strip ANSI escape sequences for column-width calculation
     let mut len = 0;
     let mut chars = s.chars().peekable();
