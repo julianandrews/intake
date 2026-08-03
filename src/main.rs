@@ -547,7 +547,7 @@ mod tests {
     use crate::log::LogEntry;
 
     fn foods_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("foods")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/foods")
     }
 
     fn entry(slug: &str, servings: f64) -> LogEntry {

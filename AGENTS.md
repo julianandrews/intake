@@ -5,8 +5,8 @@ run `intake --help` to see available subcommands and flags.
 
 ## Adding a Recipe
 
-Create a `.toml` file in your foods directory. The filename (minus `.toml`)
-becomes the recipe slug.
+Create a `.toml` file in your foods directory (`~/.local/share/intake/foods/`
+by default). The filename (minus `.toml`) becomes the recipe slug.
 
 The file must match the `Recipe` and `Ingredient` structs in `src/recipe.rs`:
 
@@ -23,6 +23,8 @@ See `foods/cheesy-popcorn.toml` for a simple example, or `foods/turkey-chili.tom
 for a multi-ingredient one.
 
 The `content_hash` field is computed automatically at load time — do not include it.
+
+Example recipes live in `tests/fixtures/foods/` for reference.
 
 ## Adding an Adhoc Log Entry
 
@@ -44,7 +46,8 @@ intake adhoc --calories N --protein N --fiber N <name> [servings]
 
 ## Configuration
 
-The config file lives at `~/.config/intake/config.toml`. Supported fields:
+The config file lives at `~/.config/intake/config.toml`. Data defaults to
+`~/.local/share/intake/` (following XDG_DATA_HOME). Supported fields:
 
 - `foods_dir` / `log_dir` — override default data directories
 - `max_calories` — daily calorie target (u32)

@@ -55,12 +55,18 @@ impl Config {
     }
 
     pub fn foods_dir(&self) -> PathBuf {
-        self.foods_dir
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("foods"))
+        self.foods_dir.clone().unwrap_or_else(|| {
+            dirs::data_dir()
+                .map(|p| p.join("intake").join("foods"))
+                .unwrap_or_else(|| PathBuf::from("foods"))
+        })
     }
 
     pub fn log_dir(&self) -> PathBuf {
-        self.log_dir.clone().unwrap_or_else(|| PathBuf::from("log"))
+        self.log_dir.clone().unwrap_or_else(|| {
+            dirs::data_dir()
+                .map(|p| p.join("intake").join("log"))
+                .unwrap_or_else(|| PathBuf::from("log"))
+        })
     }
 }
