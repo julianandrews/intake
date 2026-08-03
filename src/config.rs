@@ -39,4 +39,28 @@ impl Config {
             self.log_dir = Some(PathBuf::from(val));
         }
     }
+
+    pub fn with_cli_overrides(
+        mut self,
+        foods_dir: Option<PathBuf>,
+        log_dir: Option<PathBuf>,
+    ) -> Self {
+        if let Some(dir) = foods_dir {
+            self.foods_dir = Some(dir);
+        }
+        if let Some(dir) = log_dir {
+            self.log_dir = Some(dir);
+        }
+        self
+    }
+
+    pub fn foods_dir(&self) -> PathBuf {
+        self.foods_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("foods"))
+    }
+
+    pub fn log_dir(&self) -> PathBuf {
+        self.log_dir.clone().unwrap_or_else(|| PathBuf::from("log"))
+    }
 }

@@ -105,9 +105,8 @@ enum Commands {
 }
 
 fn complete_recipes() -> Vec<CompletionCandidate> {
-    let dir = std::env::var("INTAKE_FOODS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("foods"));
+    let config = Config::resolve();
+    let dir = config.foods_dir();
     match recipe::list_recipe_slugs(&dir) {
         Ok(slugs) => slugs.into_iter().map(CompletionCandidate::new).collect(),
         Err(e) => {
@@ -118,9 +117,8 @@ fn complete_recipes() -> Vec<CompletionCandidate> {
 }
 
 fn complete_log_dates() -> Vec<CompletionCandidate> {
-    let dir = std::env::var("INTAKE_LOG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("log"));
+    let config = Config::resolve();
+    let dir = config.log_dir();
     match log::list_log_dates(&dir) {
         Ok(dates) => dates.into_iter().map(CompletionCandidate::new).collect(),
         Err(e) => {
@@ -174,17 +172,9 @@ fn main() -> Result<()> {
         .complete();
 
     let cli = Cli::parse();
-    let config = Config::resolve();
-
-    let foods_dir = cli
-        .foods_dir
-        .or_else(|| config.foods_dir.clone())
-        .unwrap_or_else(|| PathBuf::from("foods"));
-
-    let log_dir = cli
-        .log_dir
-        .or_else(|| config.log_dir.clone())
-        .unwrap_or_else(|| PathBuf::from("log"));
+    let config = Config::resolve().with_cli_overrides(cli.foods_dir, cli.log_dir);
+    let foods_dir = config.foods_dir();
+    let log_dir = config.log_dir();
 
     match cli.command {
         Commands::Add { recipe, servings } => {
