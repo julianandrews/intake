@@ -26,6 +26,25 @@ pub struct Table {
     footers: Vec<(String, Vec<String>)>,
 }
 
+fn visible_width(s: &str) -> usize {
+    // Strip ANSI escape sequences for column-width calculation
+    let mut len = 0;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            // consume until 'm'
+            for n in chars.by_ref() {
+                if n == 'm' {
+                    break;
+                }
+            }
+        } else {
+            len += 1;
+        }
+    }
+    len
+}
+
 fn format_cells(cells: &[String], widths: &[usize], align: &[Align]) -> String {
     let mut line = String::new();
     for (i, (cell, width)) in cells.iter().zip(widths).enumerate() {
@@ -88,16 +107,16 @@ impl Table {
     }
 
     fn col_widths(&self) -> Vec<usize> {
-        let mut widths: Vec<usize> = self.headers.iter().map(|h| h.len()).collect();
+        let mut widths: Vec<usize> = self.headers.iter().map(|h| visible_width(h)).collect();
         for row in &self.rows {
             for (i, cell) in row.iter().enumerate() {
-                widths[i] = widths[i].max(cell.len());
+                widths[i] = widths[i].max(visible_width(cell));
             }
         }
         for (label, cells) in &self.footers {
-            widths[0] = widths[0].max(label.len());
+            widths[0] = widths[0].max(visible_width(label));
             for (i, cell) in cells.iter().enumerate() {
-                widths[i] = widths[i].max(cell.len());
+                widths[i] = widths[i].max(visible_width(cell));
             }
         }
         widths
