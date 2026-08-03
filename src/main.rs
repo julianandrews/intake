@@ -51,16 +51,10 @@ enum Commands {
         #[arg(default_value = "1")]
         servings: f64,
     },
-    /// Show today's totals
-    Today {
-        /// Show entries as individual rows instead of grouping by recipe
-        #[arg(long)]
-        ungrouped: bool,
-    },
-    /// Show totals for a specific date (YYYY-MM-DD)
+    /// Show totals for a date (default: today)
     Log {
         #[arg(add = ArgValueCandidates::new(complete_log_dates))]
-        date: String,
+        date: Option<String>,
         /// Show entries as individual rows instead of grouping by recipe
         #[arg(long)]
         ungrouped: bool,
@@ -180,18 +174,12 @@ fn main() -> Result<()> {
         Commands::Add { recipe, servings } => {
             cmd_add(&foods_dir, &log_dir, &recipe, servings, &config)?;
         }
-        Commands::Today { ungrouped } => {
-            cmd_show(
-                &foods_dir,
-                &log_dir,
-                Local::now().date_naive(),
-                ungrouped,
-                &config,
-            )?;
-        }
         Commands::Log { date, ungrouped } => {
-            let date = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
-                .context("date must be in YYYY-MM-DD format")?;
+            let date = match date {
+                Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
+                    .context("date must be in YYYY-MM-DD format")?,
+                None => Local::now().date_naive(),
+            };
             cmd_show(&foods_dir, &log_dir, date, ungrouped, &config)?;
         }
         Commands::Show { recipe } => {
