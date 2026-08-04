@@ -53,9 +53,9 @@ enum Commands {
     Log {
         #[arg(add = ArgValueCandidates::new(complete_log_dates))]
         date: Option<String>,
-        /// Show entries as individual rows instead of grouping by recipe
+        /// Group entries by recipe
         #[arg(long)]
-        ungrouped: bool,
+        grouped: bool,
     },
     /// Show a recipe with ingredients and per-serving values
     Show {
@@ -188,13 +188,13 @@ fn main() -> Result<()> {
                 &config,
             )?;
         }
-        Commands::Log { date, ungrouped } => {
+        Commands::Log { date, grouped } => {
             let date = match date {
                 Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
                     .context("date must be in YYYY-MM-DD format")?,
                 None => Local::now().date_naive(),
             };
-            cmd_log(&mut stdout, &foods_dir, &log_dir, date, ungrouped, &config)?;
+            cmd_log(&mut stdout, &foods_dir, &log_dir, date, grouped, &config)?;
         }
         Commands::Show { recipe } => {
             cmd_show_recipe(&mut stdout, &foods_dir, &recipe)?;
@@ -347,7 +347,7 @@ fn cmd_log(
     foods_dir: &Path,
     log_dir: &Path,
     date: chrono::NaiveDate,
-    ungrouped: bool,
+    grouped: bool,
     config: &Config,
 ) -> Result<()> {
     let day_log = log::load_day(log_dir, date)?;
@@ -358,10 +358,10 @@ fn cmd_log(
             let mut table = Table::new(&["Item", "Servings", "Calories", "Protein(g)", "Fiber(g)"]);
             table.set_title(&date.to_string());
 
-            let rows = if ungrouped {
-                build_ungrouped_rows(foods_dir, &day_log.entries)?
-            } else {
+            let rows = if grouped {
                 build_grouped_rows(foods_dir, &day_log.entries)?
+            } else {
+                build_ungrouped_rows(foods_dir, &day_log.entries)?
             };
 
             let mut total_cal = 0.0;

@@ -31,8 +31,7 @@ intake completions <shell>           Generate or install completion script
 ```
 
 Flags like `--foods-dir` and `--log-dir` are available on every command.
-Use `--ungrouped` with `intake log` to show each entry individually instead
-of grouped by recipe.
+Use `--grouped` with `intake log` to merge entries with the same recipe slug.
 
 ## Configuration
 

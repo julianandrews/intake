@@ -157,7 +157,7 @@ fn test_exercise_recording() {
 }
 
 #[test]
-fn test_add_multiple_and_ungrouped() {
+fn test_add_multiple_and_grouped() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
@@ -190,17 +190,19 @@ fn test_add_multiple_and_ungrouped() {
         "1",
     ]);
 
-    let (grouped, _) = run(&["--foods-dir", &fd_str, "--log-dir", &log_dir_str, "log"]);
-    assert!(grouped.contains("Coffee"));
-    assert!(grouped.contains("3")); // grouped: 1+2=3 servings
+    // default: ungrouped — each entry is its own row
+    let (ungrouped, _) = run(&["--foods-dir", &fd_str, "--log-dir", &log_dir_str, "log"]);
+    assert!(ungrouped.contains("Coffee"));
 
-    let (ungrouped, _) = run(&[
+    // --grouped merges entries with the same slug
+    let (grouped, _) = run(&[
         "--foods-dir",
         &fd_str,
         "--log-dir",
         &log_dir_str,
         "log",
-        "--ungrouped",
+        "--grouped",
     ]);
-    assert!(ungrouped.contains("Coffee"));
+    assert!(grouped.contains("Coffee"));
+    assert!(grouped.contains("3")); // grouped: 1+2=3 servings
 }
