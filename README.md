@@ -23,6 +23,7 @@ Or for zsh: `intake completions zsh --install`
 ```
 intake add <recipe> [servings]       Add a recipe to today's log
 intake log [date]                    Show a day's totals (default: today)
+intake summary [date] [--days N]     Multi-day summary of macros and deficit (default: last 7 days)
 intake show <recipe>                 Show recipe details with ingredients
 intake list                          List all recipes
 intake adhoc --cal N --prot N --fib N <name> [servings]   Log a one-off food
@@ -32,6 +33,9 @@ intake completions <shell>           Generate or install completion script
 
 Flags like `--foods-dir` and `--log-dir` are available on every command.
 Use `--grouped` with `intake log` to merge entries with the same recipe slug.
+`intake summary` shows one row per logged day (unlogged days in the window are
+skipped) with period totals and per-day averages; the Deficit column appears
+when `maintenance_calories` is configured.
 
 ## Configuration
 

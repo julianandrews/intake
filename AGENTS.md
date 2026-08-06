@@ -70,6 +70,14 @@ intake exercise 300
 Records calories burned for today. Shows up in the log view as a red positive
 number subtracted from your TDEE for deficit calculation.
 
+## Viewing a Multi-Day Summary
+
+`intake summary [date] [--days N]` shows one row per logged day (unlogged days
+in the window are skipped) with total macros, exercise, and deficit per day,
+plus period totals and per-day averages. The Deficit column appears only when
+`maintenance_calories` is configured. Implementation: `src/main.rs` functions
+`cmd_summary` and `build_summary_rows`.
+
 ## Code Quality
 
 Always run these checks before committing or finishing a task:

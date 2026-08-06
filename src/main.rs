@@ -73,6 +73,15 @@ enum Commands {
         #[arg(long)]
         install: bool,
     },
+    /// Show a multi-day summary of macros and deficit
+    Summary {
+        /// End date (default: today)
+        #[arg(add = ArgValueCandidates::new(complete_log_dates))]
+        date: Option<String>,
+        /// Number of days to look back (including the end date)
+        #[arg(long, default_value = "7")]
+        days: u32,
+    },
     /// Record exercise calories for today
     Exercise {
         /// Calories burned
@@ -201,6 +210,14 @@ fn main() -> Result<()> {
         }
         Commands::List => {
             cmd_list(&mut stdout, &foods_dir)?;
+        }
+        Commands::Summary { date, days } => {
+            let end = match date {
+                Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
+                    .context("date must be in YYYY-MM-DD format")?,
+                None => Local::now().date_naive(),
+            };
+            cmd_summary(&mut stdout, &log_dir, end, days, &config)?;
         }
         Commands::Exercise { calories } => {
             let date = Local::now().date_naive();
@@ -396,12 +413,11 @@ fn cmd_log(
                 format!("{:.1}", total_fiber),
             ]);
 
-            let net_cal = total_cal - day_log.exercise_calories as f64;
-
-            let deficit = config.maintenance_calories.map(|mc| {
-                let tdee = mc as f64 + day_log.exercise_calories as f64;
-                tdee - net_cal
-            });
+            let (net_cal, deficit) = day_net_and_deficit(
+                total_cal,
+                day_log.exercise_calories,
+                config.maintenance_calories,
+            );
 
             write!(writer, "{}", table.format())?;
 
@@ -425,6 +441,199 @@ fn cmd_log(
             );
             write!(writer, "{}", summary)?;
         }
+    }
+
+    Ok(())
+}
+
+fn day_net_and_deficit(
+    calories: f64,
+    exercise_calories: u32,
+    maintenance_calories: Option<u32>,
+) -> (f64, Option<f64>) {
+    let net_cal = calories - exercise_calories as f64;
+    let deficit = maintenance_calories.map(|mc| {
+        let tdee = mc as f64 + exercise_calories as f64;
+        tdee - net_cal
+    });
+    (net_cal, deficit)
+}
+
+struct SummaryRow {
+    date: chrono::NaiveDate,
+    calories: f64,
+    protein_g: f64,
+    fiber_g: f64,
+    exercise_calories: u32,
+    deficit: Option<f64>,
+}
+
+fn build_summary_rows(
+    log_dir: &Path,
+    end: chrono::NaiveDate,
+    days: u32,
+    maintenance_calories: Option<u32>,
+) -> Result<Vec<SummaryRow>> {
+    if !log_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let days = days.max(1);
+    let start = end
+        .checked_sub_days(chrono::Days::new((days - 1) as u64))
+        .context("days range exceeds the supported date span")?;
+
+    let mut dates: Vec<chrono::NaiveDate> = log::list_log_dates(log_dir)?
+        .into_iter()
+        .filter_map(|s| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok())
+        .filter(|d| *d >= start && *d <= end)
+        .collect();
+    dates.sort_unstable();
+
+    let mut rows = Vec::with_capacity(dates.len());
+    for date in dates {
+        if let Some(day_log) = log::load_day(log_dir, date)? {
+            let calories: f64 = day_log
+                .entries
+                .iter()
+                .map(log::LogEntry::total_calories)
+                .sum();
+            let protein_g: f64 = day_log
+                .entries
+                .iter()
+                .map(log::LogEntry::total_protein)
+                .sum();
+            let fiber_g: f64 = day_log.entries.iter().map(log::LogEntry::total_fiber).sum();
+
+            let (_, deficit) =
+                day_net_and_deficit(calories, day_log.exercise_calories, maintenance_calories);
+
+            rows.push(SummaryRow {
+                date,
+                calories,
+                protein_g,
+                fiber_g,
+                exercise_calories: day_log.exercise_calories,
+                deficit,
+            });
+        }
+    }
+    Ok(rows)
+}
+
+fn deficit_cell(d: f64) -> String {
+    let color = if d >= 0.0 {
+        display::ANSI_BOLD_GREEN
+    } else {
+        display::ANSI_BOLD_RED
+    };
+    format!("{color}{d:.0}{}", display::ANSI_RESET)
+}
+
+fn cmd_summary(
+    writer: &mut impl Write,
+    log_dir: &Path,
+    end: chrono::NaiveDate,
+    days: u32,
+    config: &Config,
+) -> Result<()> {
+    let rows = build_summary_rows(log_dir, end, days, config.maintenance_calories)?;
+
+    if rows.is_empty() {
+        let window = days.max(1);
+        writeln!(
+            writer,
+            "No entries in the last {} day{} (ending {})",
+            window,
+            if window == 1 { "" } else { "s" },
+            end
+        )?;
+        return Ok(());
+    }
+
+    let any_exercise = rows.iter().any(|r| r.exercise_calories > 0);
+    let show_deficit = config.maintenance_calories.is_some();
+
+    let mut headers = vec!["Date", "Calories", "Protein(g)", "Fiber(g)"];
+    if any_exercise {
+        headers.push("Exercise");
+    }
+    if show_deficit {
+        headers.push("Deficit");
+    }
+
+    let mut table = Table::new(&headers);
+    table.set_title(&format!(
+        "Summary {} to {}",
+        rows.first().expect("rows checked non-empty").date,
+        rows.last().expect("rows checked non-empty").date
+    ));
+
+    for row in &rows {
+        let mut cells = vec![
+            row.date.to_string(),
+            format!("{:.0}", row.calories),
+            format!("{:.1}", row.protein_g),
+            format!("{:.1}", row.fiber_g),
+        ];
+        if any_exercise {
+            if row.exercise_calories > 0 {
+                cells.push(format!(
+                    "{}{}{}",
+                    display::ANSI_BOLD_RED,
+                    row.exercise_calories,
+                    display::ANSI_RESET
+                ));
+            } else {
+                cells.push("0".to_string());
+            }
+        }
+        if let Some(d) = row.deficit {
+            cells.push(deficit_cell(d));
+        }
+        table.add_row(cells);
+    }
+
+    let count = rows.len() as f64;
+    let total_calories: f64 = rows.iter().map(|r| r.calories).sum();
+    let total_protein: f64 = rows.iter().map(|r| r.protein_g).sum();
+    let total_fiber: f64 = rows.iter().map(|r| r.fiber_g).sum();
+    let total_exercise: u32 = rows.iter().map(|r| r.exercise_calories).sum();
+    let total_deficit: f64 = rows.iter().filter_map(|r| r.deficit).sum();
+
+    let mut total_footer = vec![
+        "Total".to_string(),
+        format!("{total_calories:.0}"),
+        format!("{total_protein:.1}"),
+        format!("{total_fiber:.1}"),
+    ];
+    if any_exercise {
+        total_footer.push(total_exercise.to_string());
+    }
+    if show_deficit {
+        total_footer.push(deficit_cell(total_deficit));
+    }
+    table.add_footer(total_footer);
+
+    let mut avg_footer = vec![
+        "Avg/day".to_string(),
+        format!("{:.0}", total_calories / count),
+        format!("{:.1}", total_protein / count),
+        format!("{:.1}", total_fiber / count),
+    ];
+    if any_exercise {
+        avg_footer.push(format!("{:.0}", total_exercise as f64 / count));
+    }
+    if show_deficit {
+        avg_footer.push(deficit_cell(total_deficit / count));
+    }
+    table.add_footer(avg_footer);
+
+    write!(writer, "{}", table.format())?;
+
+    if !show_deficit {
+        writeln!(writer)?;
+        writeln!(writer, "Set maintenance_calories in config to see deficit.")?;
     }
 
     Ok(())
@@ -605,6 +814,93 @@ mod tests {
         let entries = vec![e1, e2];
         let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
         assert_eq!(rows[0].calories, 72.0);
+    }
+
+    fn write_day_log(dir: &Path, date: chrono::NaiveDate, calories: f64, exercise: u32) {
+        let day_log = log::DayLog {
+            entries: vec![LogEntry {
+                slug: "coffee".to_string(),
+                servings: 1.0,
+                calories: calories as u32,
+                protein_g: 10.0,
+                fiber_g: 4.0,
+                title: None,
+            }],
+            exercise_calories: exercise,
+        };
+        let content = toml::to_string(&day_log).unwrap();
+        std::fs::write(dir.join(format!("{}.toml", date)), content).unwrap();
+    }
+
+    #[test]
+    fn test_build_summary_rows_skips_empty_days() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        write_day_log(dir.path(), end, 100.0, 0);
+        write_day_log(dir.path(), end - chrono::Days::new(2), 200.0, 0);
+
+        let rows = build_summary_rows(dir.path(), end, 7, None).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].date, end - chrono::Days::new(2));
+        assert_eq!(rows[1].date, end);
+    }
+
+    #[test]
+    fn test_build_summary_rows_deficit_matches_day_math() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        write_day_log(dir.path(), end, 1500.0, 300);
+
+        let rows = build_summary_rows(dir.path(), end, 7, Some(2400)).unwrap();
+        assert_eq!(rows.len(), 1);
+        // net = 1500 - 300 = 1200; tdee = 2400 + 300 = 2700; deficit = 1500
+        let deficit = rows[0].deficit.unwrap();
+        assert!((deficit - 1500.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_build_summary_rows_empty_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let rows = build_summary_rows(dir.path(), end, 7, None).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_build_summary_rows_days_zero_clamped() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        write_day_log(dir.path(), end, 100.0, 0);
+        let rows = build_summary_rows(dir.path(), end, 0, None).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_build_summary_rows_days_overflow_errors() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        write_day_log(dir.path(), end, 100.0, 0);
+        let result = build_summary_rows(dir.path(), end, u32::MAX, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_summary_rows_ignores_non_date_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        write_day_log(dir.path(), end - chrono::Days::new(1), 100.0, 0);
+        std::fs::write(dir.path().join("README.toml"), "title = \"x\"\n").unwrap();
+        let rows = build_summary_rows(dir.path(), end, 7, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].date, end - chrono::Days::new(1));
+    }
+
+    #[test]
+    fn test_build_summary_rows_missing_log_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let rows = build_summary_rows(&dir.path().join("does-not-exist"), end, 7, None).unwrap();
+        assert!(rows.is_empty());
     }
 }
 
