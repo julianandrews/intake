@@ -1,5 +1,5 @@
 use crate::config::Column;
-use crate::display::{recipe_cell, Align, ColumnValue, Table};
+use crate::display::{food_cell, Align, ColumnValue, Table};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
@@ -22,7 +22,7 @@ crate::display::impl_column_value!(
 );
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct Recipe {
+pub struct Food {
     pub title: String,
     pub servings: u32,
     pub ingredients: Vec<Ingredient>,
@@ -40,7 +40,7 @@ pub struct Macros {
 
 crate::display::impl_column_value!(Macros, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g);
 
-impl Recipe {
+impl Food {
     pub fn totals(&self) -> Macros {
         Macros {
             calories: self.ingredients.iter().map(|i| i.calories).sum(),
@@ -88,7 +88,7 @@ impl Recipe {
             let qty = ing.quantity.as_deref().unwrap_or("-").to_string();
             let mut cells = vec![ing.name.clone(), qty];
             for column in columns {
-                cells.push(recipe_cell(*column, ing.column_value(*column)));
+                cells.push(food_cell(*column, ing.column_value(*column)));
             }
             table.add_row(cells);
         }
@@ -97,14 +97,14 @@ impl Recipe {
 
         let mut total = vec!["Total".to_string(), String::new()];
         for column in columns {
-            total.push(recipe_cell(*column, t.column_value(*column)));
+            total.push(food_cell(*column, t.column_value(*column)));
         }
         table.add_footer(total);
 
         let ps = self.per_serving();
         let mut per_serving = vec!["Per serving".to_string(), String::new()];
         for column in columns {
-            per_serving.push(recipe_cell(*column, ps.column_value(*column)));
+            per_serving.push(food_cell(*column, ps.column_value(*column)));
         }
         table.add_footer(per_serving);
 
@@ -126,7 +126,7 @@ fn toml_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-pub fn list_recipe_slugs(foods_dir: &Path) -> Result<Vec<String>> {
+pub fn list_food_slugs(foods_dir: &Path) -> Result<Vec<String>> {
     let mut slugs = Vec::new();
     for path in toml_files_in(foods_dir)? {
         if let Some(slug) = path.file_stem().and_then(|s| s.to_str()) {
@@ -136,25 +136,25 @@ pub fn list_recipe_slugs(foods_dir: &Path) -> Result<Vec<String>> {
     Ok(slugs)
 }
 
-pub fn load_recipe(path: &Path) -> Result<Recipe> {
+pub fn load_food(path: &Path) -> Result<Food> {
     let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read recipe file: {}", path.display()))?;
+        .with_context(|| format!("failed to read food file: {}", path.display()))?;
 
-    let recipe: Recipe = toml::from_str(&content)
+    let food: Food = toml::from_str(&content)
         .with_context(|| format!("failed to parse TOML in: {}", path.display()))?;
 
-    Ok(recipe)
+    Ok(food)
 }
 
-pub fn find_all_recipes(foods_dir: &Path) -> Result<Vec<(PathBuf, Recipe)>> {
-    let mut recipes = Vec::new();
+pub fn find_all_foods(foods_dir: &Path) -> Result<Vec<Food>> {
+    let mut foods = Vec::new();
     for path in toml_files_in(foods_dir)? {
-        match load_recipe(&path) {
-            Ok(recipe) => recipes.push((path, recipe)),
+        match load_food(&path) {
+            Ok(food) => foods.push(food),
             Err(e) => eprintln!("Warning: skipped {}: {}", path.display(), e),
         }
     }
-    Ok(recipes)
+    Ok(foods)
 }
 
 #[cfg(test)]
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_per_serving_with_fractions() {
-        let recipe = Recipe {
+        let food = Food {
             title: "Test".to_string(),
             servings: 3,
             ingredients: vec![Ingredient {
@@ -178,7 +178,7 @@ mod tests {
                 alcohol_g: 0.0,
             }],
         };
-        let ps = recipe.per_serving();
+        let ps = food.per_serving();
         assert_eq!(ps.calories, 33);
         assert!((ps.protein_g - 3.333).abs() < 0.001);
         assert!((ps.fiber_g - 1.667).abs() < 0.001);
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_per_serving_exact_division() {
-        let recipe = Recipe {
+        let food = Food {
             title: "Test".to_string(),
             servings: 2,
             ingredients: vec![Ingredient {
@@ -200,7 +200,7 @@ mod tests {
                 alcohol_g: 2.0,
             }],
         };
-        let ps = recipe.per_serving();
+        let ps = food.per_serving();
         assert_eq!(ps.calories, 50);
         assert_eq!(ps.protein_g, 10.0);
         assert_eq!(ps.fiber_g, 3.0);
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn test_per_serving_fractional_input() {
-        let recipe = Recipe {
+        let food = Food {
             title: "Fiber Test".to_string(),
             servings: 1,
             ingredients: vec![Ingredient {
@@ -225,14 +225,14 @@ mod tests {
                 alcohol_g: 0.0,
             }],
         };
-        let ps = recipe.per_serving();
+        let ps = food.per_serving();
         assert_eq!(ps.calories, 5);
         assert_eq!(ps.fiber_g, 0.3);
     }
 
     #[test]
     fn test_ingredient_missing_macros_rejected() {
-        let result: Result<Recipe, _> =
+        let result: Result<Food, _> =
             toml::from_str("title = \"X\"\nservings = 1\n\n[[ingredients]]\nname = \"A\"\ncalories = 10\nprotein_g = 1\nfiber_g = 0\n");
         assert!(result.is_err());
     }
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn test_display_basic() {
-        let recipe = Recipe {
+        let food = Food {
             title: "Oatmeal".to_string(),
             servings: 2,
             ingredients: vec![
@@ -290,7 +290,7 @@ mod tests {
             ],
         };
 
-        let md = recipe.display(DEFAULT_COLUMNS);
+        let md = food.display(DEFAULT_COLUMNS);
         assert!(md.starts_with("\u{1b}[1;36mOatmeal (2 servings)\u{1b}[0m\n"));
         assert!(
             md.contains("  Oats        100g         200     30.0g    4.0g       10.0g      5.0g")
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_display_single_serving() {
-        let recipe = Recipe {
+        let food = Food {
             title: "Coffee".to_string(),
             servings: 1,
             ingredients: vec![Ingredient {
@@ -324,14 +324,14 @@ mod tests {
             }],
         };
 
-        let md = recipe.display(DEFAULT_COLUMNS);
+        let md = food.display(DEFAULT_COLUMNS);
         assert!(md.starts_with("\u{1b}[1;36mCoffee (1 serving)\u{1b}[0m\n"));
         assert!(md.contains("  Cold Brew"));
     }
 
     #[test]
     fn test_display_no_quantity() {
-        let recipe = Recipe {
+        let food = Food {
             title: "Test".to_string(),
             servings: 1,
             ingredients: vec![Ingredient {
@@ -346,7 +346,7 @@ mod tests {
             }],
         };
 
-        let md = recipe.display(DEFAULT_COLUMNS);
+        let md = food.display(DEFAULT_COLUMNS);
         assert!(md.contains("  Secret Spice"));
         assert!(md.contains("  0.5g"));
         assert!(md.contains("  0.1g"));
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_display_column_subset() {
-        let recipe = Recipe {
+        let food = Food {
             title: "Test".to_string(),
             servings: 1,
             ingredients: vec![Ingredient {
@@ -369,7 +369,7 @@ mod tests {
             }],
         };
 
-        let md = recipe.display(&[Column::Calories, Column::Fat]);
+        let md = food.display(&[Column::Calories, Column::Fat]);
         assert!(md.contains("Calories"));
         assert!(md.contains("Fat(g)"));
         assert!(md.contains("100"));

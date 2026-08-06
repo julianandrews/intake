@@ -21,18 +21,18 @@ Or for zsh: `intake completions zsh --install`
 ## Usage
 
 ```
-intake add <recipe> [servings]       Add a recipe to today's log
+intake add <food> [servings]          Add a food to today's log
 intake log [date] [--days-ago N]     Show a day's totals (default: today)
 intake summary [date] [--days N]     Multi-day summary of macros and deficit (default: last 7 days)
-intake show <recipe>                 Show recipe details with ingredients
-intake list                          List all recipes
+intake show <food>                   Show food details with ingredients
+intake list                          List all foods
 intake adhoc [--calories N] [--protein N] [--fiber N] [--fat N] [--carbs N] [--alcohol N] <name> [servings]   Log a one-off food
 intake exercise <calories>           Record exercise calories for today
 intake completions <shell>           Generate or install completion script
 ```
 
 Flags like `--foods-dir` and `--log-dir` are available on every command.
-Use `--grouped` with `intake log` to merge entries with the same recipe slug.
+Use `--grouped` with `intake log` to merge entries with the same food slug.
 `intake log --days-ago N` (or `-d N`) shows the log from N days ago, e.g.
 `intake log -d 1` for yesterday. `intake summary` shows one row per logged day
 (unlogged days in the window are skipped) with period totals and per-day
@@ -50,7 +50,7 @@ min_fat = 50.0
 max_fat = 90.0
 maintenance_calories = 2400
 show_columns = ["calories", "carbs", "fat", "protein", "fiber"]
-foods_dir = "/path/to/recipes"
+foods_dir = "/path/to/foods"
 log_dir = "/path/to/logs"
 ```
 
@@ -64,13 +64,13 @@ Targets scale with day progress.
 Paths can also be set via `INTAKE_FOODS_DIR` and `INTAKE_LOG_DIR` environment
 variables, or `--foods-dir` / `--log-dir` CLI flags (CLI wins).
 
-## Adding Recipes
+## Adding Foods
 
 Drop a `.toml` file in your foods directory. The filename (minus `.toml`)
-becomes the recipe slug used with `intake add`.
+becomes the food slug used with `intake add`.
 
 ```toml
-title = "My Recipe"
+title = "My Food"
 servings = 4
 
 [[ingredients]]
@@ -93,7 +93,7 @@ automatically at load time — do not include it.
 
 ## Adhoc Entries
 
-For one-off foods without a recipe file:
+For one-off foods without a food file:
 
 ```
 intake adhoc --calories 250 --protein 12 --fiber 3 --fat 9 --carbs 20 "Greek yogurt" 1.5

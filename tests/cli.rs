@@ -54,17 +54,17 @@ fn write_day_log(
 }
 
 #[test]
-fn test_list_all_recipes() {
+fn test_list_all_foods() {
     let (stdout, success) = run_with_log_dir(&["list"]);
     assert!(success);
-    assert!(stdout.contains("All Recipes"));
+    assert!(stdout.contains("All Foods"));
     assert!(stdout.contains("Coffee"));
     assert!(stdout.contains("Oatmeal"));
     assert!(stdout.contains("Turkey Chili 98% Lean"));
 }
 
 #[test]
-fn test_show_recipe() {
+fn test_show_food() {
     let (stdout, success) = run_with_log_dir(&["show", "coffee"]);
     assert!(success);
     assert!(stdout.contains("Coffee (1 serving)"));
@@ -73,8 +73,8 @@ fn test_show_recipe() {
 }
 
 #[test]
-fn test_show_recipe_not_found() {
-    let (_, success) = run_with_log_dir(&["show", "nonexistent-recipe"]);
+fn test_show_food_not_found() {
+    let (_, success) = run_with_log_dir(&["show", "nonexistent-food"]);
     assert!(!success);
 }
 

@@ -18,8 +18,8 @@ const CLAP_STYLES: Styles = Styles::styled()
 
 mod config;
 mod display;
+mod food;
 mod log;
-mod recipe;
 use config::{Column, Config};
 use display::{ColumnValue, Table};
 
@@ -29,7 +29,7 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// Directory containing recipe files
+    /// Directory containing food files
     #[arg(long)]
     foods_dir: Option<PathBuf>,
 
@@ -40,11 +40,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Add a recipe to today's log
+    /// Add a food to today's log
     Add {
-        /// Recipe slug (filename without .toml)
-        #[arg(add = ArgValueCandidates::new(complete_recipes))]
-        recipe: String,
+        /// Food slug (filename without .toml)
+        #[arg(add = ArgValueCandidates::new(complete_foods))]
+        food: String,
         /// Number of servings (default: 1)
         #[arg(default_value = "1")]
         servings: f64,
@@ -56,17 +56,17 @@ enum Commands {
         /// Number of days before today to show (e.g. 1 = yesterday)
         #[arg(long, short = 'd', conflicts_with = "date")]
         days_ago: Option<u32>,
-        /// Group entries by recipe
+        /// Group entries by food
         #[arg(long)]
         grouped: bool,
     },
-    /// Show a recipe with ingredients and per-serving values
+    /// Show a food with ingredients and per-serving values
     Show {
-        /// Recipe slug (filename without .toml)
-        #[arg(add = ArgValueCandidates::new(complete_recipes))]
-        recipe: String,
+        /// Food slug (filename without .toml)
+        #[arg(add = ArgValueCandidates::new(complete_foods))]
+        food: String,
     },
-    /// List all recipes with per-serving values
+    /// List all foods with per-serving values
     List,
     /// Generate shell completion script
     Completions {
@@ -90,7 +90,7 @@ enum Commands {
         /// Calories burned
         calories: u32,
     },
-    /// Add an ad-hoc entry with custom macros (no recipe file needed)
+    /// Add an ad-hoc entry with custom macros (no food file needed)
     Adhoc {
         /// Name of the item
         name: String,
@@ -129,16 +129,16 @@ fn completion_config() -> Option<&'static Config> {
         .as_ref()
 }
 
-fn complete_recipes() -> Vec<CompletionCandidate> {
+fn complete_foods() -> Vec<CompletionCandidate> {
     let config = match completion_config() {
         Some(c) => c,
         None => return Vec::new(),
     };
     let dir = config.foods_dir();
-    match recipe::list_recipe_slugs(&dir) {
+    match food::list_food_slugs(&dir) {
         Ok(slugs) => slugs.into_iter().map(CompletionCandidate::new).collect(),
         Err(e) => {
-            eprintln!("warning: failed to list recipes for completion: {e}");
+            eprintln!("warning: failed to list foods for completion: {e}");
             Vec::new()
         }
     }
@@ -199,15 +199,8 @@ fn main() -> Result<()> {
     let mut stdout = std::io::stdout();
 
     match cli.command {
-        Commands::Add { recipe, servings } => {
-            cmd_add(
-                &mut stdout,
-                &foods_dir,
-                &log_dir,
-                &recipe,
-                servings,
-                &config,
-            )?;
+        Commands::Add { food, servings } => {
+            cmd_add(&mut stdout, &foods_dir, &log_dir, &food, servings, &config)?;
         }
         Commands::Log {
             date,
@@ -217,8 +210,8 @@ fn main() -> Result<()> {
             let date = resolve_date(date, days_ago)?;
             cmd_log(&mut stdout, &foods_dir, &log_dir, date, grouped, &config)?;
         }
-        Commands::Show { recipe } => {
-            cmd_show_recipe(&mut stdout, &foods_dir, &recipe, &config)?;
+        Commands::Show { food } => {
+            cmd_show_food(&mut stdout, &foods_dir, &food, &config)?;
         }
         Commands::List => {
             cmd_list(&mut stdout, &foods_dir, &config)?;
@@ -276,7 +269,7 @@ fn main() -> Result<()> {
                 &log_dir,
                 &name,
                 servings.unwrap_or(1.0),
-                &recipe::Macros {
+                &food::Macros {
                     calories: calories.unwrap_or(0),
                     protein_g: protein.unwrap_or(0.0),
                     fiber_g: fiber.unwrap_or(0.0),
@@ -296,7 +289,7 @@ fn cmd_adhoc(
     log_dir: &Path,
     name: &str,
     servings: f64,
-    macros: &recipe::Macros,
+    macros: &food::Macros,
 ) -> Result<()> {
     let entry = log::LogEntry {
         slug: name.to_lowercase().replace(' ', "-"),
@@ -329,11 +322,10 @@ fn cmd_add(
     servings: f64,
     config: &Config,
 ) -> Result<()> {
-    let recipe_path = foods_dir.join(format!("{}.toml", slug));
-    let recipe = recipe::load_recipe(&recipe_path)
-        .with_context(|| format!("recipe '{}' not found", slug))?;
+    let food_path = foods_dir.join(format!("{}.toml", slug));
+    let food = food::load_food(&food_path).with_context(|| format!("food '{}' not found", slug))?;
 
-    let ps = recipe.per_serving();
+    let ps = food.per_serving();
 
     let entry = log::LogEntry {
         slug: slug.to_string(),
@@ -353,7 +345,7 @@ fn cmd_add(
     writeln!(
         writer,
         "Added {} servings of {} to {}",
-        servings, recipe.title, date
+        servings, food.title, date
     )?;
     writeln!(writer)?;
     cmd_log(writer, foods_dir, log_dir, date, false, config)?;
@@ -386,11 +378,11 @@ fn resolve_title(
     if let Some(title) = cache.get(&entry.slug) {
         return Ok(title.clone());
     }
-    let recipe_path = foods_dir.join(format!("{}.toml", entry.slug));
-    let recipe = recipe::load_recipe(&recipe_path)
-        .with_context(|| format!("recipe '{}' not found", entry.slug))?;
-    cache.insert(entry.slug.clone(), recipe.title.clone());
-    Ok(recipe.title)
+    let food_path = foods_dir.join(format!("{}.toml", entry.slug));
+    let food =
+        food::load_food(&food_path).with_context(|| format!("food '{}' not found", entry.slug))?;
+    cache.insert(entry.slug.clone(), food.title.clone());
+    Ok(food.title)
 }
 
 fn fmt_servings(servings: f64) -> String {
@@ -721,24 +713,23 @@ fn cmd_summary(
     Ok(())
 }
 
-fn cmd_show_recipe(
+fn cmd_show_food(
     writer: &mut impl Write,
     foods_dir: &Path,
     slug: &str,
     config: &Config,
 ) -> Result<()> {
-    let recipe_path = foods_dir.join(format!("{}.toml", slug));
-    let recipe = recipe::load_recipe(&recipe_path)
-        .with_context(|| format!("recipe '{}' not found", slug))?;
-    write!(writer, "{}", recipe.display(&config.columns()?))?;
+    let food_path = foods_dir.join(format!("{}.toml", slug));
+    let food = food::load_food(&food_path).with_context(|| format!("food '{}' not found", slug))?;
+    write!(writer, "{}", food.display(&config.columns()?))?;
     Ok(())
 }
 
 fn cmd_list(writer: &mut impl Write, foods_dir: &Path, config: &Config) -> Result<()> {
-    let recipes = recipe::find_all_recipes(foods_dir)?;
+    let foods = food::find_all_foods(foods_dir)?;
     let columns = config.columns()?;
 
-    let mut headers: Vec<&str> = vec!["Recipe", "Servings"];
+    let mut headers: Vec<&str> = vec!["Food", "Servings"];
     for column in &columns {
         headers.push(if *column == Column::Calories {
             "Cal/serv"
@@ -748,13 +739,13 @@ fn cmd_list(writer: &mut impl Write, foods_dir: &Path, config: &Config) -> Resul
     }
 
     let mut table = Table::new(&headers);
-    table.set_title("All Recipes");
+    table.set_title("All Foods");
 
-    for (_, recipe) in &recipes {
-        let ps = recipe.per_serving();
-        let mut cells = vec![recipe.title.clone(), recipe.servings.to_string()];
+    for food in &foods {
+        let ps = food.per_serving();
+        let mut cells = vec![food.title.clone(), food.servings.to_string()];
         for column in &columns {
-            cells.push(display::recipe_cell(*column, ps.column_value(*column)));
+            cells.push(display::food_cell(*column, ps.column_value(*column)));
         }
         table.add_row(cells);
     }
@@ -906,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_grouped_rows_mixed_adhoc_and_recipe() {
+    fn test_build_grouped_rows_mixed_adhoc_and_food() {
         let entries = vec![
             entry("coffee", 1.0),
             entry("coffee", 1.0),

@@ -320,7 +320,7 @@ pub fn log_cell(column: Column, value: f64) -> String {
     }
 }
 
-pub fn recipe_cell(column: Column, value: f64) -> String {
+pub fn food_cell(column: Column, value: f64) -> String {
     match column {
         Column::Calories => format!("{}", value.round() as u32),
         _ => format!("{value:.1}g"),
@@ -567,10 +567,10 @@ mod tests {
     }
 
     #[test]
-    fn test_recipe_cell_formats() {
-        assert_eq!(recipe_cell(Column::Calories, 160.0), "160");
-        assert_eq!(recipe_cell(Column::Protein, 9.0), "9.0g");
-        assert_eq!(recipe_cell(Column::Carbs, 30.25), "30.2g");
+    fn test_food_cell_formats() {
+        assert_eq!(food_cell(Column::Calories, 160.0), "160");
+        assert_eq!(food_cell(Column::Protein, 9.0), "9.0g");
+        assert_eq!(food_cell(Column::Carbs, 30.25), "30.2g");
     }
 
     #[test]

@@ -3,15 +3,15 @@
 This project is a CLI diet tracker. Use the `intake` binary for all operations —
 run `intake --help` to see available subcommands and flags.
 
-## Adding a Recipe
+## Adding a Food
 
 Create a `.toml` file in your foods directory (`~/.local/share/intake/foods/`
-by default). The filename (minus `.toml`) becomes the recipe slug.
+by default). The filename (minus `.toml`) becomes the food slug.
 
-The file must match the `Recipe` and `Ingredient` structs in `src/recipe.rs`:
+The file must match the `Food` and `Ingredient` structs in `src/food.rs`:
 
 - `title` — display name
-- `servings` — how many servings the full recipe makes
+- `servings` — how many servings the full food makes
 - `[[ingredients]]` — one table per ingredient, each with:
   - `name` (string, required)
   - `quantity` (string, optional — e.g. `"400g"`, `"1 tbsp"`)
@@ -26,22 +26,20 @@ All macro fields (`protein_g`, `fiber_g`, `calories`, `fat_g`, `carbs_g`,
 `alcohol_g`) are **required** — there is no default of zero, so a food with
 unrecorded macros fails loudly instead of silently counting as zero.
 
-See `foods/cheesy-popcorn.toml` for a simple example, or `foods/turkey-chili.toml`
-for a multi-ingredient one.
+See `tests/fixtures/foods/cheesy-popcorn.toml` for a simple example, or
+`tests/fixtures/foods/turkey-chili.toml` for a multi-ingredient one.
 
 The `content_hash` field is computed automatically at load time — do not include it.
 
-Example recipes live in `tests/fixtures/foods/` for reference.
-
 ## Adding an Adhoc Log Entry
 
-Use the `adhoc` CLI subcommand for one-off foods without a recipe file:
+Use the `adhoc` CLI subcommand for one-off foods without a food file:
 
 ```
 intake adhoc [--calories N] [--protein N] [--fiber N] [--fat N] [--carbs N] [--alcohol N] <name> [servings]
 ```
 
-- Macros are specified inline — no recipe file needed; every macro flag is
+- Macros are specified inline — no food file needed; every macro flag is
   optional and defaults to 0
 - The entry is appended to today's log
 - Slug is auto-derived from the name (lowercased, spaces → hyphens)
