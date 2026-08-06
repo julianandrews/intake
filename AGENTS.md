@@ -67,8 +67,10 @@ The `Config` struct and its resolution logic live in `src/config.rs`.
 intake exercise 300
 ```
 
-Records calories burned for today. Shows up in the log view as a red positive
-number subtracted from your TDEE for deficit calculation.
+Records calories burned for today. On exercise days the log table shows an
+`Exercise` row with a negative calorie adjustment and a `Net` row with
+post-exercise calories; exercise also raises the TDEE used for deficit
+calculation.
 
 ## Viewing a Multi-Day Summary
 

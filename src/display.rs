@@ -3,15 +3,31 @@ use std::fmt::Write;
 
 pub const ANSI_RESET: &str = "\x1b[0m";
 pub const ANSI_CYAN: &str = "\x1b[36m";
+pub const ANSI_BOLD_BLUE: &str = "\x1b[1;34m";
 pub const ANSI_BOLD_CYAN: &str = "\x1b[1;36m";
-pub const ANSI_BOLD_GREEN: &str = "\x1b[1;32m";
 pub const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
 pub const ANSI_BOLD_RED: &str = "\x1b[1;31m";
+pub const ANSI_BOLD_MAGENTA: &str = "\x1b[1;35m";
+pub const ANSI_GREEN: &str = "\x1b[32m";
+pub const ANSI_YELLOW: &str = "\x1b[33m";
+pub const ANSI_RED: &str = "\x1b[31m";
 
 #[derive(Debug, Clone)]
 pub enum Align {
     Left,
     Right,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FooterStyle {
+    Alternating,
+    Custom,
+}
+
+#[derive(Debug)]
+struct FooterRow {
+    cells: Vec<String>,
+    style: FooterStyle,
 }
 
 #[derive(Debug)]
@@ -20,7 +36,7 @@ pub struct Table {
     align: Vec<Align>,
     rows: Vec<Vec<String>>,
     title: Option<String>,
-    footers: Vec<Vec<String>>,
+    footers: Vec<FooterRow>,
 }
 
 pub fn visible_width(s: &str) -> usize {
@@ -103,7 +119,17 @@ impl Table {
     }
 
     pub fn add_footer(&mut self, row: Vec<String>) {
-        self.footers.push(row);
+        self.footers.push(FooterRow {
+            cells: row,
+            style: FooterStyle::Alternating,
+        });
+    }
+
+    pub fn add_footer_custom(&mut self, row: Vec<String>) {
+        self.footers.push(FooterRow {
+            cells: row,
+            style: FooterStyle::Custom,
+        });
     }
 
     fn col_widths(&self) -> Vec<usize> {
@@ -113,8 +139,8 @@ impl Table {
                 widths[i] = widths[i].max(visible_width(cell));
             }
         }
-        for row in &self.footers {
-            for (i, cell) in row.iter().enumerate() {
+        for footer in &self.footers {
+            for (i, cell) in footer.cells.iter().enumerate() {
                 widths[i] = widths[i].max(visible_width(cell));
             }
         }
@@ -156,18 +182,32 @@ impl Table {
 
         writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
 
-        for (i, row) in self.footers.iter().enumerate() {
-            let ansi = if i == 0 {
-                ANSI_BOLD_GREEN
-            } else {
-                ANSI_BOLD_CYAN
-            };
-            writeln!(
-                out,
-                "  {ansi}{}{ANSI_RESET}",
-                format_cells(row, &widths, &self.align)
-            )
-            .unwrap();
+        let mut colored_idx = 0;
+        for footer in &self.footers {
+            match footer.style {
+                FooterStyle::Alternating => {
+                    let ansi = if colored_idx % 2 == 0 {
+                        ANSI_BOLD_MAGENTA
+                    } else {
+                        ANSI_BOLD_BLUE
+                    };
+                    writeln!(
+                        out,
+                        "  {ansi}{}{ANSI_RESET}",
+                        format_cells(&footer.cells, &widths, &self.align)
+                    )
+                    .unwrap();
+                    colored_idx += 1;
+                }
+                FooterStyle::Custom => {
+                    writeln!(
+                        out,
+                        "  {}",
+                        format_cells(&footer.cells, &widths, &self.align)
+                    )
+                    .unwrap();
+                }
+            }
         }
 
         out
@@ -179,6 +219,13 @@ fn day_proportion(now: &NaiveTime) -> f64 {
     elapsed as f64 / 86400.0
 }
 
+pub fn wrap_color(value: &str, color: Option<&str>) -> String {
+    match color {
+        Some(color) => format!("{color}{value}{ANSI_RESET}"),
+        None => value.to_string(),
+    }
+}
+
 pub struct DayTotals {
     pub protein: f64,
     pub fiber: f64,
@@ -188,122 +235,77 @@ pub struct DayTargets {
     pub max_calories: Option<u32>,
     pub min_protein: Option<f64>,
     pub min_fiber: Option<f64>,
-    pub maintenance_calories: Option<u32>,
+}
+
+pub struct TotalColors {
+    pub calories: Option<&'static str>,
+    pub protein: Option<&'static str>,
+    pub fiber: Option<&'static str>,
+}
+
+pub fn total_cell_colors(
+    now: Option<NaiveTime>,
+    net_calories: f64,
+    totals: &DayTotals,
+    targets: &DayTargets,
+) -> TotalColors {
+    let dp = now.as_ref().map(day_proportion).unwrap_or(1.0);
+
+    let calories = targets.max_calories.map(|target| {
+        let target = target as f64;
+        if net_calories <= target * dp {
+            ANSI_GREEN
+        } else if net_calories <= target {
+            ANSI_YELLOW
+        } else {
+            ANSI_RED
+        }
+    });
+
+    let protein = targets.min_protein.map(|target| {
+        if totals.protein >= target * dp {
+            ANSI_GREEN
+        } else {
+            ANSI_YELLOW
+        }
+    });
+
+    let fiber = targets.min_fiber.map(|target| {
+        if totals.fiber >= target * dp {
+            ANSI_GREEN
+        } else {
+            ANSI_YELLOW
+        }
+    });
+
+    TotalColors {
+        calories,
+        protein,
+        fiber,
+    }
 }
 
 pub fn render_day_summary(
-    now: Option<NaiveTime>,
-    totals: &DayTotals,
     exercise_calories: u32,
-    net_calories: f64,
-    targets: &DayTargets,
+    maintenance_calories: Option<u32>,
     deficit: Option<f64>,
 ) -> String {
-    let is_today = now.is_some();
-    let dp = now.as_ref().map(day_proportion).unwrap_or(1.0);
+    let mut parts: Vec<String> = Vec::new();
 
-    let mut line1: Vec<String> = Vec::new();
-
-    if let Some(target) = targets.max_calories {
-        let color = if net_calories > target as f64 {
-            ANSI_BOLD_RED
-        } else if !is_today {
-            ANSI_BOLD_GREEN
-        } else {
-            ANSI_BOLD_YELLOW
-        };
-        line1.push(format!(
-            "Calories: {color}{:.0}{}/{}",
-            net_calories, ANSI_RESET, target
-        ));
-    }
-    if let Some(target) = targets.min_protein {
-        let color = if totals.protein >= target {
-            ANSI_BOLD_GREEN
-        } else if !is_today {
-            ANSI_BOLD_RED
-        } else {
-            let ratio = totals.protein / target;
-            if ratio >= dp {
-                ANSI_BOLD_YELLOW
-            } else {
-                ANSI_BOLD_RED
-            }
-        };
-        line1.push(format!(
-            "Protein: {color}{:.1}{}/{}g",
-            totals.protein, ANSI_RESET, target
-        ));
-    }
-    if let Some(target) = targets.min_fiber {
-        let color = if totals.fiber >= target {
-            ANSI_BOLD_GREEN
-        } else if !is_today {
-            ANSI_BOLD_RED
-        } else {
-            let ratio = totals.fiber / target;
-            if ratio >= dp {
-                ANSI_BOLD_YELLOW
-            } else {
-                ANSI_BOLD_RED
-            }
-        };
-        line1.push(format!(
-            "Fiber: {color}{:.1}{}/{}g",
-            totals.fiber, ANSI_RESET, target
-        ));
-    }
-
-    let mut line2: Vec<String> = Vec::new();
-
-    if exercise_calories > 0 {
-        line2.push(format!(
-            "Exercise: {ANSI_BOLD_RED}{}{ANSI_RESET}",
-            exercise_calories
-        ));
-    }
-    if let Some(mc) = targets.maintenance_calories {
+    if let Some(mc) = maintenance_calories {
         let tdee = mc + exercise_calories;
-        line2.push(format!("TDEE: {}", tdee));
+        parts.push(format!("TDEE: {tdee}"));
     }
     if let Some(d) = deficit {
-        let color = if d >= 0.0 {
-            ANSI_BOLD_GREEN
-        } else {
-            ANSI_BOLD_RED
-        };
-        line2.push(format!("Deficit: {color}{:.0}{}", d, ANSI_RESET));
+        let color = if d >= 0.0 { ANSI_GREEN } else { ANSI_RED };
+        parts.push(format!("Deficit: {color}{d:.0}{ANSI_RESET}"));
     }
 
-    let max_len = line1.len().max(line2.len());
-    for i in 0..max_len {
-        let w1 = line1.get(i).map(|s| visible_width(s)).unwrap_or(0);
-        let w2 = line2.get(i).map(|s| visible_width(s)).unwrap_or(0);
-        let mw = w1.max(w2);
-        if let Some(s) = line1.get_mut(i) {
-            let pad = mw - visible_width(s);
-            for _ in 0..pad {
-                s.push(' ');
-            }
-        }
-        if let Some(s) = line2.get_mut(i) {
-            let pad = mw - visible_width(s);
-            for _ in 0..pad {
-                s.push(' ');
-            }
-        }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("  {}\n", parts.join("    "))
     }
-
-    let mut out = String::new();
-    if !line1.is_empty() {
-        out.push_str(&format!("  {}", line1.join("    ")));
-        out.push('\n');
-    }
-    if !line2.is_empty() {
-        out.push_str(&format!("  {}", line2.join("    ")));
-        out.push('\n');
-    }
-    out
 }
 
 #[cfg(test)]
@@ -357,8 +359,8 @@ mod tests {
         assert!(md.contains("  Oats        100g         200       10.0g"));
         assert!(md.contains("  Milk        200ml        120        8.0g"));
         assert!(md.contains("----------- ------  --------  ----------  --------"));
-        assert!(md.contains("\u{1b}[1;32mTotal                    320       18.0g"));
-        assert!(md.contains("\u{1b}[1;36mPer serving              160        9.0g"));
+        assert!(md.contains("\u{1b}[1;35mTotal                    320       18.0g"));
+        assert!(md.contains("\u{1b}[1;34mPer serving              160        9.0g"));
     }
 
     #[test]
@@ -381,6 +383,102 @@ mod tests {
     #[test]
     fn test_visible_width_no_ansi() {
         assert_eq!(visible_width("hello"), 5);
+    }
+
+    fn targets() -> DayTargets {
+        DayTargets {
+            max_calories: Some(2000),
+            min_protein: Some(100.0),
+            min_fiber: Some(20.0),
+        }
+    }
+
+    #[test]
+    fn test_total_cell_colors_past_day() {
+        let totals = DayTotals {
+            protein: 90.0,
+            fiber: 25.0,
+        };
+        let colors = total_cell_colors(None, 2100.0, &totals, &targets());
+        assert_eq!(colors.calories, Some(ANSI_RED));
+        assert_eq!(colors.protein, Some(ANSI_YELLOW));
+        assert_eq!(colors.fiber, Some(ANSI_GREEN));
+    }
+
+    #[test]
+    fn test_total_cell_colors_today_at_noon() {
+        let now = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let totals = DayTotals {
+            protein: 40.0,
+            fiber: 5.0,
+        };
+
+        // net 800: at/below half of 2000 -> green
+        let on_track = total_cell_colors(Some(now), 800.0, &totals, &targets());
+        assert_eq!(on_track.calories, Some(ANSI_GREEN));
+
+        // net 1200: over half, under target -> yellow
+        let over_proportion = total_cell_colors(Some(now), 1200.0, &totals, &targets());
+        assert_eq!(over_proportion.calories, Some(ANSI_YELLOW));
+
+        // net 2500: over target -> red
+        let over_target = total_cell_colors(Some(now), 2500.0, &totals, &targets());
+        assert_eq!(over_target.calories, Some(ANSI_RED));
+
+        // protein 40 >= 50? no -> yellow; fiber 5 >= 10? no -> yellow
+        assert_eq!(over_target.protein, Some(ANSI_YELLOW));
+        assert_eq!(over_target.fiber, Some(ANSI_YELLOW));
+    }
+
+    #[test]
+    fn test_total_cell_colors_no_targets() {
+        let targets = DayTargets {
+            max_calories: None,
+            min_protein: None,
+            min_fiber: None,
+        };
+        let colors = total_cell_colors(
+            None,
+            2100.0,
+            &DayTotals {
+                protein: 1.0,
+                fiber: 1.0,
+            },
+            &targets,
+        );
+        assert_eq!(colors.calories, None);
+        assert_eq!(colors.protein, None);
+        assert_eq!(colors.fiber, None);
+    }
+
+    #[test]
+    fn test_render_day_summary() {
+        let out = render_day_summary(300, Some(2400), Some(1500.0));
+        assert!(out.contains("TDEE: 2700"));
+        assert!(out.contains("Deficit: \u{1b}[32m1500\u{1b}[0m"));
+    }
+
+    #[test]
+    fn test_render_day_summary_empty() {
+        assert_eq!(render_day_summary(0, None, None), "");
+    }
+
+    #[test]
+    fn test_render_day_summary_negative_deficit() {
+        let out = render_day_summary(0, Some(2400), Some(-500.0));
+        assert!(out.contains("Deficit: \u{1b}[31m-500\u{1b}[0m"));
+    }
+
+    #[test]
+    fn test_total_cell_colors_past_day_below_targets() {
+        let totals = DayTotals {
+            protein: 50.0,
+            fiber: 10.0,
+        };
+        let colors = total_cell_colors(None, 1500.0, &totals, &targets());
+        assert_eq!(colors.calories, Some(ANSI_GREEN));
+        assert_eq!(colors.protein, Some(ANSI_YELLOW));
+        assert_eq!(colors.fiber, Some(ANSI_YELLOW));
     }
 
     #[test]

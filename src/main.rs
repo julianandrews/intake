@@ -359,6 +359,14 @@ fn resolve_title(
     Ok(recipe.title)
 }
 
+fn fmt_servings(servings: f64) -> String {
+    if servings.fract() == 0.0 {
+        format!("{}", servings as u32)
+    } else {
+        format!("{:.1}", servings)
+    }
+}
+
 fn cmd_log(
     writer: &mut impl Write,
     foods_dir: &Path,
@@ -384,13 +392,10 @@ fn cmd_log(
             let mut total_cal = 0.0;
             let mut total_protein = 0.0;
             let mut total_fiber = 0.0;
+            let mut total_servings = 0.0;
 
             for row in &rows {
-                let serv_str = if row.servings.fract() == 0.0 {
-                    format!("{}", row.servings as u32)
-                } else {
-                    format!("{:.1}", row.servings)
-                };
+                let serv_str = fmt_servings(row.servings);
 
                 table.add_row(vec![
                     row.title.clone(),
@@ -403,15 +408,8 @@ fn cmd_log(
                 total_cal += row.calories;
                 total_protein += row.protein_g;
                 total_fiber += row.fiber_g;
+                total_servings += row.servings;
             }
-
-            table.add_footer(vec![
-                "Total".to_string(),
-                String::new(),
-                format!("{:.0}", total_cal),
-                format!("{:.1}", total_protein),
-                format!("{:.1}", total_fiber),
-            ]);
 
             let (net_cal, deficit) = day_net_and_deficit(
                 total_cal,
@@ -419,24 +417,61 @@ fn cmd_log(
                 config.maintenance_calories,
             );
 
-            write!(writer, "{}", table.format())?;
-
             let now = (date == Local::now().date_naive()).then(|| Local::now().time());
 
-            let summary = display::render_day_summary(
+            let colors = display::total_cell_colors(
                 now,
+                net_cal,
                 &display::DayTotals {
                     protein: total_protein,
                     fiber: total_fiber,
                 },
-                day_log.exercise_calories,
-                net_cal,
                 &display::DayTargets {
                     max_calories: config.max_calories,
                     min_protein: config.min_protein,
                     min_fiber: config.min_fiber,
-                    maintenance_calories: config.maintenance_calories,
                 },
+            );
+
+            let serv_str = fmt_servings(total_servings);
+
+            if day_log.exercise_calories > 0 {
+                table.add_footer_custom(vec![
+                    "Total".to_string(),
+                    serv_str,
+                    format!("{:.0}", total_cal),
+                    format!("{:.1}", total_protein),
+                    format!("{:.1}", total_fiber),
+                ]);
+                table.add_footer_custom(vec![
+                    "Exercise".to_string(),
+                    String::new(),
+                    format!("-{}", day_log.exercise_calories),
+                    String::new(),
+                    String::new(),
+                ]);
+                table.add_footer_custom(vec![
+                    "Net".to_string(),
+                    String::new(),
+                    display::wrap_color(&format!("{:.0}", net_cal), colors.calories),
+                    display::wrap_color(&format!("{:.1}", total_protein), colors.protein),
+                    display::wrap_color(&format!("{:.1}", total_fiber), colors.fiber),
+                ]);
+            } else {
+                table.add_footer_custom(vec![
+                    "Total".to_string(),
+                    serv_str,
+                    display::wrap_color(&format!("{:.0}", total_cal), colors.calories),
+                    display::wrap_color(&format!("{:.1}", total_protein), colors.protein),
+                    display::wrap_color(&format!("{:.1}", total_fiber), colors.fiber),
+                ]);
+            }
+
+            write!(writer, "{}", table.format())?;
+
+            let summary = display::render_day_summary(
+                day_log.exercise_calories,
+                config.maintenance_calories,
                 deficit,
             );
             write!(writer, "{}", summary)?;
@@ -521,15 +556,6 @@ fn build_summary_rows(
     Ok(rows)
 }
 
-fn deficit_cell(d: f64) -> String {
-    let color = if d >= 0.0 {
-        display::ANSI_BOLD_GREEN
-    } else {
-        display::ANSI_BOLD_RED
-    };
-    format!("{color}{d:.0}{}", display::ANSI_RESET)
-}
-
 fn cmd_summary(
     writer: &mut impl Write,
     log_dir: &Path,
@@ -589,7 +615,7 @@ fn cmd_summary(
             }
         }
         if let Some(d) = row.deficit {
-            cells.push(deficit_cell(d));
+            cells.push(format!("{d:.0}"));
         }
         table.add_row(cells);
     }
@@ -611,7 +637,7 @@ fn cmd_summary(
         total_footer.push(total_exercise.to_string());
     }
     if show_deficit {
-        total_footer.push(deficit_cell(total_deficit));
+        total_footer.push(format!("{total_deficit:.0}"));
     }
     table.add_footer(total_footer);
 
@@ -625,7 +651,7 @@ fn cmd_summary(
         avg_footer.push(format!("{:.0}", total_exercise as f64 / count));
     }
     if show_deficit {
-        avg_footer.push(deficit_cell(total_deficit / count));
+        avg_footer.push(format!("{:.0}", total_deficit / count));
     }
     table.add_footer(avg_footer);
 

@@ -247,8 +247,8 @@ mod tests {
         assert!(md.contains("  Oats        100g         200       10.0g"));
         assert!(md.contains("  Milk        200ml        120        8.0g"));
         assert!(md.contains("----------- ------  --------  ----------  --------"));
-        assert!(md.contains("\u{1b}[1;32mTotal                    320       18.0g"));
-        assert!(md.contains("\u{1b}[1;36mPer serving              160        9.0g"));
+        assert!(md.contains("\u{1b}[1;35mTotal                    320       18.0g"));
+        assert!(md.contains("\u{1b}[1;34mPer serving              160        9.0g"));
     }
 
     #[test]

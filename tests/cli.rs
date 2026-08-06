@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn foods_dir() -> PathBuf {
@@ -9,9 +9,10 @@ fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_intake"))
 }
 
-fn run(args: &[&str]) -> (String, bool) {
+fn run_in(args: &[&str], config_dir: &Path) -> (String, bool) {
     let output = Command::new(binary())
         .args(args)
+        .env("XDG_CONFIG_HOME", config_dir)
         .output()
         .expect("failed to run intake");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -21,6 +22,11 @@ fn run(args: &[&str]) -> (String, bool) {
         eprintln!("stderr: {}", stderr);
     }
     (stdout, success)
+}
+
+fn run(args: &[&str]) -> (String, bool) {
+    let config_dir = tempfile::TempDir::new().unwrap();
+    run_in(args, config_dir.path())
 }
 
 fn run_with_log_dir(args: &[&str]) -> (String, bool) {
@@ -168,6 +174,31 @@ fn test_exercise_recording() {
     assert!(log_ok, "log failed: {}", log_out);
     assert!(log_out.contains("300"));
     assert!(log_out.contains("Exercise"));
+    assert!(log_out.contains("Net"));
+}
+
+#[test]
+fn test_log_net_row_with_exercise() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 300);
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "log",
+        "2026-08-02",
+    ]);
+    assert!(success, "log failed: {}", stdout);
+    assert!(stdout.contains("Total"));
+    assert!(stdout.contains("1800"));
+    assert!(stdout.contains("-300"));
+    assert!(stdout.contains("Net"));
+    assert!(stdout.contains("1500"));
 }
 
 #[test]
@@ -279,14 +310,20 @@ fn test_summary_deficit_with_config() {
     // food 1800, exercise 300 -> net 1500, tdee 2700, deficit 1200
     write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 300);
 
-    let output = Command::new(binary())
-        .env("XDG_CONFIG_HOME", config_dir.path())
-        .args(["--foods-dir", &fd_str, "--log-dir", &log_dir_str])
-        .args(["summary", "2026-08-03", "--days", "7"])
-        .output()
-        .expect("failed to run intake");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            fd_str.as_str(),
+            "--log-dir",
+            log_dir_str.as_str(),
+            "summary",
+            "2026-08-03",
+            "--days",
+            "7",
+        ],
+        config_dir.path(),
+    );
+    assert!(success);
     assert!(stdout.contains("Deficit"));
     assert!(stdout.contains("1200")); // per-day deficit, total, and avg
     assert!(!stdout.contains("maintenance_calories"));
