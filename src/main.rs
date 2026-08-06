@@ -53,6 +53,9 @@ enum Commands {
     Log {
         #[arg(add = ArgValueCandidates::new(complete_log_dates))]
         date: Option<String>,
+        /// Number of days before today to show (e.g. 1 = yesterday)
+        #[arg(long, short = 'd', conflicts_with = "date")]
+        days_ago: Option<u32>,
         /// Group entries by recipe
         #[arg(long)]
         grouped: bool,
@@ -79,7 +82,7 @@ enum Commands {
         #[arg(add = ArgValueCandidates::new(complete_log_dates))]
         date: Option<String>,
         /// Number of days to look back (including the end date)
-        #[arg(long, default_value = "7")]
+        #[arg(long, short = 'd', default_value = "7")]
         days: u32,
     },
     /// Record exercise calories for today
@@ -197,12 +200,12 @@ fn main() -> Result<()> {
                 &config,
             )?;
         }
-        Commands::Log { date, grouped } => {
-            let date = match date {
-                Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
-                    .context("date must be in YYYY-MM-DD format")?,
-                None => Local::now().date_naive(),
-            };
+        Commands::Log {
+            date,
+            days_ago,
+            grouped,
+        } => {
+            let date = resolve_date(date, days_ago)?;
             cmd_log(&mut stdout, &foods_dir, &log_dir, date, grouped, &config)?;
         }
         Commands::Show { recipe } => {
@@ -212,11 +215,7 @@ fn main() -> Result<()> {
             cmd_list(&mut stdout, &foods_dir)?;
         }
         Commands::Summary { date, days } => {
-            let end = match date {
-                Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
-                    .context("date must be in YYYY-MM-DD format")?,
-                None => Local::now().date_naive(),
-            };
+            let end = resolve_date(date, None)?;
             cmd_summary(&mut stdout, &log_dir, end, days, &config)?;
         }
         Commands::Exercise { calories } => {
@@ -339,6 +338,20 @@ fn cmd_add(
     cmd_log(writer, foods_dir, log_dir, date, false, config)?;
 
     Ok(())
+}
+
+fn resolve_date(date: Option<String>, days_ago: Option<u32>) -> Result<chrono::NaiveDate> {
+    if let Some(d) = date {
+        return chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
+            .context("date must be in YYYY-MM-DD format");
+    }
+    let today = Local::now().date_naive();
+    match days_ago {
+        Some(n) => today
+            .checked_sub_days(chrono::Days::new(n as u64))
+            .context("days_ago exceeds the supported date span"),
+        None => Ok(today),
+    }
 }
 
 fn resolve_title(
@@ -840,6 +853,77 @@ mod tests {
         let entries = vec![e1, e2];
         let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
         assert_eq!(rows[0].calories, 72.0);
+    }
+
+    #[test]
+    fn test_resolve_date_defaults_to_today() {
+        let today = Local::now().date_naive();
+        let date = resolve_date(None, None).unwrap();
+        assert_eq!(date, today);
+    }
+
+    #[test]
+    fn test_resolve_date_days_ago_zero_is_today() {
+        let today = Local::now().date_naive();
+        let date = resolve_date(None, Some(0)).unwrap();
+        assert_eq!(date, today);
+    }
+
+    #[test]
+    fn test_resolve_date_days_ago_one_is_yesterday() {
+        let today = Local::now().date_naive();
+        let date = resolve_date(None, Some(1)).unwrap();
+        assert_eq!(date, today - chrono::Days::new(1));
+    }
+
+    #[test]
+    fn test_resolve_date_positional_wins() {
+        let date = resolve_date(Some("2026-08-01".to_string()), Some(3)).unwrap();
+        assert_eq!(date, chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap());
+    }
+
+    #[test]
+    fn test_resolve_date_invalid_format_errors() {
+        assert!(resolve_date(Some("yesterday".to_string()), None).is_err());
+    }
+
+    #[test]
+    fn test_resolve_date_overflow_errors() {
+        assert!(resolve_date(None, Some(u32::MAX)).is_err());
+    }
+
+    #[test]
+    fn test_log_days_ago_short_flag_parses() {
+        let cli = Cli::try_parse_from(["intake", "log", "-d", "2"]).unwrap();
+        match cli.command {
+            Commands::Log {
+                date,
+                days_ago,
+                grouped,
+            } => {
+                assert_eq!(date, None);
+                assert_eq!(days_ago, Some(2));
+                assert!(!grouped);
+            }
+            _ => panic!("expected Log command"),
+        }
+    }
+
+    #[test]
+    fn test_log_date_and_days_ago_conflict() {
+        assert!(Cli::try_parse_from(["intake", "log", "2026-08-01", "--days-ago", "2"]).is_err());
+    }
+
+    #[test]
+    fn test_summary_days_short_flag_parses() {
+        let cli = Cli::try_parse_from(["intake", "summary", "-d", "5"]).unwrap();
+        match cli.command {
+            Commands::Summary { date, days } => {
+                assert_eq!(date, None);
+                assert_eq!(days, 5);
+            }
+            _ => panic!("expected Summary command"),
+        }
     }
 
     fn write_day_log(dir: &Path, date: chrono::NaiveDate, calories: f64, exercise: u32) {

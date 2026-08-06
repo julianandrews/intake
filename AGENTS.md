@@ -74,11 +74,11 @@ calculation.
 
 ## Viewing a Multi-Day Summary
 
-`intake summary [date] [--days N]` shows one row per logged day (unlogged days
-in the window are skipped) with total macros, exercise, and deficit per day,
-plus period totals and per-day averages. The Deficit column appears only when
-`maintenance_calories` is configured. Implementation: `src/main.rs` functions
-`cmd_summary` and `build_summary_rows`.
+`intake summary [date] [--days N]` (`-d` shorthand) shows one row per logged
+day (unlogged days in the window are skipped) with total macros, exercise, and
+deficit per day, plus period totals and per-day averages. The Deficit column
+appears only when `maintenance_calories` is configured. Implementation:
+`src/main.rs` functions `cmd_summary` and `build_summary_rows`.
 
 ## Code Quality
 
