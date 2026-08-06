@@ -12,6 +12,8 @@ The file must match the `Food` and `Ingredient` structs in `src/food.rs`:
 
 - `title` — display name
 - `servings` — how many servings the full food makes
+- `notes` (string, optional — defaults to empty; shown under the recipe in
+  `intake show` only when non-empty)
 - `[[ingredients]]` — one table per ingredient, each with:
   - `name` (string, required)
   - `quantity` (string, optional — e.g. `"400g"`, `"1 tbsp"`)

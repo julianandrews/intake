@@ -1,5 +1,7 @@
 use crate::config::Column;
-use crate::display::{food_cell, Align, ColumnValue, Table};
+use crate::display::{
+    food_cell, Align, ColumnValue, Table, ANSI_BOLD_YELLOW, ANSI_DIM, ANSI_RESET,
+};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
@@ -26,6 +28,8 @@ pub struct Food {
     pub title: String,
     pub servings: u32,
     pub ingredients: Vec<Ingredient>,
+    #[serde(default)]
+    pub notes: String,
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +112,15 @@ impl Food {
         }
         table.add_footer(per_serving);
 
-        table.format()
+        let mut out = table.format();
+        if !self.notes.trim().is_empty() {
+            out.push_str(&format!(
+                "\n{ANSI_BOLD_YELLOW}Notes:{ANSI_RESET}\n{ANSI_DIM}{}{ANSI_RESET}\n",
+                self.notes
+            ));
+        }
+
+        out
     }
 }
 
@@ -167,6 +179,7 @@ mod tests {
         let food = Food {
             title: "Test".to_string(),
             servings: 3,
+            notes: String::new(),
             ingredients: vec![Ingredient {
                 name: "A".to_string(),
                 quantity: None,
@@ -189,6 +202,7 @@ mod tests {
         let food = Food {
             title: "Test".to_string(),
             servings: 2,
+            notes: String::new(),
             ingredients: vec![Ingredient {
                 name: "A".to_string(),
                 quantity: None,
@@ -214,6 +228,7 @@ mod tests {
         let food = Food {
             title: "Fiber Test".to_string(),
             servings: 1,
+            notes: String::new(),
             ingredients: vec![Ingredient {
                 name: "Psyllium".to_string(),
                 quantity: None,
@@ -266,6 +281,7 @@ mod tests {
         let food = Food {
             title: "Oatmeal".to_string(),
             servings: 2,
+            notes: String::new(),
             ingredients: vec![
                 Ingredient {
                     name: "Oats".to_string(),
@@ -312,6 +328,7 @@ mod tests {
         let food = Food {
             title: "Coffee".to_string(),
             servings: 1,
+            notes: String::new(),
             ingredients: vec![Ingredient {
                 name: "Cold Brew".to_string(),
                 quantity: None,
@@ -334,6 +351,7 @@ mod tests {
         let food = Food {
             title: "Test".to_string(),
             servings: 1,
+            notes: String::new(),
             ingredients: vec![Ingredient {
                 name: "Secret Spice".to_string(),
                 quantity: None,
@@ -357,6 +375,7 @@ mod tests {
         let food = Food {
             title: "Test".to_string(),
             servings: 1,
+            notes: String::new(),
             ingredients: vec![Ingredient {
                 name: "A".to_string(),
                 quantity: None,
@@ -376,5 +395,42 @@ mod tests {
         assert!(md.contains("4.0g"));
         assert!(!md.contains("Carbs(g)"));
         assert!(!md.contains("Protein(g)"));
+    }
+
+    fn test_food(notes: &str) -> Food {
+        Food {
+            title: "Test".to_string(),
+            servings: 1,
+            notes: notes.to_string(),
+            ingredients: vec![Ingredient {
+                name: "A".to_string(),
+                quantity: None,
+                protein_g: 10.0,
+                fiber_g: 5.0,
+                calories: 100,
+                fat_g: 4.0,
+                carbs_g: 30.0,
+                alcohol_g: 0.0,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_display_shows_notes_when_present() {
+        let md = test_food("Best eaten warm with salt.").display(DEFAULT_COLUMNS);
+        assert!(md.contains("Notes:"));
+        assert!(md.contains("Best eaten warm with salt."));
+    }
+
+    #[test]
+    fn test_display_hides_notes_when_empty() {
+        let md = test_food("").display(DEFAULT_COLUMNS);
+        assert!(!md.contains("Notes:"));
+    }
+
+    #[test]
+    fn test_display_hides_notes_when_whitespace() {
+        let md = test_food("   ").display(DEFAULT_COLUMNS);
+        assert!(!md.contains("Notes:"));
     }
 }

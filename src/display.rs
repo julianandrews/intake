@@ -9,6 +9,7 @@ pub const ANSI_BOLD_CYAN: &str = "\x1b[1;36m";
 pub const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
 pub const ANSI_BOLD_RED: &str = "\x1b[1;31m";
 pub const ANSI_BOLD_MAGENTA: &str = "\x1b[1;35m";
+pub const ANSI_DIM: &str = "\x1b[2m";
 pub const ANSI_GREEN: &str = "\x1b[32m";
 pub const ANSI_YELLOW: &str = "\x1b[33m";
 pub const ANSI_RED: &str = "\x1b[31m";

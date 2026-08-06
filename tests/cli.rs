@@ -73,6 +73,21 @@ fn test_show_food() {
 }
 
 #[test]
+fn test_show_food_notes() {
+    let (stdout, success) = run_with_log_dir(&["show", "quest-bar"]);
+    assert!(success);
+    assert!(stdout.contains("Notes:"));
+    assert!(stdout.contains("Store in a cool, dry place. Best eaten chilled."));
+}
+
+#[test]
+fn test_show_food_no_notes() {
+    let (stdout, success) = run_with_log_dir(&["show", "coffee"]);
+    assert!(success);
+    assert!(!stdout.contains("Notes:"));
+}
+
+#[test]
 fn test_show_food_not_found() {
     let (_, success) = run_with_log_dir(&["show", "nonexistent-food"]);
     assert!(!success);
