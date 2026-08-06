@@ -7,3 +7,6 @@ quantity = "1 bar (60g)"
 protein_g = 20
 fiber_g = 11
 calories = 190
+fat_g = 8
+carbs_g = 21
+alcohol_g = 0

@@ -7,6 +7,9 @@ quantity = "60g"
 protein_g = 7
 fiber_g = 7
 calories = 232
+fat_g = 4.5
+carbs_g = 39
+alcohol_g = 0
 
 [[ingredients]]
 name = "Fage 5% Greek Yogurt"
@@ -14,6 +17,9 @@ quantity = "150g"
 protein_g = 14
 fiber_g = 0
 calories = 140
+fat_g = 7.5
+carbs_g = 5.9
+alcohol_g = 0
 
 [[ingredients]]
 name = "Blueberries"
@@ -21,3 +27,6 @@ quantity = "80g"
 protein_g = 1
 fiber_g = 2
 calories = 46
+fat_g = 0.2
+carbs_g = 11.6
+alcohol_g = 0

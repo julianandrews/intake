@@ -7,6 +7,9 @@ quantity = "350g"
 protein_g = 5
 fiber_g = 6
 calories = 85
+fat_g = 0.7
+carbs_g = 17
+alcohol_g = 0
 
 [[ingredients]]
 name = "Kirkland bone broth"
@@ -14,6 +17,9 @@ quantity = "1 cup"
 protein_g = 9
 fiber_g = 0
 calories = 40
+fat_g = 0
+carbs_g = 1
+alcohol_g = 0
 
 [[ingredients]]
 name = "Tom Yum paste"
@@ -21,3 +27,6 @@ quantity = "1 tbsp"
 protein_g = 1
 fiber_g = 1
 calories = 60
+fat_g = 1
+carbs_g = 12
+alcohol_g = 0

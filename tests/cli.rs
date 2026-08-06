@@ -48,7 +48,7 @@ fn write_day_log(
     exercise: u32,
 ) {
     let content = format!(
-        "exercise_calories = {exercise}\n\n[[entries]]\nslug = \"coffee\"\nservings = 1.0\ncalories = {calories}\nprotein_g = {protein}\nfiber_g = {fiber}\ntitle = \"Coffee\"\n"
+        "exercise_calories = {exercise}\n\n[[entries]]\nslug = \"coffee\"\nservings = 1.0\ncalories = {calories}\nprotein_g = {protein}\nfiber_g = {fiber}\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Coffee\"\n"
     );
     std::fs::write(dir.join(format!("{date}.toml")), content).unwrap();
 }
@@ -149,6 +149,46 @@ fn test_adhoc_entry() {
 }
 
 #[test]
+fn test_adhoc_macros_optional_zero_defaults() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+
+    let (adhoc_out, adhoc_ok) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+        "adhoc",
+        "--calories",
+        "250",
+        "Water",
+        "1",
+    ]);
+    assert!(adhoc_ok, "adhoc failed: {}", adhoc_out);
+    assert!(adhoc_out.contains("Water"));
+
+    let today = chrono::Local::now().date_naive();
+    let log_file = std::fs::read_to_string(dir.path().join(format!("{today}.toml")))
+        .expect("log file written");
+    assert!(log_file.contains("protein_g = 0.0"));
+    assert!(log_file.contains("fiber_g = 0.0"));
+    assert!(log_file.contains("fat_g = 0.0"));
+    assert!(log_file.contains("carbs_g = 0.0"));
+    assert!(log_file.contains("alcohol_g = 0.0"));
+
+    let (log_out, log_ok) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+        "log",
+    ]);
+    assert!(log_ok, "log failed: {}", log_out);
+    assert!(log_out.contains("Water"));
+    assert!(log_out.contains("250"));
+}
+
+#[test]
 fn test_exercise_recording() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
@@ -199,6 +239,76 @@ fn test_log_net_row_with_exercise() {
     assert!(stdout.contains("-300"));
     assert!(stdout.contains("Net"));
     assert!(stdout.contains("1500"));
+}
+
+#[test]
+fn test_exercise_rows_hidden_when_calories_column_hidden() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(
+        intake_config.join("config.toml"),
+        "show_columns = [\"protein\", \"fat\"]\n",
+    )
+    .unwrap();
+
+    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 300);
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            fd_str.as_str(),
+            "--log-dir",
+            log_dir_str.as_str(),
+            "log",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "log failed: {}", stdout);
+    assert!(stdout.contains("Total"));
+    assert!(!stdout.contains("Exercise"));
+    assert!(!stdout.contains("Net"));
+    assert!(!stdout.contains("-300"));
+}
+
+#[test]
+fn test_summary_exercise_column_hidden_when_calories_hidden() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(
+        intake_config.join("config.toml"),
+        "show_columns = [\"protein\", \"fat\"]\n",
+    )
+    .unwrap();
+
+    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 300);
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            fd_str.as_str(),
+            "--log-dir",
+            log_dir_str.as_str(),
+            "summary",
+            "2026-08-03",
+            "--days",
+            "7",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "summary failed: {}", stdout);
+    assert!(!stdout.contains("Exercise"));
+    assert!(!stdout.contains("300"));
 }
 
 #[test]
@@ -345,4 +455,261 @@ fn test_summary_default_days_and_date() {
     let (stdout, success) = run(&["--foods-dir", &fd_str, "--log-dir", &log_dir_str, "summary"]);
     assert!(success, "summary failed: {}", stdout);
     assert!(stdout.contains("No entries in the last 7 days"));
+}
+
+#[test]
+fn test_adhoc_with_fat_carbs_alcohol() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+
+    let (adhoc_out, adhoc_ok) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+        "adhoc",
+        "--calories",
+        "250",
+        "--protein",
+        "12",
+        "--fiber",
+        "3",
+        "--fat",
+        "9",
+        "--carbs",
+        "20",
+        "--alcohol",
+        "5",
+        "Beer and nuts",
+        "2",
+    ]);
+    assert!(adhoc_ok, "adhoc failed: {}", adhoc_out);
+    assert!(adhoc_out.contains("Beer and nuts"));
+
+    // all macros are stored per-serving, even alcohol
+    let today = chrono::Local::now().date_naive();
+    let log_file = std::fs::read_to_string(dir.path().join(format!("{today}.toml")))
+        .expect("log file written");
+    assert!(log_file.contains("fat_g = 9.0"));
+    assert!(log_file.contains("carbs_g = 20.0"));
+    assert!(log_file.contains("alcohol_g = 5.0"));
+
+    // default view shows fat/carbs (scaled by 2 servings) but not alcohol
+    let (log_out, log_ok) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+        "log",
+    ]);
+    assert!(log_ok, "log failed: {}", log_out);
+    assert!(!log_out.contains("Alcohol(g)"));
+
+    // 2 servings: calories 500, fat 18.0, carbs 40.0, protein 24.0, fiber 6.0
+    let row = log_out
+        .lines()
+        .find(|l| l.contains("Beer and nuts"))
+        .expect("adhoc row present");
+    let cells: Vec<&str> = row.split_whitespace().collect();
+    assert_eq!(cells[cells.len() - 6], "2", "servings cell in row: {row}");
+    assert!(row.contains("500"), "calories in row: {row}");
+    assert!(row.contains("18.0"), "fat in row: {row}");
+    assert!(row.contains("40.0"), "carbs in row: {row}");
+    assert!(row.contains("24.0"), "protein in row: {row}");
+    assert!(row.contains("6.0"), "fiber in row: {row}");
+}
+
+#[test]
+fn test_log_default_columns_include_fat_carbs_not_alcohol() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 0);
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "log",
+        "2026-08-02",
+    ]);
+    assert!(success, "log failed: {}", stdout);
+    assert!(stdout.contains("Fat(g)"));
+    assert!(stdout.contains("Carbs(g)"));
+    assert!(!stdout.contains("Alcohol(g)"));
+}
+
+#[test]
+fn test_show_columns_config_filters_columns() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(
+        intake_config.join("config.toml"),
+        "show_columns = [\"calories\", \"fat\", \"alcohol\"]\n",
+    )
+    .unwrap();
+
+    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 0);
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            fd_str.as_str(),
+            "--log-dir",
+            log_dir_str.as_str(),
+            "log",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "log failed: {}", stdout);
+    assert!(stdout.contains("Calories"));
+    assert!(stdout.contains("Fat(g)"));
+    assert!(stdout.contains("Alcohol(g)"));
+    assert!(!stdout.contains("Protein(g)"));
+    assert!(!stdout.contains("Carbs(g)"));
+}
+
+#[test]
+fn test_summary_respects_show_columns() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(
+        intake_config.join("config.toml"),
+        "show_columns = [\"fat\", \"alcohol\"]\n",
+    )
+    .unwrap();
+
+    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 0);
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            fd_str.as_str(),
+            "--log-dir",
+            log_dir_str.as_str(),
+            "summary",
+            "2026-08-03",
+            "--days",
+            "7",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "summary failed: {}", stdout);
+    assert!(stdout.contains("Fat(g)"));
+    assert!(stdout.contains("Alcohol(g)"));
+    assert!(!stdout.contains("Calories"));
+    assert!(!stdout.contains("Protein(g)"));
+    assert!(!stdout.contains("Carbs(g)"));
+}
+
+#[test]
+fn test_min_fat_target_colors_total_row() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(intake_config.join("config.toml"), "min_fat = 50\n").unwrap();
+
+    // day log with 30g fat total -> below min_fat -> yellow
+    std::fs::write(
+        dir.path().join("2026-08-02.toml"),
+        "exercise_calories = 0\n\n[[entries]]\nslug = \"nuts\"\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 30\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
+    )
+    .unwrap();
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            fd_str.as_str(),
+            "--log-dir",
+            log_dir_str.as_str(),
+            "log",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "log failed: {}", stdout);
+    assert!(stdout.contains("\u{1b}[33m")); // yellow: fat under min target
+}
+
+#[test]
+fn test_max_fat_target_colors_total_row_red() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(intake_config.join("config.toml"), "max_fat = 50\n").unwrap();
+
+    // day log with 60g fat total -> above max_fat -> red
+    std::fs::write(
+        dir.path().join("2026-08-02.toml"),
+        "exercise_calories = 0\n\n[[entries]]\nslug = \"nuts\"\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 60\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
+    )
+    .unwrap();
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            fd_str.as_str(),
+            "--log-dir",
+            log_dir_str.as_str(),
+            "log",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "log failed: {}", stdout);
+    assert!(stdout.contains("\u{1b}[31m")); // red: fat over max target
+}
+
+#[test]
+fn test_show_columns_config_filters_list_and_show() {
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(
+        intake_config.join("config.toml"),
+        "show_columns = [\"calories\", \"alcohol\"]\n",
+    )
+    .unwrap();
+
+    let (list_out, list_ok) = run_in(&["--foods-dir", fd_str.as_str(), "list"], config_dir.path());
+    assert!(list_ok, "list failed: {}", list_out);
+    assert!(list_out.contains("Cal/serv"));
+    assert!(list_out.contains("Alcohol(g)"));
+    assert!(!list_out.contains("Protein(g)"));
+    assert!(!list_out.contains("Fat(g)"));
+    assert!(!list_out.contains("Carbs(g)"));
+
+    let (show_out, show_ok) = run_in(
+        &["--foods-dir", fd_str.as_str(), "show", "coffee"],
+        config_dir.path(),
+    );
+    assert!(show_ok, "show failed: {}", show_out);
+    assert!(show_out.contains("Calories"));
+    assert!(show_out.contains("Alcohol(g)"));
+    assert!(!show_out.contains("Protein(g)"));
+    assert!(!show_out.contains("Fat(g)"));
+    assert!(!show_out.contains("Carbs(g)"));
 }

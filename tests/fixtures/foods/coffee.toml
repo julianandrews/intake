@@ -7,6 +7,9 @@ quantity = "100g"
 protein_g = 0
 fiber_g = 0
 calories = 0
+fat_g = 0
+carbs_g = 0
+alcohol_g = 0
 
 [[ingredients]]
 name = "Oat Milk"
@@ -14,3 +17,6 @@ quantity = "50g"
 protein_g = 1
 fiber_g = 0
 calories = 24
+fat_g = 0.6
+carbs_g = 3.3
+alcohol_g = 0

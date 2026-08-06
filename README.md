@@ -26,7 +26,7 @@ intake log [date] [--days-ago N]     Show a day's totals (default: today)
 intake summary [date] [--days N]     Multi-day summary of macros and deficit (default: last 7 days)
 intake show <recipe>                 Show recipe details with ingredients
 intake list                          List all recipes
-intake adhoc --cal N --prot N --fib N <name> [servings]   Log a one-off food
+intake adhoc [--calories N] [--protein N] [--fiber N] [--fat N] [--carbs N] [--alcohol N] <name> [servings]   Log a one-off food
 intake exercise <calories>           Record exercise calories for today
 intake completions <shell>           Generate or install completion script
 ```
@@ -46,10 +46,20 @@ Create `~/.config/intake/config.toml` to set daily targets:
 max_calories = 1800
 min_protein = 150.0
 min_fiber = 30.0
+min_fat = 50.0
+max_fat = 90.0
 maintenance_calories = 2400
+show_columns = ["calories", "carbs", "fat", "protein", "fiber"]
 foods_dir = "/path/to/recipes"
 log_dir = "/path/to/logs"
 ```
+
+`show_columns` controls which macro columns appear in `log`, `summary`,
+`list`, and `show` (values: `calories`, `protein`, `fiber`, `fat`, `carbs`,
+`alcohol`; default: all except `alcohol`; duplicate entries are rejected).
+Every macro accepts `min_<macro>` / `max_<macro>` targets — with both set, the
+`[min, max]` range is the green band: below min is yellow, above max is red.
+Targets scale with day progress.
 
 Paths can also be set via `INTAKE_FOODS_DIR` and `INTAKE_LOG_DIR` environment
 variables, or `--foods-dir` / `--log-dir` CLI flags (CLI wins).
@@ -69,7 +79,14 @@ quantity = "200g"
 protein_g = 46.0
 fiber_g = 0.0
 calories = 330
+fat_g = 6.0
+carbs_g = 0.0
+alcohol_g = 0.0
 ```
+
+All macro fields (`protein_g`, `fiber_g`, `calories`, `fat_g`, `carbs_g`,
+`alcohol_g`) are required — a food with unrecorded macros fails loudly
+instead of silently counting as zero.
 
 See `foods/` in the repo for examples. The `content_hash` is computed
 automatically at load time — do not include it.
@@ -79,7 +96,10 @@ automatically at load time — do not include it.
 For one-off foods without a recipe file:
 
 ```
-intake adhoc --calories 250 --protein 12 --fiber 3 "Greek yogurt" 1.5
+intake adhoc --calories 250 --protein 12 --fiber 3 --fat 9 --carbs 20 "Greek yogurt" 1.5
 ```
+
+All macro flags (`--calories`, `--protein`, `--fiber`, `--fat`, `--carbs`,
+`--alcohol`) are optional and default to 0.
 
 The slug is auto-derived from the name (lowercased, spaces → hyphens).

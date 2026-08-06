@@ -1,6 +1,39 @@
-use anyhow::{Context, Result};
+use crate::display::{ColumnTarget, DayTargets};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
+
+pub const DEFAULT_COLUMNS: &[Column] = &[
+    Column::Calories,
+    Column::Carbs,
+    Column::Fat,
+    Column::Protein,
+    Column::Fiber,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Column {
+    Calories,
+    Protein,
+    Fiber,
+    Fat,
+    Carbs,
+    Alcohol,
+}
+
+impl Column {
+    pub fn label(self) -> &'static str {
+        match self {
+            Column::Calories => "Calories",
+            Column::Protein => "Protein(g)",
+            Column::Fiber => "Fiber(g)",
+            Column::Fat => "Fat(g)",
+            Column::Carbs => "Carbs(g)",
+            Column::Alcohol => "Alcohol(g)",
+        }
+    }
+}
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
@@ -10,6 +43,16 @@ pub struct Config {
     pub min_protein: Option<f64>,
     pub min_fiber: Option<f64>,
     pub maintenance_calories: Option<u32>,
+    pub show_columns: Option<Vec<Column>>,
+    pub min_calories: Option<f64>,
+    pub max_protein: Option<f64>,
+    pub max_fiber: Option<f64>,
+    pub min_fat: Option<f64>,
+    pub max_fat: Option<f64>,
+    pub min_carbs: Option<f64>,
+    pub max_carbs: Option<f64>,
+    pub min_alcohol: Option<f64>,
+    pub max_alcohol: Option<f64>,
 }
 
 impl Config {
@@ -60,5 +103,155 @@ impl Config {
                 .map(|p| p.join("intake").join("log"))
                 .unwrap_or_else(|| PathBuf::from("log"))
         })
+    }
+
+    pub fn columns(&self) -> Result<Vec<Column>> {
+        let Some(columns) = &self.show_columns else {
+            return Ok(DEFAULT_COLUMNS.to_vec());
+        };
+        for (i, column) in columns.iter().enumerate() {
+            if columns[..i].contains(column) {
+                bail!(
+                    "show_columns contains duplicate column '{}'",
+                    format!("{column:?}").to_lowercase()
+                );
+            }
+        }
+        Ok(columns.clone())
+    }
+
+    pub fn targets(&self) -> Result<DayTargets> {
+        let targets = DayTargets {
+            calories: ColumnTarget {
+                min: self.min_calories,
+                max: self.max_calories.map(f64::from),
+            },
+            protein: ColumnTarget {
+                min: self.min_protein,
+                max: self.max_protein,
+            },
+            fiber: ColumnTarget {
+                min: self.min_fiber,
+                max: self.max_fiber,
+            },
+            fat: ColumnTarget {
+                min: self.min_fat,
+                max: self.max_fat,
+            },
+            carbs: ColumnTarget {
+                min: self.min_carbs,
+                max: self.max_carbs,
+            },
+            alcohol: ColumnTarget {
+                min: self.min_alcohol,
+                max: self.max_alcohol,
+            },
+        };
+        for (name, target) in [
+            ("calories", targets.calories),
+            ("protein", targets.protein),
+            ("fiber", targets.fiber),
+            ("fat", targets.fat),
+            ("carbs", targets.carbs),
+            ("alcohol", targets.alcohol),
+        ] {
+            if let (Some(min), Some(max)) = (target.min, target.max) {
+                if min > max {
+                    bail!("{name} target min ({min}) exceeds max ({max})");
+                }
+            }
+        }
+        Ok(targets)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_columns_default_excludes_alcohol() {
+        let config = Config::default();
+        assert_eq!(
+            config.columns().unwrap(),
+            vec![
+                Column::Calories,
+                Column::Carbs,
+                Column::Fat,
+                Column::Protein,
+                Column::Fiber
+            ]
+        );
+    }
+
+    #[test]
+    fn test_columns_from_config() {
+        let config: Config =
+            toml::from_str("show_columns = [\"calories\", \"fat\", \"alcohol\"]\n").unwrap();
+        assert_eq!(
+            config.columns().unwrap(),
+            vec![Column::Calories, Column::Fat, Column::Alcohol]
+        );
+    }
+
+    #[test]
+    fn test_columns_empty_allowed() {
+        let config: Config = toml::from_str("show_columns = []\n").unwrap();
+        assert!(config.columns().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_columns_duplicates_rejected() {
+        let config: Config =
+            toml::from_str("show_columns = [\"fat\", \"fat\", \"calories\", \"fat\"]\n").unwrap();
+        let err = config.columns().unwrap_err().to_string();
+        assert!(err.contains("duplicate column"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_targets_from_flat_keys() {
+        let config: Config =
+            toml::from_str("max_calories = 2000\nmin_protein = 100\nmin_fat = 50\nmax_fat = 90\n")
+                .unwrap();
+        let targets = config.targets().unwrap();
+        assert_eq!(
+            targets.calories,
+            ColumnTarget {
+                min: None,
+                max: Some(2000.0)
+            }
+        );
+        assert_eq!(
+            targets.fat,
+            ColumnTarget {
+                min: Some(50.0),
+                max: Some(90.0)
+            }
+        );
+        assert_eq!(
+            targets.alcohol,
+            ColumnTarget {
+                min: None,
+                max: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_targets_min_exceeds_max_rejected() {
+        let config: Config = toml::from_str("min_fat = 90\nmax_fat = 50\n").unwrap();
+        let err = config.targets().unwrap_err().to_string();
+        assert!(err.contains("fat target min"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_targets_valid_band_accepted() {
+        let config: Config = toml::from_str("min_carbs = 100\nmax_carbs = 300\n").unwrap();
+        assert!(config.targets().is_ok());
+    }
+
+    #[test]
+    fn test_unknown_column_rejected() {
+        assert!(toml::from_str::<Config>("show_columns = [\"bogus\"]\n").is_err());
     }
 }

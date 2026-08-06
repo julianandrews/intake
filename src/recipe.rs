@@ -1,4 +1,5 @@
-use crate::display::{Align, Table};
+use crate::config::Column;
+use crate::display::{recipe_cell, Align, ColumnValue, Table};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
@@ -11,7 +12,14 @@ pub struct Ingredient {
     pub protein_g: f64,
     pub fiber_g: f64,
     pub calories: u32,
+    pub fat_g: f64,
+    pub carbs_g: f64,
+    pub alcohol_g: f64,
 }
+
+crate::display::impl_column_value!(
+    Ingredient, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g
+);
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Recipe {
@@ -25,7 +33,12 @@ pub struct Macros {
     pub calories: u32,
     pub protein_g: f64,
     pub fiber_g: f64,
+    pub fat_g: f64,
+    pub carbs_g: f64,
+    pub alcohol_g: f64,
 }
+
+crate::display::impl_column_value!(Macros, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g);
 
 impl Recipe {
     pub fn totals(&self) -> Macros {
@@ -33,6 +46,9 @@ impl Recipe {
             calories: self.ingredients.iter().map(|i| i.calories).sum(),
             protein_g: self.ingredients.iter().map(|i| i.protein_g).sum(),
             fiber_g: self.ingredients.iter().map(|i| i.fiber_g).sum(),
+            fat_g: self.ingredients.iter().map(|i| i.fat_g).sum(),
+            carbs_g: self.ingredients.iter().map(|i| i.carbs_g).sum(),
+            alcohol_g: self.ingredients.iter().map(|i| i.alcohol_g).sum(),
         }
     }
 
@@ -42,26 +58,27 @@ impl Recipe {
             calories: (t.calories as f64 / self.servings as f64).round() as u32,
             protein_g: t.protein_g / self.servings as f64,
             fiber_g: t.fiber_g / self.servings as f64,
+            fat_g: t.fat_g / self.servings as f64,
+            carbs_g: t.carbs_g / self.servings as f64,
+            alcohol_g: t.alcohol_g / self.servings as f64,
         }
     }
 
-    pub fn display(&self) -> String {
+    pub fn display(&self, columns: &[Column]) -> String {
         let serving_label = if self.servings == 1 {
             "serving"
         } else {
             "servings"
         };
 
-        let mut table = Table::with_align(
-            &["Ingredient", "Amount", "Calories", "Protein(g)", "Fiber(g)"],
-            &[
-                Align::Left,
-                Align::Left,
-                Align::Right,
-                Align::Right,
-                Align::Right,
-            ],
-        );
+        let mut headers: Vec<&str> = vec!["Ingredient", "Amount"];
+        let mut aligns = vec![Align::Left, Align::Left];
+        for column in columns {
+            headers.push(column.label());
+            aligns.push(Align::Right);
+        }
+
+        let mut table = Table::with_align(&headers, &aligns);
         table.set_title(&format!(
             "{} ({} {})",
             self.title, self.servings, serving_label
@@ -69,33 +86,27 @@ impl Recipe {
 
         for ing in &self.ingredients {
             let qty = ing.quantity.as_deref().unwrap_or("-").to_string();
-            table.add_row(vec![
-                ing.name.clone(),
-                qty,
-                ing.calories.to_string(),
-                format!("{:.1}g", ing.protein_g),
-                format!("{:.1}g", ing.fiber_g),
-            ]);
+            let mut cells = vec![ing.name.clone(), qty];
+            for column in columns {
+                cells.push(recipe_cell(*column, ing.column_value(*column)));
+            }
+            table.add_row(cells);
         }
 
         let t = self.totals();
 
-        table.add_footer(vec![
-            "Total".to_string(),
-            String::new(),
-            t.calories.to_string(),
-            format!("{:.1}g", t.protein_g),
-            format!("{:.1}g", t.fiber_g),
-        ]);
+        let mut total = vec!["Total".to_string(), String::new()];
+        for column in columns {
+            total.push(recipe_cell(*column, t.column_value(*column)));
+        }
+        table.add_footer(total);
 
         let ps = self.per_serving();
-        table.add_footer(vec![
-            "Per serving".to_string(),
-            String::new(),
-            ps.calories.to_string(),
-            format!("{:.1}g", ps.protein_g),
-            format!("{:.1}g", ps.fiber_g),
-        ]);
+        let mut per_serving = vec!["Per serving".to_string(), String::new()];
+        for column in columns {
+            per_serving.push(recipe_cell(*column, ps.column_value(*column)));
+        }
+        table.add_footer(per_serving);
 
         table.format()
     }
@@ -135,9 +146,21 @@ pub fn load_recipe(path: &Path) -> Result<Recipe> {
     Ok(recipe)
 }
 
+pub fn find_all_recipes(foods_dir: &Path) -> Result<Vec<(PathBuf, Recipe)>> {
+    let mut recipes = Vec::new();
+    for path in toml_files_in(foods_dir)? {
+        match load_recipe(&path) {
+            Ok(recipe) => recipes.push((path, recipe)),
+            Err(e) => eprintln!("Warning: skipped {}: {}", path.display(), e),
+        }
+    }
+    Ok(recipes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_COLUMNS;
 
     #[test]
     fn test_per_serving_with_fractions() {
@@ -150,6 +173,9 @@ mod tests {
                 protein_g: 10.0,
                 fiber_g: 5.0,
                 calories: 100,
+                fat_g: 0.0,
+                carbs_g: 0.0,
+                alcohol_g: 0.0,
             }],
         };
         let ps = recipe.per_serving();
@@ -169,12 +195,18 @@ mod tests {
                 protein_g: 20.0,
                 fiber_g: 6.0,
                 calories: 100,
+                fat_g: 4.0,
+                carbs_g: 30.0,
+                alcohol_g: 2.0,
             }],
         };
         let ps = recipe.per_serving();
         assert_eq!(ps.calories, 50);
         assert_eq!(ps.protein_g, 10.0);
         assert_eq!(ps.fiber_g, 3.0);
+        assert_eq!(ps.fat_g, 2.0);
+        assert_eq!(ps.carbs_g, 15.0);
+        assert_eq!(ps.alcohol_g, 1.0);
     }
 
     #[test]
@@ -188,11 +220,21 @@ mod tests {
                 protein_g: 0.0,
                 fiber_g: 0.3,
                 calories: 5,
+                fat_g: 0.0,
+                carbs_g: 0.0,
+                alcohol_g: 0.0,
             }],
         };
         let ps = recipe.per_serving();
         assert_eq!(ps.calories, 5);
         assert_eq!(ps.fiber_g, 0.3);
+    }
+
+    #[test]
+    fn test_ingredient_missing_macros_rejected() {
+        let result: Result<Recipe, _> =
+            toml::from_str("title = \"X\"\nservings = 1\n\n[[ingredients]]\nname = \"A\"\ncalories = 10\nprotein_g = 1\nfiber_g = 0\n");
+        assert!(result.is_err());
     }
 
     fn slug_from_path(path: &Path) -> Option<String> {
@@ -231,6 +273,9 @@ mod tests {
                     protein_g: 10.0,
                     fiber_g: 5.0,
                     calories: 200,
+                    fat_g: 4.0,
+                    carbs_g: 30.0,
+                    alcohol_g: 0.0,
                 },
                 Ingredient {
                     name: "Milk".to_string(),
@@ -238,17 +283,28 @@ mod tests {
                     protein_g: 8.0,
                     fiber_g: 0.0,
                     calories: 120,
+                    fat_g: 6.0,
+                    carbs_g: 9.0,
+                    alcohol_g: 0.0,
                 },
             ],
         };
 
-        let md = recipe.display();
+        let md = recipe.display(DEFAULT_COLUMNS);
         assert!(md.starts_with("\u{1b}[1;36mOatmeal (2 servings)\u{1b}[0m\n"));
-        assert!(md.contains("  Oats        100g         200       10.0g"));
-        assert!(md.contains("  Milk        200ml        120        8.0g"));
-        assert!(md.contains("----------- ------  --------  ----------  --------"));
-        assert!(md.contains("\u{1b}[1;35mTotal                    320       18.0g"));
-        assert!(md.contains("\u{1b}[1;34mPer serving              160        9.0g"));
+        assert!(
+            md.contains("  Oats        100g         200     30.0g    4.0g       10.0g      5.0g")
+        );
+        assert!(
+            md.contains("  Milk        200ml        120      9.0g    6.0g        8.0g      0.0g")
+        );
+        assert!(md.contains("----------- ------  --------  --------  ------  ----------  --------"));
+        assert!(md.contains(
+            "\u{1b}[1;35mTotal                    320     39.0g   10.0g       18.0g      5.0g"
+        ));
+        assert!(md.contains(
+            "\u{1b}[1;34mPer serving              160     19.5g    5.0g        9.0g      2.5g"
+        ));
     }
 
     #[test]
@@ -262,10 +318,13 @@ mod tests {
                 protein_g: 0.0,
                 fiber_g: 0.0,
                 calories: 0,
+                fat_g: 0.0,
+                carbs_g: 0.0,
+                alcohol_g: 0.0,
             }],
         };
 
-        let md = recipe.display();
+        let md = recipe.display(DEFAULT_COLUMNS);
         assert!(md.starts_with("\u{1b}[1;36mCoffee (1 serving)\u{1b}[0m\n"));
         assert!(md.contains("  Cold Brew"));
     }
@@ -281,23 +340,41 @@ mod tests {
                 protein_g: 0.5,
                 fiber_g: 0.1,
                 calories: 5,
+                fat_g: 0.0,
+                carbs_g: 0.0,
+                alcohol_g: 0.0,
             }],
         };
 
-        let md = recipe.display();
+        let md = recipe.display(DEFAULT_COLUMNS);
         assert!(md.contains("  Secret Spice"));
         assert!(md.contains("  0.5g"));
         assert!(md.contains("  0.1g"));
     }
-}
 
-pub fn find_all_recipes(foods_dir: &Path) -> Result<Vec<(PathBuf, Recipe)>> {
-    let mut recipes = Vec::new();
-    for path in toml_files_in(foods_dir)? {
-        match load_recipe(&path) {
-            Ok(recipe) => recipes.push((path, recipe)),
-            Err(e) => eprintln!("Warning: skipped {}: {}", path.display(), e),
-        }
+    #[test]
+    fn test_display_column_subset() {
+        let recipe = Recipe {
+            title: "Test".to_string(),
+            servings: 1,
+            ingredients: vec![Ingredient {
+                name: "A".to_string(),
+                quantity: None,
+                protein_g: 10.0,
+                fiber_g: 5.0,
+                calories: 100,
+                fat_g: 4.0,
+                carbs_g: 30.0,
+                alcohol_g: 0.0,
+            }],
+        };
+
+        let md = recipe.display(&[Column::Calories, Column::Fat]);
+        assert!(md.contains("Calories"));
+        assert!(md.contains("Fat(g)"));
+        assert!(md.contains("100"));
+        assert!(md.contains("4.0g"));
+        assert!(!md.contains("Carbs(g)"));
+        assert!(!md.contains("Protein(g)"));
     }
-    Ok(recipes)
 }

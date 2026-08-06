@@ -7,6 +7,9 @@ quantity = "1 lb"
 protein_g = 84
 fiber_g = 0
 calories = 680
+fat_g = 38
+carbs_g = 0
+alcohol_g = 0
 
 [[ingredients]]
 name = "Turkey 90% (Jennie-O)"
@@ -14,6 +17,9 @@ quantity = "1 lb"
 protein_g = 84
 fiber_g = 0
 calories = 720
+fat_g = 43
+carbs_g = 0
+alcohol_g = 0
 
 [[ingredients]]
 name = "Breadcrumbs"
@@ -21,6 +27,9 @@ quantity = "73g"
 protein_g = 10
 fiber_g = 3
 calories = 290
+fat_g = 3.7
+carbs_g = 53
+alcohol_g = 0
 
 [[ingredients]]
 name = "Onion"
@@ -28,6 +37,9 @@ quantity = "175g"
 protein_g = 2
 fiber_g = 3
 calories = 70
+fat_g = 0.2
+carbs_g = 16.3
+alcohol_g = 0
 
 [[ingredients]]
 name = "Egg"
@@ -35,6 +47,9 @@ quantity = "1 large"
 protein_g = 6
 fiber_g = 0
 calories = 70
+fat_g = 5
+carbs_g = 0.6
+alcohol_g = 0
 
 [[ingredients]]
 name = "Ketchup"
@@ -42,6 +57,9 @@ quantity = "68g"
 protein_g = 1
 fiber_g = 0
 calories = 68
+fat_g = 0.1
+carbs_g = 17
+alcohol_g = 0
 
 [[ingredients]]
 name = "Spices (marjoram, baking soda, salt, pepper, worcestershire)"
@@ -49,3 +67,6 @@ quantity = "to taste"
 protein_g = 0
 fiber_g = 0
 calories = 5
+fat_g = 0
+carbs_g = 1
+alcohol_g = 0

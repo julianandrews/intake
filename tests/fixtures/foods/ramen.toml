@@ -7,6 +7,9 @@ quantity = "4 oz"
 protein_g = 3.5
 fiber_g = 1
 calories = 10
+fat_g = 0.3
+carbs_g = 3.7
+alcohol_g = 0
 
 [[ingredients]]
 name = "Bone Broth"
@@ -14,6 +17,9 @@ quantity = "500g"
 protein_g = 19
 fiber_g = 0
 calories = 94
+fat_g = 0.5
+carbs_g = 3
+alcohol_g = 0
 
 [[ingredients]]
 name = "Eggs"
@@ -21,6 +27,9 @@ quantity = "2"
 protein_g = 12
 fiber_g = 0
 calories = 156
+fat_g = 10
+carbs_g = 1.2
+alcohol_g = 0
 
 [[ingredients]]
 name = "Sesame Oil"
@@ -28,6 +37,9 @@ quantity = "2g"
 protein_g = 0
 fiber_g = 0
 calories = 10
+fat_g = 2
+carbs_g = 0
+alcohol_g = 0
 
 [[ingredients]]
 name = "Ramen Powder"
@@ -35,6 +47,9 @@ quantity = "some"
 protein_g = 0
 fiber_g = 0
 calories = 30
+fat_g = 1
+carbs_g = 5
+alcohol_g = 0
 
 [[ingredients]]
 name = "Broccoli"
@@ -42,6 +57,9 @@ quantity = "150g"
 protein_g = 4.2
 fiber_g = 3.8
 calories = 50
+fat_g = 0.6
+carbs_g = 10
+alcohol_g = 0
 
 [[ingredients]]
 name = "Noodles"
@@ -49,6 +67,9 @@ quantity = "1 packet"
 protein_g = 11
 fiber_g = 2
 calories = 300
+fat_g = 12
+carbs_g = 42
+alcohol_g = 0
 
 [[ingredients]]
 name = "Chili Oil"
@@ -56,6 +77,9 @@ quantity = "1 tsp"
 protein_g = 0
 fiber_g = 0
 calories = 35
+fat_g = 4
+carbs_g = 0
+alcohol_g = 0
 
 [[ingredients]]
 name = "Chicken"
@@ -63,3 +87,6 @@ quantity = "3.2 oz"
 protein_g = 24
 fiber_g = 0
 calories = 140
+fat_g = 5
+carbs_g = 0
+alcohol_g = 0

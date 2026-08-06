@@ -7,6 +7,9 @@ quantity = "1 bag"
 protein_g = 3
 fiber_g = 3
 calories = 210
+fat_g = 12
+carbs_g = 24
+alcohol_g = 0
 
 [[ingredients]]
 name = "King Arthur Better Cheddar Cheese Powder"
@@ -14,3 +17,6 @@ quantity = "1 tbsp"
 protein_g = 2
 fiber_g = 0
 calories = 35
+fat_g = 2.5
+carbs_g = 3
+alcohol_g = 0

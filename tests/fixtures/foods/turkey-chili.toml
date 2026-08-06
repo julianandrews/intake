@@ -7,6 +7,9 @@ quantity = "2 lbs"
 protein_g = 192
 fiber_g = 0
 calories = 960
+fat_g = 21
+carbs_g = 0
+alcohol_g = 0
 
 [[ingredients]]
 name = "Oil"
@@ -14,6 +17,9 @@ quantity = "42g"
 protein_g = 0
 fiber_g = 0
 calories = 360
+fat_g = 40
+carbs_g = 0
+alcohol_g = 0
 
 [[ingredients]]
 name = "Petite diced tomato"
@@ -21,6 +27,9 @@ quantity = "2 cans"
 protein_g = 6
 fiber_g = 8
 calories = 140
+fat_g = 0.5
+carbs_g = 24
+alcohol_g = 0
 
 [[ingredients]]
 name = "Onion"
@@ -28,6 +37,9 @@ quantity = "10oz"
 protein_g = 3
 fiber_g = 5
 calories = 115
+fat_g = 0.3
+carbs_g = 26
+alcohol_g = 0
 
 [[ingredients]]
 name = "Black beans"
@@ -35,6 +47,9 @@ quantity = "1 can"
 protein_g = 24
 fiber_g = 18
 calories = 390
+fat_g = 1
+carbs_g = 60
+alcohol_g = 0
 
 [[ingredients]]
 name = "Kidney beans"
@@ -42,6 +57,9 @@ quantity = "1 can"
 protein_g = 24
 fiber_g = 17
 calories = 380
+fat_g = 1
+carbs_g = 55
+alcohol_g = 0
 
 [[ingredients]]
 name = "Bone broth"
@@ -49,3 +67,6 @@ quantity = "140g"
 protein_g = 5
 fiber_g = 0
 calories = 25
+fat_g = 0.1
+carbs_g = 1
+alcohol_g = 0

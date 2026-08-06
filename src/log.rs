@@ -11,6 +11,9 @@ pub struct LogEntry {
     pub calories: u32,
     pub protein_g: f64,
     pub fiber_g: f64,
+    pub fat_g: f64,
+    pub carbs_g: f64,
+    pub alcohol_g: f64,
     pub title: Option<String>,
 }
 
@@ -25,6 +28,18 @@ impl LogEntry {
 
     pub fn total_fiber(&self) -> f64 {
         self.fiber_g * self.servings
+    }
+
+    pub fn total_fat(&self) -> f64 {
+        self.fat_g * self.servings
+    }
+
+    pub fn total_carbs(&self) -> f64 {
+        self.carbs_g * self.servings
+    }
+
+    pub fn total_alcohol(&self) -> f64 {
+        self.alcohol_g * self.servings
     }
 }
 
@@ -134,6 +149,9 @@ mod tests {
             calories: 200,
             protein_g: 15.0,
             fiber_g: 5.0,
+            fat_g: 2.0,
+            carbs_g: 30.0,
+            alcohol_g: 0.0,
             title: None,
         };
 
@@ -146,8 +164,46 @@ mod tests {
         assert_eq!(loaded.entries[0].calories, 200);
         assert!((loaded.entries[0].protein_g - 15.0).abs() < 0.001);
         assert!((loaded.entries[0].fiber_g - 5.0).abs() < 0.001);
+        assert!((loaded.entries[0].fat_g - 2.0).abs() < 0.001);
+        assert!((loaded.entries[0].carbs_g - 30.0).abs() < 0.001);
+        assert!((loaded.entries[0].alcohol_g - 0.0).abs() < 0.001);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_old_format_missing_macros_rejected() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "[[entries]]\nslug = \"coffee\"\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\ntitle = \"Coffee\"\n",
+        )?;
+
+        assert!(load_day(dir.path(), date).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_totals_scale_by_servings() {
+        let entry = LogEntry {
+            slug: "test".to_string(),
+            servings: 2.0,
+            calories: 100,
+            protein_g: 10.0,
+            fiber_g: 5.0,
+            fat_g: 4.0,
+            carbs_g: 20.0,
+            alcohol_g: 3.0,
+            title: None,
+        };
+        assert_eq!(entry.total_calories(), 200.0);
+        assert_eq!(entry.total_protein(), 20.0);
+        assert_eq!(entry.total_fiber(), 10.0);
+        assert_eq!(entry.total_fat(), 8.0);
+        assert_eq!(entry.total_carbs(), 40.0);
+        assert_eq!(entry.total_alcohol(), 6.0);
     }
 
     #[test]
@@ -165,6 +221,9 @@ mod tests {
                 calories: 12,
                 protein_g: 0.0,
                 fiber_g: 0.0,
+                fat_g: 0.0,
+                carbs_g: 0.0,
+                alcohol_g: 0.0,
                 title: None,
             },
         )?;
@@ -178,6 +237,9 @@ mod tests {
                 calories: 418,
                 protein_g: 22.0,
                 fiber_g: 9.0,
+                fat_g: 6.0,
+                carbs_g: 60.0,
+                alcohol_g: 0.0,
                 title: None,
             },
         )?;

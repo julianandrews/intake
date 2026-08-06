@@ -7,6 +7,9 @@ quantity = "2 scoops"
 protein_g = 48
 fiber_g = 0
 calories = 240
+fat_g = 3
+carbs_g = 6
+alcohol_g = 0
 
 [[ingredients]]
 name = "Creatine Monohydrate"
@@ -14,6 +17,9 @@ quantity = "5g"
 protein_g = 0
 fiber_g = 0
 calories = 0
+fat_g = 0
+carbs_g = 0
+alcohol_g = 0
 
 [[ingredients]]
 name = "Psyllium Husk Powder"
@@ -21,6 +27,9 @@ quantity = "10g"
 protein_g = 0
 fiber_g = 8
 calories = 35
+fat_g = 0
+carbs_g = 8
+alcohol_g = 0
 
 [[ingredients]]
 name = "Decaf Cold Brew"
@@ -28,6 +37,9 @@ quantity = "80g"
 protein_g = 0
 fiber_g = 0
 calories = 0
+fat_g = 0
+carbs_g = 0
+alcohol_g = 0
 
 [[ingredients]]
 name = "Fage Total 2% Greek Yogurt"
@@ -35,3 +47,6 @@ quantity = "50g"
 protein_g = 9
 fiber_g = 0
 calories = 48
+fat_g = 1.3
+carbs_g = 1.9
+alcohol_g = 0

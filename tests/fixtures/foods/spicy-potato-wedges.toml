@@ -7,6 +7,9 @@ quantity = "400g"
 protein_g = 8
 fiber_g = 6
 calories = 308
+fat_g = 0.4
+carbs_g = 68
+alcohol_g = 0
 
 [[ingredients]]
 name = "Oil"
@@ -14,3 +17,6 @@ quantity = "5g"
 protein_g = 0
 fiber_g = 0
 calories = 40
+fat_g = 5
+carbs_g = 0
+alcohol_g = 0

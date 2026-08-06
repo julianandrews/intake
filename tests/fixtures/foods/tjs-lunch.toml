@@ -7,6 +7,9 @@ quantity = "1 individual bag (5 oz)"
 protein_g = 9
 fiber_g = 6
 calories = 90
+fat_g = 2
+carbs_g = 9
+alcohol_g = 0
 
 [[ingredients]]
 name = "Trader Joe's Grilled Chimichurri Chicken Thigh Skewers"
@@ -14,6 +17,9 @@ quantity = "1/2 package (3 skewers)"
 protein_g = 28.5
 fiber_g = 0
 calories = 210
+fat_g = 9
+carbs_g = 7.5
+alcohol_g = 0
 
 [[ingredients]]
 name = "Kimchi"
@@ -21,3 +27,6 @@ quantity = "3 tbsp"
 protein_g = 0.5
 fiber_g = 0.7
 calories = 7
+fat_g = 0
+carbs_g = 1.5
+alcohol_g = 0

@@ -7,6 +7,9 @@ quantity = "150g"
 protein_g = 14
 fiber_g = 0
 calories = 140
+fat_g = 7.5
+carbs_g = 5.9
+alcohol_g = 0
 
 [[ingredients]]
 name = "Blueberries"
@@ -14,6 +17,9 @@ quantity = "80g"
 protein_g = 1
 fiber_g = 2
 calories = 46
+fat_g = 0.2
+carbs_g = 11.6
+alcohol_g = 0
 
 [[ingredients]]
 name = "Dark Brown Sugar"
@@ -21,3 +27,6 @@ quantity = "2 tsp"
 protein_g = 0
 fiber_g = 0
 calories = 30
+fat_g = 0
+carbs_g = 8
+alcohol_g = 0

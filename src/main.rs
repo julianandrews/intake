@@ -20,8 +20,8 @@ mod config;
 mod display;
 mod log;
 mod recipe;
-use config::Config;
-use display::Table;
+use config::{Column, Config};
+use display::{ColumnValue, Table};
 
 #[derive(Parser)]
 #[command(name = "intake", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
@@ -98,13 +98,22 @@ enum Commands {
         servings: Option<f64>,
         /// Calories
         #[arg(long)]
-        calories: u32,
+        calories: Option<u32>,
         /// Protein in grams
         #[arg(long)]
-        protein: f64,
+        protein: Option<f64>,
         /// Fiber in grams
         #[arg(long)]
-        fiber: f64,
+        fiber: Option<f64>,
+        /// Fat in grams
+        #[arg(long)]
+        fat: Option<f64>,
+        /// Carbs in grams
+        #[arg(long)]
+        carbs: Option<f64>,
+        /// Alcohol in grams
+        #[arg(long)]
+        alcohol: Option<f64>,
     },
 }
 
@@ -209,10 +218,10 @@ fn main() -> Result<()> {
             cmd_log(&mut stdout, &foods_dir, &log_dir, date, grouped, &config)?;
         }
         Commands::Show { recipe } => {
-            cmd_show_recipe(&mut stdout, &foods_dir, &recipe)?;
+            cmd_show_recipe(&mut stdout, &foods_dir, &recipe, &config)?;
         }
         Commands::List => {
-            cmd_list(&mut stdout, &foods_dir)?;
+            cmd_list(&mut stdout, &foods_dir, &config)?;
         }
         Commands::Summary { date, days } => {
             let end = resolve_date(date, None)?;
@@ -258,15 +267,23 @@ fn main() -> Result<()> {
             calories,
             protein,
             fiber,
+            fat,
+            carbs,
+            alcohol,
         } => {
             cmd_adhoc(
                 &mut stdout,
                 &log_dir,
                 &name,
                 servings.unwrap_or(1.0),
-                calories,
-                protein,
-                fiber,
+                &recipe::Macros {
+                    calories: calories.unwrap_or(0),
+                    protein_g: protein.unwrap_or(0.0),
+                    fiber_g: fiber.unwrap_or(0.0),
+                    fat_g: fat.unwrap_or(0.0),
+                    carbs_g: carbs.unwrap_or(0.0),
+                    alcohol_g: alcohol.unwrap_or(0.0),
+                },
             )?;
         }
     }
@@ -279,16 +296,17 @@ fn cmd_adhoc(
     log_dir: &Path,
     name: &str,
     servings: f64,
-    calories: u32,
-    protein_g: f64,
-    fiber_g: f64,
+    macros: &recipe::Macros,
 ) -> Result<()> {
     let entry = log::LogEntry {
         slug: name.to_lowercase().replace(' ', "-"),
         servings,
-        calories,
-        protein_g,
-        fiber_g,
+        calories: macros.calories,
+        protein_g: macros.protein_g,
+        fiber_g: macros.fiber_g,
+        fat_g: macros.fat_g,
+        carbs_g: macros.carbs_g,
+        alcohol_g: macros.alcohol_g,
         title: Some(name.to_string()),
     };
 
@@ -323,6 +341,9 @@ fn cmd_add(
         calories: ps.calories,
         protein_g: ps.protein_g,
         fiber_g: ps.fiber_g,
+        fat_g: ps.fat_g,
+        carbs_g: ps.carbs_g,
+        alcohol_g: ps.alcohol_g,
         title: None,
     };
 
@@ -393,7 +414,10 @@ fn cmd_log(
     match day_log {
         None => writeln!(writer, "No entries for {}", date)?,
         Some(day_log) => {
-            let mut table = Table::new(&["Item", "Servings", "Calories", "Protein(g)", "Fiber(g)"]);
+            let columns = config.columns()?;
+            let mut headers: Vec<&str> = vec!["Item", "Servings"];
+            headers.extend(columns.iter().map(|c| c.label()));
+            let mut table = Table::new(&headers);
             table.set_title(&date.to_string());
 
             let rows = if grouped {
@@ -402,82 +426,78 @@ fn cmd_log(
                 build_ungrouped_rows(foods_dir, &day_log.entries)?
             };
 
-            let mut total_cal = 0.0;
-            let mut total_protein = 0.0;
-            let mut total_fiber = 0.0;
+            let mut totals = display::DayTotals::default();
             let mut total_servings = 0.0;
 
             for row in &rows {
                 let serv_str = fmt_servings(row.servings);
 
-                table.add_row(vec![
-                    row.title.clone(),
-                    serv_str,
-                    format!("{:.0}", row.calories),
-                    format!("{:.1}", row.protein_g),
-                    format!("{:.1}", row.fiber_g),
-                ]);
+                let mut cells = vec![row.title.clone(), serv_str];
+                for column in &columns {
+                    cells.push(display::log_cell(*column, row.column_value(*column)));
+                }
+                table.add_row(cells);
 
-                total_cal += row.calories;
-                total_protein += row.protein_g;
-                total_fiber += row.fiber_g;
+                totals.calories += row.calories;
+                totals.protein += row.protein_g;
+                totals.fiber += row.fiber_g;
+                totals.fat += row.fat_g;
+                totals.carbs += row.carbs_g;
+                totals.alcohol += row.alcohol_g;
                 total_servings += row.servings;
             }
 
             let (net_cal, deficit) = day_net_and_deficit(
-                total_cal,
+                totals.calories,
                 day_log.exercise_calories,
                 config.maintenance_calories,
             );
 
             let now = (date == Local::now().date_naive()).then(|| Local::now().time());
+            let targets = config.targets()?;
+            let show_exercise =
+                day_log.exercise_calories > 0 && columns.contains(&Column::Calories);
 
-            let colors = display::total_cell_colors(
-                now,
-                net_cal,
-                &display::DayTotals {
-                    protein: total_protein,
-                    fiber: total_fiber,
-                },
-                &display::DayTargets {
-                    max_calories: config.max_calories,
-                    min_protein: config.min_protein,
-                    min_fiber: config.min_fiber,
-                },
-            );
+            let mut plain_cells = Vec::new();
+            let mut colored_cells = Vec::new();
+            let mut exercise_cells = Vec::new();
+            for column in &columns {
+                let total = totals.column_value(*column);
+                let colored = if *column == Column::Calories {
+                    net_cal
+                } else {
+                    total
+                };
+                let color = display::column_color(now, colored, &targets.for_column(*column));
+                plain_cells.push(display::log_cell(*column, total));
+                colored_cells.push(display::wrap_color(
+                    &display::log_cell(*column, colored),
+                    color,
+                ));
+                if show_exercise {
+                    exercise_cells.push(if *column == Column::Calories {
+                        format!("-{}", day_log.exercise_calories)
+                    } else {
+                        String::new()
+                    });
+                }
+            }
 
-            let serv_str = fmt_servings(total_servings);
+            let mut total_row = vec!["Total".to_string(), fmt_servings(total_servings)];
+            if show_exercise {
+                total_row.extend(plain_cells);
+                table.add_footer_custom(total_row);
 
-            if day_log.exercise_calories > 0 {
-                table.add_footer_custom(vec![
-                    "Total".to_string(),
-                    serv_str,
-                    format!("{:.0}", total_cal),
-                    format!("{:.1}", total_protein),
-                    format!("{:.1}", total_fiber),
-                ]);
-                table.add_footer_custom(vec![
-                    "Exercise".to_string(),
-                    String::new(),
-                    format!("-{}", day_log.exercise_calories),
-                    String::new(),
-                    String::new(),
-                ]);
-                table.add_footer_custom(vec![
-                    "Net".to_string(),
-                    String::new(),
-                    display::wrap_color(&format!("{:.0}", net_cal), colors.calories),
-                    display::wrap_color(&format!("{:.1}", total_protein), colors.protein),
-                    display::wrap_color(&format!("{:.1}", total_fiber), colors.fiber),
-                ]);
+                let mut exercise_row = vec!["Exercise".to_string(), String::new()];
+                exercise_row.extend(exercise_cells);
+                table.add_footer_custom(exercise_row);
+
+                let mut net_row = vec!["Net".to_string(), String::new()];
+                net_row.extend(colored_cells);
+                table.add_footer_custom(net_row);
             } else {
-                table.add_footer_custom(vec![
-                    "Total".to_string(),
-                    serv_str,
-                    display::wrap_color(&format!("{:.0}", total_cal), colors.calories),
-                    display::wrap_color(&format!("{:.1}", total_protein), colors.protein),
-                    display::wrap_color(&format!("{:.1}", total_fiber), colors.fiber),
-                ]);
+                total_row.extend(colored_cells);
+                table.add_footer_custom(total_row);
             }
 
             write!(writer, "{}", table.format())?;
@@ -512,9 +532,16 @@ struct SummaryRow {
     calories: f64,
     protein_g: f64,
     fiber_g: f64,
+    fat_g: f64,
+    carbs_g: f64,
+    alcohol_g: f64,
     exercise_calories: u32,
     deficit: Option<f64>,
 }
+
+crate::display::impl_column_value!(
+    SummaryRow, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g
+);
 
 fn build_summary_rows(
     log_dir: &Path,
@@ -552,6 +579,13 @@ fn build_summary_rows(
                 .map(log::LogEntry::total_protein)
                 .sum();
             let fiber_g: f64 = day_log.entries.iter().map(log::LogEntry::total_fiber).sum();
+            let fat_g: f64 = day_log.entries.iter().map(log::LogEntry::total_fat).sum();
+            let carbs_g: f64 = day_log.entries.iter().map(log::LogEntry::total_carbs).sum();
+            let alcohol_g: f64 = day_log
+                .entries
+                .iter()
+                .map(log::LogEntry::total_alcohol)
+                .sum();
 
             let (_, deficit) =
                 day_net_and_deficit(calories, day_log.exercise_calories, maintenance_calories);
@@ -561,6 +595,9 @@ fn build_summary_rows(
                 calories,
                 protein_g,
                 fiber_g,
+                fat_g,
+                carbs_g,
+                alcohol_g,
                 exercise_calories: day_log.exercise_calories,
                 deficit,
             });
@@ -590,10 +627,13 @@ fn cmd_summary(
         return Ok(());
     }
 
-    let any_exercise = rows.iter().any(|r| r.exercise_calories > 0);
+    let columns = config.columns()?;
+    let any_exercise =
+        rows.iter().any(|r| r.exercise_calories > 0) && columns.contains(&Column::Calories);
     let show_deficit = config.maintenance_calories.is_some();
 
-    let mut headers = vec!["Date", "Calories", "Protein(g)", "Fiber(g)"];
+    let mut headers: Vec<&str> = vec!["Date"];
+    headers.extend(columns.iter().map(|c| c.label()));
     if any_exercise {
         headers.push("Exercise");
     }
@@ -609,12 +649,10 @@ fn cmd_summary(
     ));
 
     for row in &rows {
-        let mut cells = vec![
-            row.date.to_string(),
-            format!("{:.0}", row.calories),
-            format!("{:.1}", row.protein_g),
-            format!("{:.1}", row.fiber_g),
-        ];
+        let mut cells = vec![row.date.to_string()];
+        for column in &columns {
+            cells.push(display::log_cell(*column, row.column_value(*column)));
+        }
         if any_exercise {
             if row.exercise_calories > 0 {
                 cells.push(format!(
@@ -634,18 +672,22 @@ fn cmd_summary(
     }
 
     let count = rows.len() as f64;
-    let total_calories: f64 = rows.iter().map(|r| r.calories).sum();
-    let total_protein: f64 = rows.iter().map(|r| r.protein_g).sum();
-    let total_fiber: f64 = rows.iter().map(|r| r.fiber_g).sum();
+    let mut totals = display::DayTotals::default();
+    for row in &rows {
+        totals.calories += row.calories;
+        totals.protein += row.protein_g;
+        totals.fiber += row.fiber_g;
+        totals.fat += row.fat_g;
+        totals.carbs += row.carbs_g;
+        totals.alcohol += row.alcohol_g;
+    }
     let total_exercise: u32 = rows.iter().map(|r| r.exercise_calories).sum();
     let total_deficit: f64 = rows.iter().filter_map(|r| r.deficit).sum();
 
-    let mut total_footer = vec![
-        "Total".to_string(),
-        format!("{total_calories:.0}"),
-        format!("{total_protein:.1}"),
-        format!("{total_fiber:.1}"),
-    ];
+    let mut total_footer = vec!["Total".to_string()];
+    for column in &columns {
+        total_footer.push(display::log_cell(*column, totals.column_value(*column)));
+    }
     if any_exercise {
         total_footer.push(total_exercise.to_string());
     }
@@ -654,12 +696,13 @@ fn cmd_summary(
     }
     table.add_footer(total_footer);
 
-    let mut avg_footer = vec![
-        "Avg/day".to_string(),
-        format!("{:.0}", total_calories / count),
-        format!("{:.1}", total_protein / count),
-        format!("{:.1}", total_fiber / count),
-    ];
+    let mut avg_footer = vec!["Avg/day".to_string()];
+    for column in &columns {
+        avg_footer.push(display::log_cell(
+            *column,
+            totals.column_value(*column) / count,
+        ));
+    }
     if any_exercise {
         avg_footer.push(format!("{:.0}", total_exercise as f64 / count));
     }
@@ -678,12 +721,74 @@ fn cmd_summary(
     Ok(())
 }
 
+fn cmd_show_recipe(
+    writer: &mut impl Write,
+    foods_dir: &Path,
+    slug: &str,
+    config: &Config,
+) -> Result<()> {
+    let recipe_path = foods_dir.join(format!("{}.toml", slug));
+    let recipe = recipe::load_recipe(&recipe_path)
+        .with_context(|| format!("recipe '{}' not found", slug))?;
+    write!(writer, "{}", recipe.display(&config.columns()?))?;
+    Ok(())
+}
+
+fn cmd_list(writer: &mut impl Write, foods_dir: &Path, config: &Config) -> Result<()> {
+    let recipes = recipe::find_all_recipes(foods_dir)?;
+    let columns = config.columns()?;
+
+    let mut headers: Vec<&str> = vec!["Recipe", "Servings"];
+    for column in &columns {
+        headers.push(if *column == Column::Calories {
+            "Cal/serv"
+        } else {
+            column.label()
+        });
+    }
+
+    let mut table = Table::new(&headers);
+    table.set_title("All Recipes");
+
+    for (_, recipe) in &recipes {
+        let ps = recipe.per_serving();
+        let mut cells = vec![recipe.title.clone(), recipe.servings.to_string()];
+        for column in &columns {
+            cells.push(display::recipe_cell(*column, ps.column_value(*column)));
+        }
+        table.add_row(cells);
+    }
+
+    write!(writer, "{}", table.format())?;
+    Ok(())
+}
+
 struct DisplayRow {
     title: String,
     servings: f64,
     calories: f64,
     protein_g: f64,
     fiber_g: f64,
+    fat_g: f64,
+    carbs_g: f64,
+    alcohol_g: f64,
+}
+
+crate::display::impl_column_value!(
+    DisplayRow, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g
+);
+
+fn display_row_from_entry(title: String, entry: &log::LogEntry) -> DisplayRow {
+    DisplayRow {
+        title,
+        servings: entry.servings,
+        calories: entry.total_calories(),
+        protein_g: entry.total_protein(),
+        fiber_g: entry.total_fiber(),
+        fat_g: entry.total_fat(),
+        carbs_g: entry.total_carbs(),
+        alcohol_g: entry.total_alcohol(),
+    }
 }
 
 fn build_ungrouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
@@ -691,13 +796,7 @@ fn build_ungrouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<V
     let mut cache = HashMap::new();
     for entry in entries {
         let title = resolve_title(foods_dir, entry, &mut cache)?;
-        rows.push(DisplayRow {
-            title,
-            servings: entry.servings,
-            calories: entry.total_calories(),
-            protein_g: entry.total_protein(),
-            fiber_g: entry.total_fiber(),
-        });
+        rows.push(display_row_from_entry(title, entry));
     }
     Ok(rows)
 }
@@ -709,29 +808,20 @@ fn build_grouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec
 
     for entry in entries {
         if let Some(title) = entry.title.clone() {
-            rows.push(DisplayRow {
-                title,
-                servings: entry.servings,
-                calories: entry.total_calories(),
-                protein_g: entry.total_protein(),
-                fiber_g: entry.total_fiber(),
-            });
+            rows.push(display_row_from_entry(title, entry));
         } else if let Some(&idx) = slug_to_idx.get(entry.slug.as_str()) {
             let row = &mut rows[idx];
             row.servings += entry.servings;
             row.calories += entry.total_calories();
             row.protein_g += entry.total_protein();
             row.fiber_g += entry.total_fiber();
+            row.fat_g += entry.total_fat();
+            row.carbs_g += entry.total_carbs();
+            row.alcohol_g += entry.total_alcohol();
         } else {
             let title = resolve_title(foods_dir, entry, &mut cache)?;
             slug_to_idx.insert(entry.slug.as_str(), rows.len());
-            rows.push(DisplayRow {
-                title,
-                servings: entry.servings,
-                calories: entry.total_calories(),
-                protein_g: entry.total_protein(),
-                fiber_g: entry.total_fiber(),
-            });
+            rows.push(display_row_from_entry(title, entry));
         }
     }
 
@@ -754,6 +844,9 @@ mod tests {
             calories: 0,
             protein_g: 0.0,
             fiber_g: 0.0,
+            fat_g: 0.0,
+            carbs_g: 0.0,
+            alcohol_g: 0.0,
             title: None,
         }
     }
@@ -765,6 +858,9 @@ mod tests {
             calories: 0,
             protein_g: 0.0,
             fiber_g: 0.0,
+            fat_g: 0.0,
+            carbs_g: 0.0,
+            alcohol_g: 0.0,
             title: Some(title.to_string()),
         }
     }
@@ -856,6 +952,35 @@ mod tests {
     }
 
     #[test]
+    fn test_build_grouped_rows_new_macros_accumulated() {
+        let mut e1 = entry("coffee", 1.0);
+        e1.fat_g = 4.0;
+        e1.carbs_g = 10.0;
+        e1.alcohol_g = 1.0;
+        let mut e2 = entry("coffee", 2.0);
+        e2.fat_g = 4.0;
+        e2.carbs_g = 10.0;
+        e2.alcohol_g = 1.0;
+        let entries = vec![e1, e2];
+        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
+        assert_eq!(rows[0].fat_g, 12.0);
+        assert_eq!(rows[0].carbs_g, 30.0);
+        assert_eq!(rows[0].alcohol_g, 3.0);
+    }
+
+    #[test]
+    fn test_build_ungrouped_rows_new_macros_scaled_by_servings() {
+        let mut e = entry("coffee", 2.0);
+        e.fat_g = 5.0;
+        e.carbs_g = 15.0;
+        e.alcohol_g = 2.0;
+        let rows = build_ungrouped_rows(&foods_dir(), &[e]).unwrap();
+        assert_eq!(rows[0].fat_g, 10.0);
+        assert_eq!(rows[0].carbs_g, 30.0);
+        assert_eq!(rows[0].alcohol_g, 4.0);
+    }
+
+    #[test]
     fn test_resolve_date_defaults_to_today() {
         let today = Local::now().date_naive();
         let date = resolve_date(None, None).unwrap();
@@ -934,6 +1059,9 @@ mod tests {
                 calories: calories as u32,
                 protein_g: 10.0,
                 fiber_g: 4.0,
+                fat_g: 2.0,
+                carbs_g: 8.0,
+                alcohol_g: 0.0,
                 title: None,
             }],
             exercise_calories: exercise,
@@ -1012,33 +1140,4 @@ mod tests {
         let rows = build_summary_rows(&dir.path().join("does-not-exist"), end, 7, None).unwrap();
         assert!(rows.is_empty());
     }
-}
-
-fn cmd_show_recipe(writer: &mut impl Write, foods_dir: &Path, slug: &str) -> Result<()> {
-    let recipe_path = foods_dir.join(format!("{}.toml", slug));
-    let recipe = recipe::load_recipe(&recipe_path)
-        .with_context(|| format!("recipe '{}' not found", slug))?;
-    write!(writer, "{}", recipe.display())?;
-    Ok(())
-}
-
-fn cmd_list(writer: &mut impl Write, foods_dir: &Path) -> Result<()> {
-    let recipes = recipe::find_all_recipes(foods_dir)?;
-
-    let mut table = Table::new(&["Recipe", "Servings", "Cal/serv", "Protein(g)", "Fiber(g)"]);
-    table.set_title("All Recipes");
-
-    for (_, recipe) in &recipes {
-        let ps = recipe.per_serving();
-        table.add_row(vec![
-            recipe.title.clone(),
-            recipe.servings.to_string(),
-            ps.calories.to_string(),
-            format!("{:.1}g", ps.protein_g),
-            format!("{:.1}g", ps.fiber_g),
-        ]);
-    }
-
-    write!(writer, "{}", table.format())?;
-    Ok(())
 }

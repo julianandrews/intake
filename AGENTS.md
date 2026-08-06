@@ -18,6 +18,13 @@ The file must match the `Recipe` and `Ingredient` structs in `src/recipe.rs`:
   - `protein_g` (float or int)
   - `fiber_g` (float or int)
   - `calories` (int)
+  - `fat_g` (float or int)
+  - `carbs_g` (float or int)
+  - `alcohol_g` (float or int)
+
+All macro fields (`protein_g`, `fiber_g`, `calories`, `fat_g`, `carbs_g`,
+`alcohol_g`) are **required** — there is no default of zero, so a food with
+unrecorded macros fails loudly instead of silently counting as zero.
 
 See `foods/cheesy-popcorn.toml` for a simple example, or `foods/turkey-chili.toml`
 for a multi-ingredient one.
@@ -31,10 +38,11 @@ Example recipes live in `tests/fixtures/foods/` for reference.
 Use the `adhoc` CLI subcommand for one-off foods without a recipe file:
 
 ```
-intake adhoc --calories N --protein N --fiber N <name> [servings]
+intake adhoc [--calories N] [--protein N] [--fiber N] [--fat N] [--carbs N] [--alcohol N] <name> [servings]
 ```
 
-- Macros are specified inline — no recipe file needed
+- Macros are specified inline — no recipe file needed; every macro flag is
+  optional and defaults to 0
 - The entry is appended to today's log
 - Slug is auto-derived from the name (lowercased, spaces → hyphens)
 - Check existing entries in `log/` for the exact TOML format to follow
@@ -50,10 +58,18 @@ The config file lives at `~/.config/intake/config.toml`. Data defaults to
 `~/.local/share/intake/` (following XDG_DATA_HOME). Supported fields:
 
 - `foods_dir` / `log_dir` — override default data directories
+- `show_columns` — which macro columns to display in `log`/`summary`/`list`/`show`.
+  Values: `calories`, `protein`, `fiber`, `fat`, `carbs`, `alcohol`.
+  Default: all except `alcohol`. Duplicate entries are a config error
 - `max_calories` — daily calorie target (u32)
 - `min_protein` — daily protein target in grams (f64)
 - `min_fiber` — daily fiber target in grams (f64)
 - `maintenance_calories` — TDEE for deficit calculation (u32)
+- Every macro also accepts `min_<macro>` / `max_<macro>` targets (f64), e.g.
+  `min_fat`, `max_fat`, `min_carbs`, `max_carbs`, `max_alcohol`. When both a
+  min and max are set the `[min, max]` range is the green band: below min →
+  yellow, above max → red, inside → green. Targets scale with day progress
+  (like `max_calories` does). Coloring logic: `column_color` in `src/display.rs`
 
 Paths can also be set via `INTAKE_FOODS_DIR` / `INTAKE_LOG_DIR` env vars, or
 `--foods-dir` / `--log-dir` CLI flags. Resolution order:
@@ -70,7 +86,9 @@ intake exercise 300
 Records calories burned for today. On exercise days the log table shows an
 `Exercise` row with a negative calorie adjustment and a `Net` row with
 post-exercise calories; exercise also raises the TDEE used for deficit
-calculation.
+calculation. If `show_columns` omits `calories`, the `Exercise`/`Net` rows are
+hidden (they have nothing to show); the summary command likewise hides its
+`Exercise` column in that case.
 
 ## Viewing a Multi-Day Summary
 
