@@ -333,21 +333,39 @@ pub fn render_day_summary(
     maintenance_calories: Option<u32>,
     deficit: Option<f64>,
 ) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    let mut lines: Vec<(String, String)> = Vec::new();
 
     if let Some(mc) = maintenance_calories {
         let tdee = mc + exercise_calories;
-        parts.push(format!("TDEE: {tdee}"));
+        lines.push(("TDEE:".to_string(), format!("{tdee}")));
     }
     if let Some(d) = deficit {
-        let color = if d >= 0.0 { ANSI_GREEN } else { ANSI_RED };
-        parts.push(format!("Deficit: {color}{d:.0}{ANSI_RESET}"));
+        lines.push(("Deficit:".to_string(), format!("{d:.0}")));
     }
 
-    if parts.is_empty() {
+    if lines.is_empty() {
         String::new()
     } else {
-        format!("  {}\n", parts.join("    "))
+        let label_width = lines
+            .iter()
+            .map(|(label, _)| visible_width(label))
+            .max()
+            .unwrap();
+        let value_width = lines
+            .iter()
+            .map(|(_, value)| visible_width(value))
+            .max()
+            .unwrap();
+        let mut out = String::from("\n");
+        for (label, value) in lines {
+            let pad = " ".repeat(label_width - visible_width(&label));
+            writeln!(
+                out,
+                "{ANSI_BOLD_MAGENTA}{label}{ANSI_RESET}{pad}  {value:>value_width$}"
+            )
+            .unwrap();
+        }
+        out
     }
 }
 
@@ -528,8 +546,12 @@ mod tests {
     #[test]
     fn test_render_day_summary() {
         let out = render_day_summary(300, Some(2400), Some(1500.0));
-        assert!(out.contains("TDEE: 2700"));
-        assert!(out.contains("Deficit: \u{1b}[32m1500\u{1b}[0m"));
+        assert!(out.contains(&format!("{ANSI_BOLD_MAGENTA}TDEE:{ANSI_RESET}")));
+        assert!(out.contains(&format!("{ANSI_BOLD_MAGENTA}Deficit:{ANSI_RESET}")));
+        assert!(out.contains("2700"));
+        assert!(out.contains("1500"));
+        assert!(!out.contains(ANSI_GREEN));
+        assert!(!out.contains(ANSI_RED));
     }
 
     #[test]
@@ -540,7 +562,7 @@ mod tests {
     #[test]
     fn test_render_day_summary_negative_deficit() {
         let out = render_day_summary(0, Some(2400), Some(-500.0));
-        assert!(out.contains("Deficit: \u{1b}[31m-500\u{1b}[0m"));
+        assert!(out.contains(&format!("{ANSI_BOLD_MAGENTA}Deficit:{ANSI_RESET}  -500")));
     }
 
     #[test]
