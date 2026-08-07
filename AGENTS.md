@@ -11,22 +11,33 @@ by default). The filename (minus `.toml`) becomes the food slug.
 The file must match the `Food` and `Ingredient` structs in `src/food.rs`:
 
 - `title` — display name
-- `servings` — how many servings the full food makes
+- `servings` — how many servings the full food makes; must be a nonzero
+  integer (`NonZeroU32`)
 - `notes` (string, optional — defaults to empty; shown under the recipe in
   `intake show` only when non-empty)
 - `[[ingredients]]` — one table per ingredient, each with:
   - `name` (string, required)
   - `quantity` (string, optional — e.g. `"400g"`, `"1 tbsp"`)
-  - `protein_g` (float or int)
-  - `fiber_g` (float or int)
+  - `protein_g` (decimal number)
+  - `fiber_g` (decimal number)
   - `calories` (int)
-  - `fat_g` (float or int)
-  - `carbs_g` (float or int)
-  - `alcohol_g` (float or int)
+  - `fat_g` (decimal number)
+  - `carbs_g` (decimal number)
+  - `alcohol_g` (decimal number)
 
 All macro fields (`protein_g`, `fiber_g`, `calories`, `fat_g`, `carbs_g`,
 `alcohol_g`) are **required** — there is no default of zero, so a food with
 unrecorded macros fails loudly instead of silently counting as zero.
+
+Macro masses are stored as exact decimals rounded to 0.001 g (`Grams` in
+`src/amount.rs`): sums and products are exact, division (per-serving, day
+averages) rounds to 0.001 g, and display rounds to 0.1 g. Values are written
+to log files as decimal strings — no floats anywhere on disk, so files
+round-trip exactly; legacy float values in existing log files are still read
+and normalized on load. `servings = 0` is rejected at load — it previously
+caused silent inf/NaN. Log entries store a strictly positive decimal
+`servings` (`Servings`), so fractional servings (0.5, 1.5) are fine but
+zero/negative are rejected on load.
 
 See `tests/fixtures/foods/cheesy-popcorn.toml` for a simple example, or
 `tests/fixtures/foods/turkey-chili.toml` for a multi-ingredient one.
@@ -62,10 +73,10 @@ The config file lives at `~/.config/intake/config.toml`. Data defaults to
   Values: `calories`, `protein`, `fiber`, `fat`, `carbs`, `alcohol`.
   Default: all except `alcohol`. Duplicate entries are a config error
 - `max_calories` — daily calorie target (u32)
-- `min_protein` — daily protein target in grams (f64)
-- `min_fiber` — daily fiber target in grams (f64)
+- `min_protein` — daily protein target in grams (decimal)
+- `min_fiber` — daily fiber target in grams (decimal)
 - `maintenance_calories` — TDEE for deficit calculation (u32)
-- Every macro also accepts `min_<macro>` / `max_<macro>` targets (f64), e.g.
+- Every macro also accepts `min_<macro>` / `max_<macro>` targets (decimal), e.g.
   `min_fat`, `max_fat`, `min_carbs`, `max_carbs`, `max_alcohol`. When both a
   min and max are set the `[min, max]` range is the green band: below min →
   yellow, above max → red, inside → green. Targets scale with day progress

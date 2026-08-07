@@ -1,22 +1,26 @@
+use crate::amount::{round_away, Grams};
 use crate::config::Column;
 use crate::display::{
     food_cell, Align, ColumnValue, Table, ANSI_BOLD_YELLOW, ANSI_DIM, ANSI_RESET,
 };
 use anyhow::{Context, Result};
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Ingredient {
     pub name: String,
     pub quantity: Option<String>,
-    pub protein_g: f64,
-    pub fiber_g: f64,
+    pub protein_g: Grams,
+    pub fiber_g: Grams,
     pub calories: u32,
-    pub fat_g: f64,
-    pub carbs_g: f64,
-    pub alcohol_g: f64,
+    pub fat_g: Grams,
+    pub carbs_g: Grams,
+    pub alcohol_g: Grams,
 }
 
 crate::display::impl_column_value!(
@@ -26,7 +30,7 @@ crate::display::impl_column_value!(
 #[derive(Debug, Deserialize, Clone)]
 pub struct Food {
     pub title: String,
-    pub servings: u32,
+    pub servings: NonZeroU32,
     pub ingredients: Vec<Ingredient>,
     #[serde(default)]
     pub notes: String,
@@ -35,11 +39,11 @@ pub struct Food {
 #[derive(Debug, Clone)]
 pub struct Macros {
     pub calories: u32,
-    pub protein_g: f64,
-    pub fiber_g: f64,
-    pub fat_g: f64,
-    pub carbs_g: f64,
-    pub alcohol_g: f64,
+    pub protein_g: Grams,
+    pub fiber_g: Grams,
+    pub fat_g: Grams,
+    pub carbs_g: Grams,
+    pub alcohol_g: Grams,
 }
 
 crate::display::impl_column_value!(Macros, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g);
@@ -58,18 +62,21 @@ impl Food {
 
     pub fn per_serving(&self) -> Macros {
         let t = self.totals();
+        let servings = Decimal::from(self.servings.get());
         Macros {
-            calories: (t.calories as f64 / self.servings as f64).round() as u32,
-            protein_g: t.protein_g / self.servings as f64,
-            fiber_g: t.fiber_g / self.servings as f64,
-            fat_g: t.fat_g / self.servings as f64,
-            carbs_g: t.carbs_g / self.servings as f64,
-            alcohol_g: t.alcohol_g / self.servings as f64,
+            calories: round_away(Decimal::from(t.calories) / servings, 0)
+                .to_u32()
+                .expect("calories per serving out of range"),
+            protein_g: t.protein_g / servings,
+            fiber_g: t.fiber_g / servings,
+            fat_g: t.fat_g / servings,
+            carbs_g: t.carbs_g / servings,
+            alcohol_g: t.alcohol_g / servings,
         }
     }
 
     pub fn display(&self, columns: &[Column]) -> String {
-        let serving_label = if self.servings == 1 {
+        let serving_label = if self.servings.get() == 1 {
             "serving"
         } else {
             "servings"
@@ -173,82 +180,83 @@ pub fn find_all_foods(foods_dir: &Path) -> Result<Vec<Food>> {
 mod tests {
     use super::*;
     use crate::config::DEFAULT_COLUMNS;
+    use std::num::NonZeroU32;
+    use std::str::FromStr;
+
+    fn grams(value: f64) -> Grams {
+        Grams::from_f64(value).unwrap()
+    }
+
+    fn food_with_ingredient(servings: u32, ingredient: Ingredient) -> Food {
+        Food {
+            title: "Test".to_string(),
+            servings: NonZeroU32::new(servings).unwrap(),
+            notes: String::new(),
+            ingredients: vec![ingredient],
+        }
+    }
+
+    fn ingredient(
+        protein: f64,
+        fiber: f64,
+        calories: u32,
+        fat: f64,
+        carbs: f64,
+        alcohol: f64,
+    ) -> Ingredient {
+        Ingredient {
+            name: "A".to_string(),
+            quantity: None,
+            protein_g: grams(protein),
+            fiber_g: grams(fiber),
+            calories,
+            fat_g: grams(fat),
+            carbs_g: grams(carbs),
+            alcohol_g: grams(alcohol),
+        }
+    }
 
     #[test]
     fn test_per_serving_with_fractions() {
-        let food = Food {
-            title: "Test".to_string(),
-            servings: 3,
-            notes: String::new(),
-            ingredients: vec![Ingredient {
-                name: "A".to_string(),
-                quantity: None,
-                protein_g: 10.0,
-                fiber_g: 5.0,
-                calories: 100,
-                fat_g: 0.0,
-                carbs_g: 0.0,
-                alcohol_g: 0.0,
-            }],
-        };
+        let food = food_with_ingredient(3, ingredient(10.0, 5.0, 100, 0.0, 0.0, 0.0));
         let ps = food.per_serving();
         assert_eq!(ps.calories, 33);
-        assert!((ps.protein_g - 3.333).abs() < 0.001);
-        assert!((ps.fiber_g - 1.667).abs() < 0.001);
+        assert_eq!(ps.protein_g, Grams::from_str("3.333").unwrap());
+        assert_eq!(ps.fiber_g, Grams::from_str("1.667").unwrap());
     }
 
     #[test]
     fn test_per_serving_exact_division() {
-        let food = Food {
-            title: "Test".to_string(),
-            servings: 2,
-            notes: String::new(),
-            ingredients: vec![Ingredient {
-                name: "A".to_string(),
-                quantity: None,
-                protein_g: 20.0,
-                fiber_g: 6.0,
-                calories: 100,
-                fat_g: 4.0,
-                carbs_g: 30.0,
-                alcohol_g: 2.0,
-            }],
-        };
+        let food = food_with_ingredient(2, ingredient(20.0, 6.0, 100, 4.0, 30.0, 2.0));
         let ps = food.per_serving();
         assert_eq!(ps.calories, 50);
-        assert_eq!(ps.protein_g, 10.0);
-        assert_eq!(ps.fiber_g, 3.0);
-        assert_eq!(ps.fat_g, 2.0);
-        assert_eq!(ps.carbs_g, 15.0);
-        assert_eq!(ps.alcohol_g, 1.0);
+        assert_eq!(ps.protein_g, grams(10.0));
+        assert_eq!(ps.fiber_g, grams(3.0));
+        assert_eq!(ps.fat_g, grams(2.0));
+        assert_eq!(ps.carbs_g, grams(15.0));
+        assert_eq!(ps.alcohol_g, grams(1.0));
     }
 
     #[test]
     fn test_per_serving_fractional_input() {
-        let food = Food {
-            title: "Fiber Test".to_string(),
-            servings: 1,
-            notes: String::new(),
-            ingredients: vec![Ingredient {
-                name: "Psyllium".to_string(),
-                quantity: None,
-                protein_g: 0.0,
-                fiber_g: 0.3,
-                calories: 5,
-                fat_g: 0.0,
-                carbs_g: 0.0,
-                alcohol_g: 0.0,
-            }],
-        };
+        let food = food_with_ingredient(1, ingredient(0.0, 0.3, 5, 0.0, 0.0, 0.0));
         let ps = food.per_serving();
         assert_eq!(ps.calories, 5);
-        assert_eq!(ps.fiber_g, 0.3);
+        assert_eq!(ps.fiber_g, grams(0.3));
     }
 
     #[test]
     fn test_ingredient_missing_macros_rejected() {
         let result: Result<Food, _> =
             toml::from_str("title = \"X\"\nservings = 1\n\n[[ingredients]]\nname = \"A\"\ncalories = 10\nprotein_g = 1\nfiber_g = 0\n");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_zero_servings_rejected() {
+        let result: Result<Food, _> = toml::from_str(
+            "title = \"X\"\nservings = 0\n\n[[ingredients]]\nname = \"A\"\ncalories = 10\nprotein_g = 1\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\n",
+        );
         assert!(result.is_err());
     }
 
@@ -280,28 +288,28 @@ mod tests {
     fn test_display_basic() {
         let food = Food {
             title: "Oatmeal".to_string(),
-            servings: 2,
+            servings: NonZeroU32::new(2).unwrap(),
             notes: String::new(),
             ingredients: vec![
                 Ingredient {
                     name: "Oats".to_string(),
                     quantity: Some("100g".to_string()),
-                    protein_g: 10.0,
-                    fiber_g: 5.0,
+                    protein_g: grams(10.0),
+                    fiber_g: grams(5.0),
                     calories: 200,
-                    fat_g: 4.0,
-                    carbs_g: 30.0,
-                    alcohol_g: 0.0,
+                    fat_g: grams(4.0),
+                    carbs_g: grams(30.0),
+                    alcohol_g: grams(0.0),
                 },
                 Ingredient {
                     name: "Milk".to_string(),
                     quantity: Some("200ml".to_string()),
-                    protein_g: 8.0,
-                    fiber_g: 0.0,
+                    protein_g: grams(8.0),
+                    fiber_g: grams(0.0),
                     calories: 120,
-                    fat_g: 6.0,
-                    carbs_g: 9.0,
-                    alcohol_g: 0.0,
+                    fat_g: grams(6.0),
+                    carbs_g: grams(9.0),
+                    alcohol_g: grams(0.0),
                 },
             ],
         };
@@ -327,17 +335,17 @@ mod tests {
     fn test_display_single_serving() {
         let food = Food {
             title: "Coffee".to_string(),
-            servings: 1,
+            servings: NonZeroU32::new(1).unwrap(),
             notes: String::new(),
             ingredients: vec![Ingredient {
                 name: "Cold Brew".to_string(),
                 quantity: None,
-                protein_g: 0.0,
-                fiber_g: 0.0,
+                protein_g: grams(0.0),
+                fiber_g: grams(0.0),
                 calories: 0,
-                fat_g: 0.0,
-                carbs_g: 0.0,
-                alcohol_g: 0.0,
+                fat_g: grams(0.0),
+                carbs_g: grams(0.0),
+                alcohol_g: grams(0.0),
             }],
         };
 
@@ -350,17 +358,17 @@ mod tests {
     fn test_display_no_quantity() {
         let food = Food {
             title: "Test".to_string(),
-            servings: 1,
+            servings: NonZeroU32::new(1).unwrap(),
             notes: String::new(),
             ingredients: vec![Ingredient {
                 name: "Secret Spice".to_string(),
                 quantity: None,
-                protein_g: 0.5,
-                fiber_g: 0.1,
+                protein_g: grams(0.5),
+                fiber_g: grams(0.1),
                 calories: 5,
-                fat_g: 0.0,
-                carbs_g: 0.0,
-                alcohol_g: 0.0,
+                fat_g: grams(0.0),
+                carbs_g: grams(0.0),
+                alcohol_g: grams(0.0),
             }],
         };
 
@@ -372,22 +380,7 @@ mod tests {
 
     #[test]
     fn test_display_column_subset() {
-        let food = Food {
-            title: "Test".to_string(),
-            servings: 1,
-            notes: String::new(),
-            ingredients: vec![Ingredient {
-                name: "A".to_string(),
-                quantity: None,
-                protein_g: 10.0,
-                fiber_g: 5.0,
-                calories: 100,
-                fat_g: 4.0,
-                carbs_g: 30.0,
-                alcohol_g: 0.0,
-            }],
-        };
-
+        let food = food_with_ingredient(1, ingredient(10.0, 5.0, 100, 4.0, 30.0, 0.0));
         let md = food.display(&[Column::Calories, Column::Fat]);
         assert!(md.contains("Calories"));
         assert!(md.contains("Fat(g)"));
@@ -398,21 +391,10 @@ mod tests {
     }
 
     fn test_food(notes: &str) -> Food {
-        Food {
-            title: "Test".to_string(),
-            servings: 1,
-            notes: notes.to_string(),
-            ingredients: vec![Ingredient {
-                name: "A".to_string(),
-                quantity: None,
-                protein_g: 10.0,
-                fiber_g: 5.0,
-                calories: 100,
-                fat_g: 4.0,
-                carbs_g: 30.0,
-                alcohol_g: 0.0,
-            }],
-        }
+        let mut food = food_with_ingredient(1, ingredient(10.0, 5.0, 100, 4.0, 30.0, 0.0));
+        food.title = "Test".to_string();
+        food.notes = notes.to_string();
+        food
     }
 
     #[test]

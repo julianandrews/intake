@@ -1,7 +1,9 @@
+use crate::amount::round_away;
 use crate::config::Column;
 use chrono::{NaiveTime, Timelike};
 use std::fmt::Write;
 
+pub use rust_decimal::Decimal;
 pub const ANSI_RESET: &str = "\x1b[0m";
 pub const ANSI_CYAN: &str = "\x1b[36m";
 pub const ANSI_BOLD_BLUE: &str = "\x1b[1;34m";
@@ -216,9 +218,9 @@ impl Table {
     }
 }
 
-fn day_proportion(now: &NaiveTime) -> f64 {
+fn day_proportion(now: &NaiveTime) -> Decimal {
     let elapsed = now.hour() * 3600 + now.minute() * 60 + now.second();
-    elapsed as f64 / 86400.0
+    Decimal::from(elapsed) / Decimal::from(86400)
 }
 
 pub fn wrap_color(value: &str, color: Option<&str>) -> String {
@@ -230,25 +232,25 @@ pub fn wrap_color(value: &str, color: Option<&str>) -> String {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ColumnTarget {
-    pub min: Option<f64>,
-    pub max: Option<f64>,
+    pub min: Option<Decimal>,
+    pub max: Option<Decimal>,
 }
 
 pub trait ColumnValue {
-    fn column_value(&self, column: Column) -> f64;
+    fn column_value(&self, column: Column) -> Decimal;
 }
 
 macro_rules! impl_column_value {
     ($t:ty, $calories:ident, $protein:ident, $fiber:ident, $fat:ident, $carbs:ident, $alcohol:ident) => {
         impl $crate::display::ColumnValue for $t {
-            fn column_value(&self, column: $crate::config::Column) -> f64 {
+            fn column_value(&self, column: $crate::config::Column) -> $crate::display::Decimal {
                 match column {
-                    $crate::config::Column::Calories => f64::from(self.$calories),
-                    $crate::config::Column::Protein => self.$protein,
-                    $crate::config::Column::Fiber => self.$fiber,
-                    $crate::config::Column::Fat => self.$fat,
-                    $crate::config::Column::Carbs => self.$carbs,
-                    $crate::config::Column::Alcohol => self.$alcohol,
+                    $crate::config::Column::Calories => self.$calories.into(),
+                    $crate::config::Column::Protein => self.$protein.into(),
+                    $crate::config::Column::Fiber => self.$fiber.into(),
+                    $crate::config::Column::Fat => self.$fat.into(),
+                    $crate::config::Column::Carbs => self.$carbs.into(),
+                    $crate::config::Column::Alcohol => self.$alcohol.into(),
                 }
             }
         }
@@ -258,12 +260,12 @@ pub(crate) use impl_column_value;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DayTotals {
-    pub calories: f64,
-    pub protein: f64,
-    pub fiber: f64,
-    pub fat: f64,
-    pub carbs: f64,
-    pub alcohol: f64,
+    pub calories: Decimal,
+    pub protein: Decimal,
+    pub fiber: Decimal,
+    pub fat: Decimal,
+    pub carbs: Decimal,
+    pub alcohol: Decimal,
 }
 
 impl_column_value!(DayTotals, calories, protein, fiber, fat, carbs, alcohol);
@@ -293,10 +295,10 @@ impl DayTargets {
 
 pub fn column_color(
     now: Option<NaiveTime>,
-    value: f64,
+    value: Decimal,
     target: &ColumnTarget,
 ) -> Option<&'static str> {
-    let dp = now.as_ref().map(day_proportion).unwrap_or(1.0);
+    let dp = now.as_ref().map(day_proportion).unwrap_or(Decimal::ONE);
 
     if let Some(max) = target.max {
         if value > max {
@@ -314,24 +316,29 @@ pub fn column_color(
     (target.min.is_some() || target.max.is_some()).then_some(ANSI_GREEN)
 }
 
-pub fn log_cell(column: Column, value: f64) -> String {
+fn rescale(mut value: Decimal, places: u32) -> Decimal {
+    value.rescale(places);
+    value
+}
+
+pub fn log_cell(column: Column, value: Decimal) -> String {
     match column {
-        Column::Calories => format!("{value:.0}"),
-        _ => format!("{value:.1}"),
+        Column::Calories => rescale(round_away(value, 0), 0).to_string(),
+        _ => rescale(round_away(value, 1), 1).to_string(),
     }
 }
 
-pub fn food_cell(column: Column, value: f64) -> String {
+pub fn food_cell(column: Column, value: Decimal) -> String {
     match column {
-        Column::Calories => format!("{}", value.round() as u32),
-        _ => format!("{value:.1}g"),
+        Column::Calories => rescale(round_away(value, 0), 0).to_string(),
+        _ => format!("{}g", rescale(round_away(value, 1), 1)),
     }
 }
 
 pub fn render_day_summary(
     exercise_calories: u32,
     maintenance_calories: Option<u32>,
-    deficit: Option<f64>,
+    deficit: Option<Decimal>,
 ) -> String {
     let mut lines: Vec<(String, String)> = Vec::new();
 
@@ -340,7 +347,7 @@ pub fn render_day_summary(
         lines.push(("TDEE:".to_string(), format!("{tdee}")));
     }
     if let Some(d) = deficit {
-        lines.push(("Deficit:".to_string(), format!("{d:.0}")));
+        lines.push(("Deficit:".to_string(), d.round_dp(0).to_string()));
     }
 
     if lines.is_empty() {
@@ -372,6 +379,7 @@ pub fn render_day_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_display_basic() {
@@ -450,14 +458,14 @@ mod tests {
         DayTargets {
             calories: ColumnTarget {
                 min: None,
-                max: Some(2000.0),
+                max: Some(Decimal::from(2000)),
             },
             protein: ColumnTarget {
-                min: Some(100.0),
+                min: Some(Decimal::from(100)),
                 max: None,
             },
             fiber: ColumnTarget {
-                min: Some(20.0),
+                min: Some(Decimal::from(20)),
                 max: None,
             },
             ..DayTargets::default()
@@ -467,14 +475,17 @@ mod tests {
     #[test]
     fn test_column_color_past_day() {
         assert_eq!(
-            column_color(None, 2100.0, &targets().calories),
+            column_color(None, Decimal::from(2100), &targets().calories),
             Some(ANSI_RED)
         );
         assert_eq!(
-            column_color(None, 90.0, &targets().protein),
+            column_color(None, Decimal::from(90), &targets().protein),
             Some(ANSI_YELLOW)
         );
-        assert_eq!(column_color(None, 25.0, &targets().fiber), Some(ANSI_GREEN));
+        assert_eq!(
+            column_color(None, Decimal::from(25), &targets().fiber),
+            Some(ANSI_GREEN)
+        );
     }
 
     #[test]
@@ -483,24 +494,30 @@ mod tests {
         let calories = targets().calories;
 
         // net 800: at/below half of 2000 -> green
-        assert_eq!(column_color(Some(now), 800.0, &calories), Some(ANSI_GREEN));
+        assert_eq!(
+            column_color(Some(now), Decimal::from(800), &calories),
+            Some(ANSI_GREEN)
+        );
 
         // net 1200: over half, under target -> yellow
         assert_eq!(
-            column_color(Some(now), 1200.0, &calories),
+            column_color(Some(now), Decimal::from(1200), &calories),
             Some(ANSI_YELLOW)
         );
 
         // net 2500: over target -> red
-        assert_eq!(column_color(Some(now), 2500.0, &calories), Some(ANSI_RED));
+        assert_eq!(
+            column_color(Some(now), Decimal::from(2500), &calories),
+            Some(ANSI_RED)
+        );
 
         // protein 40 >= 50? no -> yellow; fiber 5 >= 10? no -> yellow
         assert_eq!(
-            column_color(Some(now), 40.0, &targets().protein),
+            column_color(Some(now), Decimal::from(40), &targets().protein),
             Some(ANSI_YELLOW)
         );
         assert_eq!(
-            column_color(Some(now), 5.0, &targets().fiber),
+            column_color(Some(now), Decimal::from(5), &targets().fiber),
             Some(ANSI_YELLOW)
         );
     }
@@ -508,44 +525,68 @@ mod tests {
     #[test]
     fn test_column_color_min_and_max_band() {
         let target = ColumnTarget {
-            min: Some(50.0),
-            max: Some(90.0),
+            min: Some(Decimal::from(50)),
+            max: Some(Decimal::from(90)),
         };
         // below min -> yellow
-        assert_eq!(column_color(None, 40.0, &target), Some(ANSI_YELLOW));
+        assert_eq!(
+            column_color(None, Decimal::from(40), &target),
+            Some(ANSI_YELLOW)
+        );
         // at min -> green
-        assert_eq!(column_color(None, 50.0, &target), Some(ANSI_GREEN));
+        assert_eq!(
+            column_color(None, Decimal::from(50), &target),
+            Some(ANSI_GREEN)
+        );
         // in band -> green
-        assert_eq!(column_color(None, 70.0, &target), Some(ANSI_GREEN));
+        assert_eq!(
+            column_color(None, Decimal::from(70), &target),
+            Some(ANSI_GREEN)
+        );
         // above max -> red
-        assert_eq!(column_color(None, 95.0, &target), Some(ANSI_RED));
+        assert_eq!(
+            column_color(None, Decimal::from(95), &target),
+            Some(ANSI_RED)
+        );
     }
 
     #[test]
     fn test_column_color_band_scales_with_day_progress() {
         let target = ColumnTarget {
-            min: Some(50.0),
-            max: Some(90.0),
+            min: Some(Decimal::from(50)),
+            max: Some(Decimal::from(90)),
         };
         let now = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
         // band halves at noon: 25..45
-        assert_eq!(column_color(Some(now), 20.0, &target), Some(ANSI_YELLOW));
-        assert_eq!(column_color(Some(now), 30.0, &target), Some(ANSI_GREEN));
+        assert_eq!(
+            column_color(Some(now), Decimal::from(20), &target),
+            Some(ANSI_YELLOW)
+        );
+        assert_eq!(
+            column_color(Some(now), Decimal::from(30), &target),
+            Some(ANSI_GREEN)
+        );
         // between scaled max (45) and full max (90) -> yellow
-        assert_eq!(column_color(Some(now), 50.0, &target), Some(ANSI_YELLOW));
+        assert_eq!(
+            column_color(Some(now), Decimal::from(50), &target),
+            Some(ANSI_YELLOW)
+        );
         // above full max -> red
-        assert_eq!(column_color(Some(now), 95.0, &target), Some(ANSI_RED));
+        assert_eq!(
+            column_color(Some(now), Decimal::from(95), &target),
+            Some(ANSI_RED)
+        );
     }
 
     #[test]
     fn test_column_color_no_targets() {
         let target = ColumnTarget::default();
-        assert_eq!(column_color(None, 2100.0, &target), None);
+        assert_eq!(column_color(None, Decimal::from(2100), &target), None);
     }
 
     #[test]
     fn test_render_day_summary() {
-        let out = render_day_summary(300, Some(2400), Some(1500.0));
+        let out = render_day_summary(300, Some(2400), Some(Decimal::from(1500)));
         assert!(out.contains(&format!("{ANSI_BOLD_MAGENTA}TDEE:{ANSI_RESET}")));
         assert!(out.contains(&format!("{ANSI_BOLD_MAGENTA}Deficit:{ANSI_RESET}")));
         assert!(out.contains("2700"));
@@ -561,39 +602,64 @@ mod tests {
 
     #[test]
     fn test_render_day_summary_negative_deficit() {
-        let out = render_day_summary(0, Some(2400), Some(-500.0));
+        let out = render_day_summary(0, Some(2400), Some(Decimal::from(-500)));
         assert!(out.contains(&format!("{ANSI_BOLD_MAGENTA}Deficit:{ANSI_RESET}  -500")));
     }
 
     #[test]
     fn test_column_color_past_day_below_targets() {
         assert_eq!(
-            column_color(None, 1500.0, &targets().calories),
+            column_color(None, Decimal::from(1500), &targets().calories),
             Some(ANSI_GREEN)
         );
         assert_eq!(
-            column_color(None, 50.0, &targets().protein),
+            column_color(None, Decimal::from(50), &targets().protein),
             Some(ANSI_YELLOW)
         );
         assert_eq!(
-            column_color(None, 10.0, &targets().fiber),
+            column_color(None, Decimal::from(10), &targets().fiber),
             Some(ANSI_YELLOW)
         );
     }
 
     #[test]
     fn test_log_cell_formats() {
-        assert_eq!(log_cell(Column::Calories, 1500.4), "1500");
-        assert_eq!(log_cell(Column::Protein, 12.34), "12.3");
-        assert_eq!(log_cell(Column::Fat, 7.0), "7.0");
-        assert_eq!(log_cell(Column::Alcohol, 2.5), "2.5");
+        assert_eq!(
+            log_cell(Column::Calories, Decimal::from_str("1500.4").unwrap()),
+            "1500"
+        );
+        assert_eq!(
+            log_cell(Column::Protein, Decimal::from_str("12.34").unwrap()),
+            "12.3"
+        );
+        assert_eq!(
+            log_cell(Column::Fat, Decimal::from_str("7.0").unwrap()),
+            "7.0"
+        );
+        assert_eq!(
+            log_cell(Column::Alcohol, Decimal::from_str("2.5").unwrap()),
+            "2.5"
+        );
     }
 
     #[test]
     fn test_food_cell_formats() {
-        assert_eq!(food_cell(Column::Calories, 160.0), "160");
-        assert_eq!(food_cell(Column::Protein, 9.0), "9.0g");
-        assert_eq!(food_cell(Column::Carbs, 30.25), "30.2g");
+        assert_eq!(food_cell(Column::Calories, Decimal::from(160)), "160");
+        assert_eq!(food_cell(Column::Protein, Decimal::from(9)), "9.0g");
+        assert_eq!(
+            food_cell(Column::Carbs, Decimal::from_str("30.25").unwrap()),
+            "30.3g"
+        );
+    }
+
+    #[test]
+    fn test_rounding_strategy_consistent_between_tables() {
+        let value = Decimal::from_str("1500.5").unwrap();
+        assert_eq!(log_cell(Column::Calories, value), "1501");
+        assert_eq!(food_cell(Column::Calories, value), "1501");
+        let protein = Decimal::from_str("12.35").unwrap();
+        assert_eq!(log_cell(Column::Protein, protein), "12.4");
+        assert_eq!(food_cell(Column::Protein, protein), "12.4g");
     }
 
     #[test]

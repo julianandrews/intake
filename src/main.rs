@@ -16,12 +16,15 @@ const CLAP_STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Green.on_default());
 
+mod amount;
 mod config;
 mod display;
 mod food;
 mod log;
+use amount::{Grams, Servings};
 use config::{Column, Config};
 use display::{ColumnValue, Table};
+use rust_decimal::Decimal;
 
 #[derive(Parser)]
 #[command(name = "intake", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
@@ -47,7 +50,7 @@ enum Commands {
         food: String,
         /// Number of servings (default: 1)
         #[arg(default_value = "1")]
-        servings: f64,
+        servings: Servings,
     },
     /// Show totals for a date (default: today)
     Log {
@@ -95,25 +98,25 @@ enum Commands {
         /// Name of the item
         name: String,
         /// Number of servings (default: 1)
-        servings: Option<f64>,
+        servings: Option<Servings>,
         /// Calories
         #[arg(long)]
         calories: Option<u32>,
         /// Protein in grams
         #[arg(long)]
-        protein: Option<f64>,
+        protein: Option<Grams>,
         /// Fiber in grams
         #[arg(long)]
-        fiber: Option<f64>,
+        fiber: Option<Grams>,
         /// Fat in grams
         #[arg(long)]
-        fat: Option<f64>,
+        fat: Option<Grams>,
         /// Carbs in grams
         #[arg(long)]
-        carbs: Option<f64>,
+        carbs: Option<Grams>,
         /// Alcohol in grams
         #[arg(long)]
-        alcohol: Option<f64>,
+        alcohol: Option<Grams>,
     },
 }
 
@@ -268,14 +271,14 @@ fn main() -> Result<()> {
                 &mut stdout,
                 &log_dir,
                 &name,
-                servings.unwrap_or(1.0),
+                servings.unwrap_or(Servings::from_u32(1)),
                 &food::Macros {
                     calories: calories.unwrap_or(0),
-                    protein_g: protein.unwrap_or(0.0),
-                    fiber_g: fiber.unwrap_or(0.0),
-                    fat_g: fat.unwrap_or(0.0),
-                    carbs_g: carbs.unwrap_or(0.0),
-                    alcohol_g: alcohol.unwrap_or(0.0),
+                    protein_g: protein.unwrap_or(Grams::ZERO),
+                    fiber_g: fiber.unwrap_or(Grams::ZERO),
+                    fat_g: fat.unwrap_or(Grams::ZERO),
+                    carbs_g: carbs.unwrap_or(Grams::ZERO),
+                    alcohol_g: alcohol.unwrap_or(Grams::ZERO),
                 },
             )?;
         }
@@ -288,7 +291,7 @@ fn cmd_adhoc(
     writer: &mut impl Write,
     log_dir: &Path,
     name: &str,
-    servings: f64,
+    servings: Servings,
     macros: &food::Macros,
 ) -> Result<()> {
     let entry = log::LogEntry {
@@ -319,7 +322,7 @@ fn cmd_add(
     foods_dir: &Path,
     log_dir: &Path,
     slug: &str,
-    servings: f64,
+    servings: Servings,
     config: &Config,
 ) -> Result<()> {
     let food_path = foods_dir.join(format!("{}.toml", slug));
@@ -385,14 +388,13 @@ fn resolve_title(
     Ok(food.title)
 }
 
-fn fmt_servings(servings: f64) -> String {
-    if servings.fract() == 0.0 {
-        format!("{}", servings as u32)
+fn fmt_servings(servings: Decimal) -> String {
+    if servings.fract().is_zero() {
+        servings.round_dp(0).to_string()
     } else {
-        format!("{:.1}", servings)
+        servings.round_dp(1).to_string()
     }
 }
-
 fn cmd_log(
     writer: &mut impl Write,
     foods_dir: &Path,
@@ -419,10 +421,10 @@ fn cmd_log(
             };
 
             let mut totals = display::DayTotals::default();
-            let mut total_servings = 0.0;
+            let mut total_servings = Decimal::ZERO;
 
             for row in &rows {
-                let serv_str = fmt_servings(row.servings);
+                let serv_str = fmt_servings(row.servings.to_decimal());
 
                 let mut cells = vec![row.title.clone(), serv_str];
                 for column in &columns {
@@ -431,12 +433,12 @@ fn cmd_log(
                 table.add_row(cells);
 
                 totals.calories += row.calories;
-                totals.protein += row.protein_g;
-                totals.fiber += row.fiber_g;
-                totals.fat += row.fat_g;
-                totals.carbs += row.carbs_g;
-                totals.alcohol += row.alcohol_g;
-                total_servings += row.servings;
+                totals.protein += Decimal::from(row.protein_g);
+                totals.fiber += Decimal::from(row.fiber_g);
+                totals.fat += Decimal::from(row.fat_g);
+                totals.carbs += Decimal::from(row.carbs_g);
+                totals.alcohol += Decimal::from(row.alcohol_g);
+                total_servings += row.servings.to_decimal();
             }
 
             let (net_cal, deficit) = day_net_and_deficit(
@@ -507,13 +509,13 @@ fn cmd_log(
 }
 
 fn day_net_and_deficit(
-    calories: f64,
+    calories: Decimal,
     exercise_calories: u32,
     maintenance_calories: Option<u32>,
-) -> (f64, Option<f64>) {
-    let net_cal = calories - exercise_calories as f64;
+) -> (Decimal, Option<Decimal>) {
+    let net_cal = calories - Decimal::from(exercise_calories);
     let deficit = maintenance_calories.map(|mc| {
-        let tdee = mc as f64 + exercise_calories as f64;
+        let tdee = Decimal::from(mc) + Decimal::from(exercise_calories);
         tdee - net_cal
     });
     (net_cal, deficit)
@@ -521,14 +523,14 @@ fn day_net_and_deficit(
 
 struct SummaryRow {
     date: chrono::NaiveDate,
-    calories: f64,
-    protein_g: f64,
-    fiber_g: f64,
-    fat_g: f64,
-    carbs_g: f64,
-    alcohol_g: f64,
+    calories: Decimal,
+    protein_g: Grams,
+    fiber_g: Grams,
+    fat_g: Grams,
+    carbs_g: Grams,
+    alcohol_g: Grams,
     exercise_calories: u32,
-    deficit: Option<f64>,
+    deficit: Option<Decimal>,
 }
 
 crate::display::impl_column_value!(
@@ -560,20 +562,20 @@ fn build_summary_rows(
     let mut rows = Vec::with_capacity(dates.len());
     for date in dates {
         if let Some(day_log) = log::load_day(log_dir, date)? {
-            let calories: f64 = day_log
+            let calories: Decimal = day_log
                 .entries
                 .iter()
                 .map(log::LogEntry::total_calories)
                 .sum();
-            let protein_g: f64 = day_log
+            let protein_g: Grams = day_log
                 .entries
                 .iter()
                 .map(log::LogEntry::total_protein)
                 .sum();
-            let fiber_g: f64 = day_log.entries.iter().map(log::LogEntry::total_fiber).sum();
-            let fat_g: f64 = day_log.entries.iter().map(log::LogEntry::total_fat).sum();
-            let carbs_g: f64 = day_log.entries.iter().map(log::LogEntry::total_carbs).sum();
-            let alcohol_g: f64 = day_log
+            let fiber_g: Grams = day_log.entries.iter().map(log::LogEntry::total_fiber).sum();
+            let fat_g: Grams = day_log.entries.iter().map(log::LogEntry::total_fat).sum();
+            let carbs_g: Grams = day_log.entries.iter().map(log::LogEntry::total_carbs).sum();
+            let alcohol_g: Grams = day_log
                 .entries
                 .iter()
                 .map(log::LogEntry::total_alcohol)
@@ -658,23 +660,23 @@ fn cmd_summary(
             }
         }
         if let Some(d) = row.deficit {
-            cells.push(format!("{d:.0}"));
+            cells.push(d.round_dp(0).to_string());
         }
         table.add_row(cells);
     }
 
-    let count = rows.len() as f64;
+    let count = Decimal::from(rows.len());
     let mut totals = display::DayTotals::default();
     for row in &rows {
         totals.calories += row.calories;
-        totals.protein += row.protein_g;
-        totals.fiber += row.fiber_g;
-        totals.fat += row.fat_g;
-        totals.carbs += row.carbs_g;
-        totals.alcohol += row.alcohol_g;
+        totals.protein += Decimal::from(row.protein_g);
+        totals.fiber += Decimal::from(row.fiber_g);
+        totals.fat += Decimal::from(row.fat_g);
+        totals.carbs += Decimal::from(row.carbs_g);
+        totals.alcohol += Decimal::from(row.alcohol_g);
     }
     let total_exercise: u32 = rows.iter().map(|r| r.exercise_calories).sum();
-    let total_deficit: f64 = rows.iter().filter_map(|r| r.deficit).sum();
+    let total_deficit: Decimal = rows.iter().filter_map(|r| r.deficit).sum();
 
     let mut total_footer = vec!["Total".to_string()];
     for column in &columns {
@@ -684,7 +686,7 @@ fn cmd_summary(
         total_footer.push(total_exercise.to_string());
     }
     if show_deficit {
-        total_footer.push(format!("{total_deficit:.0}"));
+        total_footer.push(total_deficit.round_dp(0).to_string());
     }
     table.add_footer(total_footer);
 
@@ -696,10 +698,14 @@ fn cmd_summary(
         ));
     }
     if any_exercise {
-        avg_footer.push(format!("{:.0}", total_exercise as f64 / count));
+        avg_footer.push(
+            (Decimal::from(total_exercise) / count)
+                .round_dp(0)
+                .to_string(),
+        );
     }
     if show_deficit {
-        avg_footer.push(format!("{:.0}", total_deficit / count));
+        avg_footer.push((total_deficit / count).round_dp(0).to_string());
     }
     table.add_footer(avg_footer);
 
@@ -756,13 +762,13 @@ fn cmd_list(writer: &mut impl Write, foods_dir: &Path, config: &Config) -> Resul
 
 struct DisplayRow {
     title: String,
-    servings: f64,
-    calories: f64,
-    protein_g: f64,
-    fiber_g: f64,
-    fat_g: f64,
-    carbs_g: f64,
-    alcohol_g: f64,
+    servings: Servings,
+    calories: Decimal,
+    protein_g: Grams,
+    fiber_g: Grams,
+    fat_g: Grams,
+    carbs_g: Grams,
+    alcohol_g: Grams,
 }
 
 crate::display::impl_column_value!(
@@ -831,13 +837,13 @@ mod tests {
     fn entry(slug: &str, servings: f64) -> LogEntry {
         LogEntry {
             slug: slug.to_string(),
-            servings,
+            servings: Servings::from_f64(servings).unwrap(),
             calories: 0,
-            protein_g: 0.0,
-            fiber_g: 0.0,
-            fat_g: 0.0,
-            carbs_g: 0.0,
-            alcohol_g: 0.0,
+            protein_g: Grams::ZERO,
+            fiber_g: Grams::ZERO,
+            fat_g: Grams::ZERO,
+            carbs_g: Grams::ZERO,
+            alcohol_g: Grams::ZERO,
             title: None,
         }
     }
@@ -845,13 +851,13 @@ mod tests {
     fn adhoc_entry(slug: &str, title: &str, servings: f64) -> LogEntry {
         LogEntry {
             slug: slug.to_string(),
-            servings,
+            servings: Servings::from_f64(servings).unwrap(),
             calories: 0,
-            protein_g: 0.0,
-            fiber_g: 0.0,
-            fat_g: 0.0,
-            carbs_g: 0.0,
-            alcohol_g: 0.0,
+            protein_g: Grams::ZERO,
+            fiber_g: Grams::ZERO,
+            fat_g: Grams::ZERO,
+            carbs_g: Grams::ZERO,
+            alcohol_g: Grams::ZERO,
             title: Some(title.to_string()),
         }
     }
@@ -878,11 +884,11 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(
             rows.iter().find(|r| r.title == "Coffee").unwrap().servings,
-            3.0
+            Servings::from_f64(3.0).unwrap()
         );
         assert_eq!(
             rows.iter().find(|r| r.title == "Oatmeal").unwrap().servings,
-            1.0
+            Servings::from_f64(1.0).unwrap()
         );
     }
 
@@ -908,18 +914,18 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(
             rows.iter().find(|r| r.title == "Coffee").unwrap().servings,
-            2.0
+            Servings::from_f64(2.0).unwrap()
         );
         assert_eq!(
             rows.iter().find(|r| r.title == "Oatmeal").unwrap().servings,
-            2.0
+            Servings::from_f64(2.0).unwrap()
         );
         assert_eq!(
             rows.iter()
                 .find(|r| r.title == "Sour Cream - 60g")
                 .unwrap()
                 .servings,
-            1.0
+            Servings::from_f64(1.0).unwrap()
         );
     }
 
@@ -928,7 +934,7 @@ mod tests {
         let mut e = entry("coffee", 2.0);
         e.calories = 24;
         let rows = build_ungrouped_rows(&foods_dir(), &[e]).unwrap();
-        assert_eq!(rows[0].calories, 48.0);
+        assert_eq!(rows[0].calories, Decimal::from(48));
     }
 
     #[test]
@@ -939,36 +945,36 @@ mod tests {
         e2.calories = 24;
         let entries = vec![e1, e2];
         let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(rows[0].calories, 72.0);
+        assert_eq!(rows[0].calories, Decimal::from(72));
     }
 
     #[test]
     fn test_build_grouped_rows_new_macros_accumulated() {
         let mut e1 = entry("coffee", 1.0);
-        e1.fat_g = 4.0;
-        e1.carbs_g = 10.0;
-        e1.alcohol_g = 1.0;
+        e1.fat_g = Grams::from_f64(4.0).unwrap();
+        e1.carbs_g = Grams::from_f64(10.0).unwrap();
+        e1.alcohol_g = Grams::from_f64(1.0).unwrap();
         let mut e2 = entry("coffee", 2.0);
-        e2.fat_g = 4.0;
-        e2.carbs_g = 10.0;
-        e2.alcohol_g = 1.0;
+        e2.fat_g = Grams::from_f64(4.0).unwrap();
+        e2.carbs_g = Grams::from_f64(10.0).unwrap();
+        e2.alcohol_g = Grams::from_f64(1.0).unwrap();
         let entries = vec![e1, e2];
         let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(rows[0].fat_g, 12.0);
-        assert_eq!(rows[0].carbs_g, 30.0);
-        assert_eq!(rows[0].alcohol_g, 3.0);
+        assert_eq!(rows[0].fat_g, Grams::from_f64(12.0).unwrap());
+        assert_eq!(rows[0].carbs_g, Grams::from_f64(30.0).unwrap());
+        assert_eq!(rows[0].alcohol_g, Grams::from_f64(3.0).unwrap());
     }
 
     #[test]
     fn test_build_ungrouped_rows_new_macros_scaled_by_servings() {
         let mut e = entry("coffee", 2.0);
-        e.fat_g = 5.0;
-        e.carbs_g = 15.0;
-        e.alcohol_g = 2.0;
+        e.fat_g = Grams::from_f64(5.0).unwrap();
+        e.carbs_g = Grams::from_f64(15.0).unwrap();
+        e.alcohol_g = Grams::from_f64(2.0).unwrap();
         let rows = build_ungrouped_rows(&foods_dir(), &[e]).unwrap();
-        assert_eq!(rows[0].fat_g, 10.0);
-        assert_eq!(rows[0].carbs_g, 30.0);
-        assert_eq!(rows[0].alcohol_g, 4.0);
+        assert_eq!(rows[0].fat_g, Grams::from_f64(10.0).unwrap());
+        assert_eq!(rows[0].carbs_g, Grams::from_f64(30.0).unwrap());
+        assert_eq!(rows[0].alcohol_g, Grams::from_f64(4.0).unwrap());
     }
 
     #[test]
@@ -1042,17 +1048,23 @@ mod tests {
         }
     }
 
-    fn write_day_log(dir: &Path, date: chrono::NaiveDate, calories: f64, exercise: u32) {
+    fn write_day_log(
+        dir: &Path,
+        date: chrono::NaiveDate,
+        calories: f64,
+        protein: f64,
+        exercise: u32,
+    ) {
         let day_log = log::DayLog {
             entries: vec![LogEntry {
                 slug: "coffee".to_string(),
-                servings: 1.0,
+                servings: Servings::from_f64(1.0).unwrap(),
                 calories: calories as u32,
-                protein_g: 10.0,
-                fiber_g: 4.0,
-                fat_g: 2.0,
-                carbs_g: 8.0,
-                alcohol_g: 0.0,
+                protein_g: Grams::from_f64(protein).unwrap(),
+                fiber_g: Grams::from_f64(4.0).unwrap(),
+                fat_g: Grams::from_f64(2.0).unwrap(),
+                carbs_g: Grams::from_f64(8.0).unwrap(),
+                alcohol_g: Grams::ZERO,
                 title: None,
             }],
             exercise_calories: exercise,
@@ -1065,8 +1077,8 @@ mod tests {
     fn test_build_summary_rows_skips_empty_days() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end, 100.0, 0);
-        write_day_log(dir.path(), end - chrono::Days::new(2), 200.0, 0);
+        write_day_log(dir.path(), end, 100.0, 10.0, 0);
+        write_day_log(dir.path(), end - chrono::Days::new(2), 200.0, 10.0, 0);
 
         let rows = build_summary_rows(dir.path(), end, 7, None).unwrap();
         assert_eq!(rows.len(), 2);
@@ -1078,13 +1090,12 @@ mod tests {
     fn test_build_summary_rows_deficit_matches_day_math() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end, 1500.0, 300);
+        write_day_log(dir.path(), end, 1500.0, 10.0, 300);
 
         let rows = build_summary_rows(dir.path(), end, 7, Some(2400)).unwrap();
         assert_eq!(rows.len(), 1);
         // net = 1500 - 300 = 1200; tdee = 2400 + 300 = 2700; deficit = 1500
-        let deficit = rows[0].deficit.unwrap();
-        assert!((deficit - 1500.0).abs() < 0.001);
+        assert_eq!(rows[0].deficit, Some(Decimal::from(1500)));
     }
 
     #[test]
@@ -1099,7 +1110,7 @@ mod tests {
     fn test_build_summary_rows_days_zero_clamped() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end, 100.0, 0);
+        write_day_log(dir.path(), end, 100.0, 10.0, 0);
         let rows = build_summary_rows(dir.path(), end, 0, None).unwrap();
         assert_eq!(rows.len(), 1);
     }
@@ -1108,7 +1119,7 @@ mod tests {
     fn test_build_summary_rows_days_overflow_errors() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end, 100.0, 0);
+        write_day_log(dir.path(), end, 100.0, 10.0, 0);
         let result = build_summary_rows(dir.path(), end, u32::MAX, None);
         assert!(result.is_err());
     }
@@ -1117,7 +1128,7 @@ mod tests {
     fn test_build_summary_rows_ignores_non_date_files() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end - chrono::Days::new(1), 100.0, 0);
+        write_day_log(dir.path(), end - chrono::Days::new(1), 100.0, 10.0, 0);
         std::fs::write(dir.path().join("README.toml"), "title = \"x\"\n").unwrap();
         let rows = build_summary_rows(dir.path(), end, 7, None).unwrap();
         assert_eq!(rows.len(), 1);

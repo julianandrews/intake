@@ -1,5 +1,7 @@
+use crate::amount::{Grams, Servings};
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,39 +9,39 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LogEntry {
     pub slug: String,
-    pub servings: f64,
+    pub servings: Servings,
     pub calories: u32,
-    pub protein_g: f64,
-    pub fiber_g: f64,
-    pub fat_g: f64,
-    pub carbs_g: f64,
-    pub alcohol_g: f64,
+    pub protein_g: Grams,
+    pub fiber_g: Grams,
+    pub fat_g: Grams,
+    pub carbs_g: Grams,
+    pub alcohol_g: Grams,
     pub title: Option<String>,
 }
 
 impl LogEntry {
-    pub fn total_calories(&self) -> f64 {
-        self.calories as f64 * self.servings
+    pub fn total_calories(&self) -> Decimal {
+        Decimal::from(self.calories) * self.servings.to_decimal()
     }
 
-    pub fn total_protein(&self) -> f64 {
-        self.protein_g * self.servings
+    pub fn total_protein(&self) -> Grams {
+        self.protein_g * self.servings.to_decimal()
     }
 
-    pub fn total_fiber(&self) -> f64 {
-        self.fiber_g * self.servings
+    pub fn total_fiber(&self) -> Grams {
+        self.fiber_g * self.servings.to_decimal()
     }
 
-    pub fn total_fat(&self) -> f64 {
-        self.fat_g * self.servings
+    pub fn total_fat(&self) -> Grams {
+        self.fat_g * self.servings.to_decimal()
     }
 
-    pub fn total_carbs(&self) -> f64 {
-        self.carbs_g * self.servings
+    pub fn total_carbs(&self) -> Grams {
+        self.carbs_g * self.servings.to_decimal()
     }
 
-    pub fn total_alcohol(&self) -> f64 {
-        self.alcohol_g * self.servings
+    pub fn total_alcohol(&self) -> Grams {
+        self.alcohol_g * self.servings.to_decimal()
     }
 }
 
@@ -138,35 +140,48 @@ pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: u32) -> 
 mod tests {
     use super::*;
 
+    fn entry(
+        slug: &str,
+        servings: f64,
+        calories: u32,
+        protein: f64,
+        fiber: f64,
+        fat: f64,
+        carbs: f64,
+        alcohol: f64,
+    ) -> LogEntry {
+        LogEntry {
+            slug: slug.to_string(),
+            servings: Servings::from_f64(servings).unwrap(),
+            calories,
+            protein_g: Grams::from_f64(protein).unwrap(),
+            fiber_g: Grams::from_f64(fiber).unwrap(),
+            fat_g: Grams::from_f64(fat).unwrap(),
+            carbs_g: Grams::from_f64(carbs).unwrap(),
+            alcohol_g: Grams::from_f64(alcohol).unwrap(),
+            title: None,
+        }
+    }
+
     #[test]
     fn test_log_entry_roundtrip() -> Result<()> {
         let dir = tempfile::TempDir::new()?;
 
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
-        let entry = LogEntry {
-            slug: "oatmeal".to_string(),
-            servings: 1.5,
-            calories: 200,
-            protein_g: 15.0,
-            fiber_g: 5.0,
-            fat_g: 2.0,
-            carbs_g: 30.0,
-            alcohol_g: 0.0,
-            title: None,
-        };
+        let e = entry("oatmeal", 1.5, 200, 15.0, 5.0, 2.0, 30.0, 0.0);
 
-        append_entry(dir.path(), date, &entry)?;
+        append_entry(dir.path(), date, &e)?;
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
 
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].slug, "oatmeal");
-        assert_eq!(loaded.entries[0].servings, 1.5);
+        assert_eq!(loaded.entries[0].servings, Servings::from_f64(1.5).unwrap());
         assert_eq!(loaded.entries[0].calories, 200);
-        assert!((loaded.entries[0].protein_g - 15.0).abs() < 0.001);
-        assert!((loaded.entries[0].fiber_g - 5.0).abs() < 0.001);
-        assert!((loaded.entries[0].fat_g - 2.0).abs() < 0.001);
-        assert!((loaded.entries[0].carbs_g - 30.0).abs() < 0.001);
-        assert!((loaded.entries[0].alcohol_g - 0.0).abs() < 0.001);
+        assert_eq!(loaded.entries[0].protein_g, Grams::from_f64(15.0).unwrap());
+        assert_eq!(loaded.entries[0].fiber_g, Grams::from_f64(5.0).unwrap());
+        assert_eq!(loaded.entries[0].fat_g, Grams::from_f64(2.0).unwrap());
+        assert_eq!(loaded.entries[0].carbs_g, Grams::from_f64(30.0).unwrap());
+        assert_eq!(loaded.entries[0].alcohol_g, Grams::from_f64(0.0).unwrap());
 
         Ok(())
     }
@@ -186,24 +201,70 @@ mod tests {
     }
 
     #[test]
+    fn test_log_entry_non_positive_servings_rejected() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "[[entries]]\nslug = \"coffee\"\nservings = 0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+        )?;
+        assert!(load_day(dir.path(), date).is_err());
+
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "[[entries]]\nslug = \"coffee\"\nservings = -2.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+        )?;
+        assert!(load_day(dir.path(), date).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_negative_macros_rejected() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "[[entries]]\nslug = \"coffee\"\nservings = 1.0\ncalories = 12\nprotein_g = -1\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+        )?;
+        assert!(load_day(dir.path(), date).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_legacy_float_values_normalized() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "[[entries]]\nslug = \"chili\"\nservings = 1.0\ncalories = 300\nprotein_g = 3.3333333333333335\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Chili\"\n",
+        )?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert_eq!(loaded.entries[0].protein_g, Grams::from_f64(3.333).unwrap());
+
+        Ok(())
+    }
+
+    #[test]
     fn test_totals_scale_by_servings() {
-        let entry = LogEntry {
-            slug: "test".to_string(),
-            servings: 2.0,
-            calories: 100,
-            protein_g: 10.0,
-            fiber_g: 5.0,
-            fat_g: 4.0,
-            carbs_g: 20.0,
-            alcohol_g: 3.0,
-            title: None,
-        };
-        assert_eq!(entry.total_calories(), 200.0);
-        assert_eq!(entry.total_protein(), 20.0);
-        assert_eq!(entry.total_fiber(), 10.0);
-        assert_eq!(entry.total_fat(), 8.0);
-        assert_eq!(entry.total_carbs(), 40.0);
-        assert_eq!(entry.total_alcohol(), 6.0);
+        let e = entry("test", 2.0, 100, 10.0, 5.0, 4.0, 20.0, 3.0);
+        assert_eq!(e.total_calories(), Decimal::from(200));
+        assert_eq!(e.total_protein(), Grams::from_f64(20.0).unwrap());
+        assert_eq!(e.total_fiber(), Grams::from_f64(10.0).unwrap());
+        assert_eq!(e.total_fat(), Grams::from_f64(8.0).unwrap());
+        assert_eq!(e.total_carbs(), Grams::from_f64(40.0).unwrap());
+        assert_eq!(e.total_alcohol(), Grams::from_f64(6.0).unwrap());
+    }
+
+    #[test]
+    fn test_totals_fractional_servings() {
+        let e = entry("test", 1.5, 100, 10.0, 0.0, 0.0, 0.0, 0.0);
+        assert_eq!(e.total_calories(), Decimal::from(150));
+        assert_eq!(e.total_protein(), Grams::from_f64(15.0).unwrap());
     }
 
     #[test]
@@ -215,33 +276,13 @@ mod tests {
         append_entry(
             dir.path(),
             date,
-            &LogEntry {
-                slug: "coffee".to_string(),
-                servings: 2.0,
-                calories: 12,
-                protein_g: 0.0,
-                fiber_g: 0.0,
-                fat_g: 0.0,
-                carbs_g: 0.0,
-                alcohol_g: 0.0,
-                title: None,
-            },
+            &entry("coffee", 2.0, 12, 0.0, 0.0, 0.0, 0.0, 0.0),
         )?;
 
         append_entry(
             dir.path(),
             date,
-            &LogEntry {
-                slug: "oatmeal".to_string(),
-                servings: 1.0,
-                calories: 418,
-                protein_g: 22.0,
-                fiber_g: 9.0,
-                fat_g: 6.0,
-                carbs_g: 60.0,
-                alcohol_g: 0.0,
-                title: None,
-            },
+            &entry("oatmeal", 1.0, 418, 22.0, 9.0, 6.0, 60.0, 0.0),
         )?;
 
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");

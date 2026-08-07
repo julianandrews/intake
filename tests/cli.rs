@@ -185,11 +185,11 @@ fn test_adhoc_macros_optional_zero_defaults() {
     let today = chrono::Local::now().date_naive();
     let log_file = std::fs::read_to_string(dir.path().join(format!("{today}.toml")))
         .expect("log file written");
-    assert!(log_file.contains("protein_g = 0.0"));
-    assert!(log_file.contains("fiber_g = 0.0"));
-    assert!(log_file.contains("fat_g = 0.0"));
-    assert!(log_file.contains("carbs_g = 0.0"));
-    assert!(log_file.contains("alcohol_g = 0.0"));
+    assert!(log_file.contains("protein_g = \"0\""));
+    assert!(log_file.contains("fiber_g = \"0\""));
+    assert!(log_file.contains("fat_g = \"0\""));
+    assert!(log_file.contains("carbs_g = \"0\""));
+    assert!(log_file.contains("alcohol_g = \"0\""));
 
     let (log_out, log_ok) = run(&[
         "--foods-dir",
@@ -505,9 +505,9 @@ fn test_adhoc_with_fat_carbs_alcohol() {
     let today = chrono::Local::now().date_naive();
     let log_file = std::fs::read_to_string(dir.path().join(format!("{today}.toml")))
         .expect("log file written");
-    assert!(log_file.contains("fat_g = 9.0"));
-    assert!(log_file.contains("carbs_g = 20.0"));
-    assert!(log_file.contains("alcohol_g = 5.0"));
+    assert!(log_file.contains("fat_g = \"9\""));
+    assert!(log_file.contains("carbs_g = \"20\""));
+    assert!(log_file.contains("alcohol_g = \"5\""));
 
     // default view shows fat/carbs (scaled by 2 servings) but not alcohol
     let (log_out, log_ok) = run(&[

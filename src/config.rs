@@ -1,5 +1,6 @@
 use crate::display::{ColumnTarget, DayTargets};
 use anyhow::{bail, Context, Result};
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -40,19 +41,19 @@ pub struct Config {
     pub foods_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
     pub max_calories: Option<u32>,
-    pub min_protein: Option<f64>,
-    pub min_fiber: Option<f64>,
+    pub min_protein: Option<Decimal>,
+    pub min_fiber: Option<Decimal>,
     pub maintenance_calories: Option<u32>,
     pub show_columns: Option<Vec<Column>>,
-    pub min_calories: Option<f64>,
-    pub max_protein: Option<f64>,
-    pub max_fiber: Option<f64>,
-    pub min_fat: Option<f64>,
-    pub max_fat: Option<f64>,
-    pub min_carbs: Option<f64>,
-    pub max_carbs: Option<f64>,
-    pub min_alcohol: Option<f64>,
-    pub max_alcohol: Option<f64>,
+    pub min_calories: Option<Decimal>,
+    pub max_protein: Option<Decimal>,
+    pub max_fiber: Option<Decimal>,
+    pub min_fat: Option<Decimal>,
+    pub max_fat: Option<Decimal>,
+    pub min_carbs: Option<Decimal>,
+    pub max_carbs: Option<Decimal>,
+    pub min_alcohol: Option<Decimal>,
+    pub max_alcohol: Option<Decimal>,
 }
 
 impl Config {
@@ -124,7 +125,7 @@ impl Config {
         let targets = DayTargets {
             calories: ColumnTarget {
                 min: self.min_calories,
-                max: self.max_calories.map(f64::from),
+                max: self.max_calories.map(Decimal::from),
             },
             protein: ColumnTarget {
                 min: self.min_protein,
@@ -168,6 +169,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal::Decimal;
 
     #[test]
     fn test_columns_default_excludes_alcohol() {
@@ -218,14 +220,14 @@ mod tests {
             targets.calories,
             ColumnTarget {
                 min: None,
-                max: Some(2000.0)
+                max: Some(Decimal::from(2000))
             }
         );
         assert_eq!(
             targets.fat,
             ColumnTarget {
-                min: Some(50.0),
-                max: Some(90.0)
+                min: Some(Decimal::from(50)),
+                max: Some(Decimal::from(90))
             }
         );
         assert_eq!(
