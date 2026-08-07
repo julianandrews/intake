@@ -61,9 +61,11 @@ intake adhoc [--calories N] [--protein N] [--fiber N] [--fat N] [--carbs N] [--a
 - Macros are specified inline — no food file needed; every macro flag is
   optional and defaults to 0
 - The entry is appended to today's log
-- Slug is auto-derived from the name (lowercased, spaces → hyphens)
-- Check existing entries in `log/` for the exact TOML format to follow
-  (especially adhoc entries with a `title` field)
+- Check existing entries in `log/` for the exact TOML format to follow:
+  every entry stores its display name in a `title` field (required, on disk
+  as a plain string), plus `servings` and the six macros — food and adhoc
+  entries have the same shape, and logs render without reading the foods
+  directory
 - Implementation: `src/main.rs` function `cmd_adhoc`
 - When you need to look up macros for a food, use `websearch` to find reliable
   nutrition data (e.g. from the USDA). Prefer data per 100g and scale by the

@@ -32,7 +32,6 @@ intake completions <shell>           Generate or install completion script
 ```
 
 Flags like `--foods-dir` and `--log-dir` are available on every command.
-Use `--grouped` with `intake log` to merge entries with the same food slug.
 `intake log --days-ago N` (or `-d N`) shows the log from N days ago, e.g.
 `intake log -d 1` for yesterday. `intake summary` shows one row per logged day
 (unlogged days in the window are skipped) with period totals and per-day

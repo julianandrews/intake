@@ -4,7 +4,6 @@ use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::engine::ArgValueCandidates;
 use clap_complete::{CompleteEnv, CompletionCandidate, Shell};
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -59,9 +58,6 @@ enum Commands {
         /// Number of days before today to show (e.g. 1 = yesterday)
         #[arg(long, short = 'd', conflicts_with = "date")]
         days_ago: Option<u32>,
-        /// Group entries by food
-        #[arg(long)]
-        grouped: bool,
     },
     /// Show a food with ingredients and per-serving values
     Show {
@@ -205,13 +201,9 @@ fn main() -> Result<()> {
         Commands::Add { food, servings } => {
             cmd_add(&mut stdout, &foods_dir, &log_dir, &food, servings, &config)?;
         }
-        Commands::Log {
-            date,
-            days_ago,
-            grouped,
-        } => {
+        Commands::Log { date, days_ago } => {
             let date = resolve_date(date, days_ago)?;
-            cmd_log(&mut stdout, &foods_dir, &log_dir, date, grouped, &config)?;
+            cmd_log(&mut stdout, &log_dir, date, &config)?;
         }
         Commands::Show { food } => {
             cmd_show_food(&mut stdout, &foods_dir, &food, &config)?;
@@ -295,7 +287,7 @@ fn cmd_adhoc(
     macros: &food::Macros,
 ) -> Result<()> {
     let entry = log::LogEntry {
-        slug: name.to_lowercase().replace(' ', "-"),
+        title: name.to_string(),
         servings,
         calories: macros.calories,
         protein_g: macros.protein_g,
@@ -303,7 +295,6 @@ fn cmd_adhoc(
         fat_g: macros.fat_g,
         carbs_g: macros.carbs_g,
         alcohol_g: macros.alcohol_g,
-        title: Some(name.to_string()),
     };
 
     let date = Local::now().date_naive();
@@ -331,7 +322,7 @@ fn cmd_add(
     let ps = food.per_serving()?;
 
     let entry = log::LogEntry {
-        slug: slug.to_string(),
+        title: food.title.clone(),
         servings,
         calories: ps.calories,
         protein_g: ps.protein_g,
@@ -339,7 +330,6 @@ fn cmd_add(
         fat_g: ps.fat_g,
         carbs_g: ps.carbs_g,
         alcohol_g: ps.alcohol_g,
-        title: None,
     };
 
     let date = Local::now().date_naive();
@@ -351,7 +341,7 @@ fn cmd_add(
         servings, food.title, date
     )?;
     writeln!(writer)?;
-    cmd_log(writer, foods_dir, log_dir, date, false, config)?;
+    cmd_log(writer, log_dir, date, config)?;
 
     Ok(())
 }
@@ -370,24 +360,6 @@ fn resolve_date(date: Option<String>, days_ago: Option<u32>) -> Result<chrono::N
     }
 }
 
-fn resolve_title(
-    foods_dir: &Path,
-    entry: &log::LogEntry,
-    cache: &mut HashMap<String, String>,
-) -> Result<String> {
-    if let Some(title) = &entry.title {
-        return Ok(title.clone());
-    }
-    if let Some(title) = cache.get(&entry.slug) {
-        return Ok(title.clone());
-    }
-    let food_path = foods_dir.join(format!("{}.toml", entry.slug));
-    let food =
-        food::load_food(&food_path).with_context(|| format!("food '{}' not found", entry.slug))?;
-    cache.insert(entry.slug.clone(), food.title.clone());
-    Ok(food.title)
-}
-
 fn fmt_servings(servings: Decimal) -> String {
     if servings.fract().is_zero() {
         servings.round_dp(0).to_string()
@@ -397,10 +369,8 @@ fn fmt_servings(servings: Decimal) -> String {
 }
 fn cmd_log(
     writer: &mut impl Write,
-    foods_dir: &Path,
     log_dir: &Path,
     date: chrono::NaiveDate,
-    grouped: bool,
     config: &Config,
 ) -> Result<()> {
     let day_log = log::load_day(log_dir, date)?;
@@ -414,11 +384,7 @@ fn cmd_log(
             let mut table = Table::new(&headers);
             table.set_title(&date.to_string());
 
-            let rows = if grouped {
-                build_grouped_rows(foods_dir, &day_log.entries)?
-            } else {
-                build_ungrouped_rows(foods_dir, &day_log.entries)?
-            };
+            let rows = build_rows(&day_log.entries)?;
 
             let mut totals = display::DayTotals::default();
             let mut total_servings = Decimal::ZERO;
@@ -774,48 +740,15 @@ impl ColumnValue for DisplayRow {
     }
 }
 
-fn display_row_from_entry(title: String, entry: &log::LogEntry) -> Result<DisplayRow> {
-    Ok(DisplayRow {
-        title,
-        servings: entry.servings,
-        macros: entry.totals()?,
-    })
-}
-
-fn build_ungrouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
+fn build_rows(entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
     let mut rows = Vec::with_capacity(entries.len());
-    let mut cache = HashMap::new();
     for entry in entries {
-        let title = resolve_title(foods_dir, entry, &mut cache)?;
-        rows.push(display_row_from_entry(title, entry)?);
+        rows.push(DisplayRow {
+            title: entry.title.clone(),
+            servings: entry.servings,
+            macros: entry.totals()?,
+        });
     }
-    Ok(rows)
-}
-
-fn build_grouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
-    let mut rows: Vec<DisplayRow> = Vec::new();
-    let mut slug_to_idx: HashMap<&str, usize> = HashMap::new();
-    let mut cache = HashMap::new();
-
-    for entry in entries {
-        if let Some(title) = entry.title.clone() {
-            rows.push(display_row_from_entry(title, entry)?);
-        } else if let Some(&idx) = slug_to_idx.get(entry.slug.as_str()) {
-            let row = &mut rows[idx];
-            row.servings = row
-                .servings
-                .checked_add(entry.servings)
-                .context("grouped servings total overflow")?;
-            row.macros
-                .checked_add_row(&entry.totals()?)
-                .context("grouped macro total overflow")?;
-        } else {
-            let title = resolve_title(foods_dir, entry, &mut cache)?;
-            slug_to_idx.insert(entry.slug.as_str(), rows.len());
-            rows.push(display_row_from_entry(title, entry)?);
-        }
-    }
-
     Ok(rows)
 }
 
@@ -823,15 +756,10 @@ fn build_grouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec
 mod tests {
     use super::*;
     use crate::log::LogEntry;
-    use std::str::FromStr;
 
-    fn foods_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/foods")
-    }
-
-    fn entry(slug: &str, servings: f64) -> LogEntry {
+    fn entry(title: &str, servings: f64) -> LogEntry {
         LogEntry {
-            slug: slug.to_string(),
+            title: title.to_string(),
             servings: Servings::from_f64(servings).unwrap(),
             calories: Calories::ZERO,
             protein_g: Grams::ZERO,
@@ -839,148 +767,46 @@ mod tests {
             fat_g: Grams::ZERO,
             carbs_g: Grams::ZERO,
             alcohol_g: Grams::ZERO,
-            title: None,
-        }
-    }
-
-    fn adhoc_entry(slug: &str, title: &str, servings: f64) -> LogEntry {
-        LogEntry {
-            slug: slug.to_string(),
-            servings: Servings::from_f64(servings).unwrap(),
-            calories: Calories::ZERO,
-            protein_g: Grams::ZERO,
-            fiber_g: Grams::ZERO,
-            fat_g: Grams::ZERO,
-            carbs_g: Grams::ZERO,
-            alcohol_g: Grams::ZERO,
-            title: Some(title.to_string()),
         }
     }
 
     #[test]
-    fn test_build_ungrouped_rows_one_per_entry() {
+    fn test_build_rows_one_per_entry() {
         let entries = vec![
             entry("coffee", 1.0),
             entry("coffee", 2.0),
             entry("oatmeal", 1.0),
         ];
-        let rows = build_ungrouped_rows(&foods_dir(), &entries).unwrap();
+        let rows = build_rows(&entries).unwrap();
         assert_eq!(rows.len(), 3);
     }
 
     #[test]
-    fn test_build_grouped_rows_slugs_are_merged() {
+    fn test_build_rows_titles_preserved() {
         let entries = vec![
-            entry("coffee", 1.0),
-            entry("coffee", 2.0),
-            entry("oatmeal", 1.0),
+            entry("Cherries - 155g", 1.0),
+            entry("Sour Cream - 60g", 1.0),
         ];
-        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(
-            rows.iter().find(|r| r.title == "Coffee").unwrap().servings,
-            Servings::from_f64(3.0).unwrap()
-        );
-        assert_eq!(
-            rows.iter().find(|r| r.title == "Oatmeal").unwrap().servings,
-            Servings::from_f64(1.0).unwrap()
-        );
+        let rows = build_rows(&entries).unwrap();
+        assert_eq!(rows[0].title, "Cherries - 155g");
+        assert_eq!(rows[1].title, "Sour Cream - 60g");
     }
 
     #[test]
-    fn test_build_grouped_rows_adhoc_entries_not_grouped() {
-        let entries = vec![
-            adhoc_entry("cherries---155g", "Cherries - 155g", 1.0),
-            adhoc_entry("cherries---155g", "Cherries - 155g", 1.0),
-        ];
-        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(rows.len(), 2);
-    }
-
-    #[test]
-    fn test_build_grouped_rows_mixed_adhoc_and_food() {
-        let entries = vec![
-            entry("coffee", 1.0),
-            entry("coffee", 1.0),
-            adhoc_entry("sour-cream---60g", "Sour Cream - 60g", 1.0),
-            entry("oatmeal", 2.0),
-        ];
-        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(
-            rows.iter().find(|r| r.title == "Coffee").unwrap().servings,
-            Servings::from_f64(2.0).unwrap()
-        );
-        assert_eq!(
-            rows.iter().find(|r| r.title == "Oatmeal").unwrap().servings,
-            Servings::from_f64(2.0).unwrap()
-        );
-        assert_eq!(
-            rows.iter()
-                .find(|r| r.title == "Sour Cream - 60g")
-                .unwrap()
-                .servings,
-            Servings::from_f64(1.0).unwrap()
-        );
-    }
-
-    #[test]
-    fn test_build_ungrouped_rows_calories_scaled_by_servings() {
+    fn test_build_rows_calories_scaled_by_servings() {
         let mut e = entry("coffee", 2.0);
         e.calories = Calories::from_u32(24);
-        let rows = build_ungrouped_rows(&foods_dir(), &[e]).unwrap();
+        let rows = build_rows(&[e]).unwrap();
         assert_eq!(rows[0].macros.calories, Decimal::from(48));
     }
 
     #[test]
-    fn test_build_grouped_rows_calories_accumulated() {
-        let mut e1 = entry("coffee", 1.0);
-        e1.calories = Calories::from_u32(24);
-        let mut e2 = entry("coffee", 2.0);
-        e2.calories = Calories::from_u32(24);
-        let entries = vec![e1, e2];
-        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(rows[0].macros.calories, Decimal::from(72));
-    }
-
-    #[test]
-    fn test_build_grouped_rows_fractional_calories_accumulated() {
-        let mut e1 = entry("coffee", 1.0);
-        e1.calories = Calories::from_str("33.333").unwrap();
-        let mut e2 = entry("coffee", 2.0);
-        e2.calories = Calories::from_str("33.333").unwrap();
-        let entries = vec![e1, e2];
-        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(
-            rows[0].macros.calories,
-            Decimal::from_str("99.999").unwrap()
-        );
-    }
-
-    #[test]
-    fn test_build_grouped_rows_new_macros_accumulated() {
-        let mut e1 = entry("coffee", 1.0);
-        e1.fat_g = Grams::from_f64(4.0).unwrap();
-        e1.carbs_g = Grams::from_f64(10.0).unwrap();
-        e1.alcohol_g = Grams::from_f64(1.0).unwrap();
-        let mut e2 = entry("coffee", 2.0);
-        e2.fat_g = Grams::from_f64(4.0).unwrap();
-        e2.carbs_g = Grams::from_f64(10.0).unwrap();
-        e2.alcohol_g = Grams::from_f64(1.0).unwrap();
-        let entries = vec![e1, e2];
-        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(rows[0].macros.fat, Grams::from_f64(12.0).unwrap().into());
-        assert_eq!(rows[0].macros.carbs, Grams::from_f64(30.0).unwrap().into());
-        assert_eq!(rows[0].macros.alcohol, Grams::from_f64(3.0).unwrap().into());
-    }
-
-    #[test]
-    fn test_build_ungrouped_rows_new_macros_scaled_by_servings() {
+    fn test_build_rows_new_macros_scaled_by_servings() {
         let mut e = entry("coffee", 2.0);
         e.fat_g = Grams::from_f64(5.0).unwrap();
         e.carbs_g = Grams::from_f64(15.0).unwrap();
         e.alcohol_g = Grams::from_f64(2.0).unwrap();
-        let rows = build_ungrouped_rows(&foods_dir(), &[e]).unwrap();
+        let rows = build_rows(&[e]).unwrap();
         assert_eq!(rows[0].macros.fat, Grams::from_f64(10.0).unwrap().into());
         assert_eq!(rows[0].macros.carbs, Grams::from_f64(30.0).unwrap().into());
         assert_eq!(rows[0].macros.alcohol, Grams::from_f64(4.0).unwrap().into());
@@ -1027,14 +853,9 @@ mod tests {
     fn test_log_days_ago_short_flag_parses() {
         let cli = Cli::try_parse_from(["intake", "log", "-d", "2"]).unwrap();
         match cli.command {
-            Commands::Log {
-                date,
-                days_ago,
-                grouped,
-            } => {
+            Commands::Log { date, days_ago } => {
                 assert_eq!(date, None);
                 assert_eq!(days_ago, Some(2));
-                assert!(!grouped);
             }
             _ => panic!("expected Log command"),
         }
@@ -1066,7 +887,7 @@ mod tests {
     ) {
         let day_log = log::DayLog {
             entries: vec![LogEntry {
-                slug: "coffee".to_string(),
+                title: "coffee".to_string(),
                 servings: Servings::from_f64(1.0).unwrap(),
                 calories: Calories::from_f64(calories).unwrap(),
                 protein_g: Grams::from_f64(protein).unwrap(),
@@ -1074,7 +895,6 @@ mod tests {
                 fat_g: Grams::from_f64(2.0).unwrap(),
                 carbs_g: Grams::from_f64(8.0).unwrap(),
                 alcohol_g: Grams::ZERO,
-                title: None,
             }],
             exercise_calories: exercise,
         };

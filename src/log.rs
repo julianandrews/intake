@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LogEntry {
-    pub slug: String,
+    pub title: String,
     pub servings: Servings,
     pub calories: Calories,
     pub protein_g: Grams,
@@ -17,7 +17,6 @@ pub struct LogEntry {
     pub fat_g: Grams,
     pub carbs_g: Grams,
     pub alcohol_g: Grams,
-    pub title: Option<String>,
 }
 
 impl LogEntry {
@@ -25,37 +24,37 @@ impl LogEntry {
         self.calories
             .checked_mul(self.servings.to_decimal())
             .map(Decimal::from)
-            .ok_or_else(|| anyhow!("calorie total overflow for '{}'", self.slug))
+            .ok_or_else(|| anyhow!("calorie total overflow for '{}'", self.title))
     }
 
     pub fn total_protein(&self) -> Result<Grams> {
         self.protein_g
             .checked_mul(self.servings.to_decimal())
-            .ok_or_else(|| anyhow!("protein total overflow for '{}'", self.slug))
+            .ok_or_else(|| anyhow!("protein total overflow for '{}'", self.title))
     }
 
     pub fn total_fiber(&self) -> Result<Grams> {
         self.fiber_g
             .checked_mul(self.servings.to_decimal())
-            .ok_or_else(|| anyhow!("fiber total overflow for '{}'", self.slug))
+            .ok_or_else(|| anyhow!("fiber total overflow for '{}'", self.title))
     }
 
     pub fn total_fat(&self) -> Result<Grams> {
         self.fat_g
             .checked_mul(self.servings.to_decimal())
-            .ok_or_else(|| anyhow!("fat total overflow for '{}'", self.slug))
+            .ok_or_else(|| anyhow!("fat total overflow for '{}'", self.title))
     }
 
     pub fn total_carbs(&self) -> Result<Grams> {
         self.carbs_g
             .checked_mul(self.servings.to_decimal())
-            .ok_or_else(|| anyhow!("carbs total overflow for '{}'", self.slug))
+            .ok_or_else(|| anyhow!("carbs total overflow for '{}'", self.title))
     }
 
     pub fn total_alcohol(&self) -> Result<Grams> {
         self.alcohol_g
             .checked_mul(self.servings.to_decimal())
-            .ok_or_else(|| anyhow!("alcohol total overflow for '{}'", self.slug))
+            .ok_or_else(|| anyhow!("alcohol total overflow for '{}'", self.title))
     }
 
     /// All macro totals scaled by servings; errors on overflow.
@@ -168,7 +167,7 @@ mod tests {
     use std::str::FromStr;
 
     fn entry(
-        slug: &str,
+        title: &str,
         servings: f64,
         calories: u32,
         protein: f64,
@@ -178,7 +177,7 @@ mod tests {
         alcohol: f64,
     ) -> LogEntry {
         LogEntry {
-            slug: slug.to_string(),
+            title: title.to_string(),
             servings: Servings::from_f64(servings).unwrap(),
             calories: Calories::from_u32(calories),
             protein_g: Grams::from_f64(protein).unwrap(),
@@ -186,7 +185,6 @@ mod tests {
             fat_g: Grams::from_f64(fat).unwrap(),
             carbs_g: Grams::from_f64(carbs).unwrap(),
             alcohol_g: Grams::from_f64(alcohol).unwrap(),
-            title: None,
         }
     }
 
@@ -201,7 +199,7 @@ mod tests {
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
 
         assert_eq!(loaded.entries.len(), 1);
-        assert_eq!(loaded.entries[0].slug, "oatmeal");
+        assert_eq!(loaded.entries[0].title, "oatmeal");
         assert_eq!(loaded.entries[0].servings, Servings::from_f64(1.5).unwrap());
         assert_eq!(loaded.entries[0].calories, Calories::from_u32(200));
         assert_eq!(loaded.entries[0].protein_g, Grams::from_f64(15.0).unwrap());
@@ -219,7 +217,7 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         std::fs::write(
             dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
-            "[[entries]]\nslug = \"coffee\"\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\ntitle = \"Coffee\"\n",
+            "[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\ntitle = \"Coffee\"\n",
         )?;
 
         assert!(load_day(dir.path(), date).is_err());
@@ -233,7 +231,7 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         std::fs::write(
             dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
-            "[[entries]]\nslug = \"coffee\"\nservings = 0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+            "[[entries]]\nservings = 0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
         )?;
         assert!(load_day(dir.path(), date).is_err());
 
@@ -241,7 +239,7 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         std::fs::write(
             dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
-            "[[entries]]\nslug = \"coffee\"\nservings = -2.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+            "[[entries]]\nservings = -2.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
         )?;
         assert!(load_day(dir.path(), date).is_err());
 
@@ -254,7 +252,7 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         std::fs::write(
             dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
-            "[[entries]]\nslug = \"coffee\"\nservings = 1.0\ncalories = 12\nprotein_g = -1\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+            "[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = -1\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
         )?;
         assert!(load_day(dir.path(), date).is_err());
 
@@ -267,7 +265,7 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         std::fs::write(
             dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
-            "[[entries]]\nslug = \"coffee\"\nservings = 1.0\ncalories = -12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+            "[[entries]]\nservings = 1.0\ncalories = -12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
         )?;
         assert!(load_day(dir.path(), date).is_err());
 
@@ -280,7 +278,7 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         std::fs::write(
             dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
-            "[[entries]]\nslug = \"chili\"\nservings = 1.0\ncalories = \"33.333\"\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Chili\"\n",
+            "[[entries]]\nservings = 1.0\ncalories = \"33.333\"\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Chili\"\n",
         )?;
 
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
@@ -298,7 +296,7 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         std::fs::write(
             dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
-            "[[entries]]\nslug = \"chili\"\nservings = 1.0\ncalories = 300\nprotein_g = 3.3333333333333335\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Chili\"\n",
+            "[[entries]]\nservings = 1.0\ncalories = 300\nprotein_g = 3.3333333333333335\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Chili\"\n",
         )?;
 
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
@@ -363,8 +361,37 @@ mod tests {
 
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
         assert_eq!(loaded.entries.len(), 2);
-        assert_eq!(loaded.entries[0].slug, "coffee");
-        assert_eq!(loaded.entries[1].slug, "oatmeal");
+        assert_eq!(loaded.entries[0].title, "coffee");
+        assert_eq!(loaded.entries[1].title, "oatmeal");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_missing_title_rejected() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\n",
+        )?;
+        assert!(load_day(dir.path(), date).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_serializes_title_without_slug() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let e = entry("Sour Cream - 60g", 1.0, 60, 1.5, 0.0, 4.0, 3.0, 0.0);
+
+        append_entry(dir.path(), date, &e)?;
+        let content =
+            std::fs::read_to_string(dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))))?;
+        assert!(content.contains("title = \"Sour Cream - 60g\""));
+        assert!(!content.contains("slug"));
 
         Ok(())
     }

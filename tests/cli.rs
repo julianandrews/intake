@@ -48,7 +48,7 @@ fn write_day_log(
     exercise: u32,
 ) {
     let content = format!(
-        "exercise_calories = {exercise}\n\n[[entries]]\nslug = \"coffee\"\nservings = 1.0\ncalories = {calories}\nprotein_g = {protein}\nfiber_g = {fiber}\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Coffee\"\n"
+        "exercise_calories = {exercise}\n\n[[entries]]\nservings = 1.0\ncalories = {calories}\nprotein_g = {protein}\nfiber_g = {fiber}\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Coffee\"\n"
     );
     std::fs::write(dir.join(format!("{date}.toml")), content).unwrap();
 }
@@ -327,57 +327,6 @@ fn test_summary_exercise_column_hidden_when_calories_hidden() {
 }
 
 #[test]
-fn test_add_multiple_and_grouped() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let log_dir_str = dir.path().to_string_lossy().to_string();
-    let fd_str = foods_dir().to_string_lossy().to_string();
-
-    run(&[
-        "--foods-dir",
-        &fd_str,
-        "--log-dir",
-        &log_dir_str,
-        "add",
-        "coffee",
-        "1",
-    ]);
-    run(&[
-        "--foods-dir",
-        &fd_str,
-        "--log-dir",
-        &log_dir_str,
-        "add",
-        "coffee",
-        "2",
-    ]);
-    run(&[
-        "--foods-dir",
-        &fd_str,
-        "--log-dir",
-        &log_dir_str,
-        "add",
-        "oatmeal",
-        "1",
-    ]);
-
-    // default: ungrouped — each entry is its own row
-    let (ungrouped, _) = run(&["--foods-dir", &fd_str, "--log-dir", &log_dir_str, "log"]);
-    assert!(ungrouped.contains("Coffee"));
-
-    // --grouped merges entries with the same slug
-    let (grouped, _) = run(&[
-        "--foods-dir",
-        &fd_str,
-        "--log-dir",
-        &log_dir_str,
-        "log",
-        "--grouped",
-    ]);
-    assert!(grouped.contains("Coffee"));
-    assert!(grouped.contains("3")); // grouped: 1+2=3 servings
-}
-
-#[test]
 fn test_summary_multi_day() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
@@ -644,7 +593,7 @@ fn test_min_fat_target_colors_total_row() {
     // day log with 30g fat total -> below min_fat -> yellow
     std::fs::write(
         dir.path().join("2026-08-02.toml"),
-        "exercise_calories = 0\n\n[[entries]]\nslug = \"nuts\"\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 30\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
+        "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 30\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
     )
     .unwrap();
 
@@ -677,7 +626,7 @@ fn test_max_fat_target_colors_total_row_red() {
     // day log with 60g fat total -> above max_fat -> red
     std::fs::write(
         dir.path().join("2026-08-02.toml"),
-        "exercise_calories = 0\n\n[[entries]]\nslug = \"nuts\"\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 60\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
+        "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 60\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
     )
     .unwrap();
 
