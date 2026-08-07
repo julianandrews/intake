@@ -5,18 +5,18 @@
 //! (never floats), so anything on disk is exactly representable and
 //! round-trips unchanged. In-memory sums and products stay exact.
 //!
-//! [`Grams`] is non-negative; [`Servings`] is strictly positive.
+//! [`Grams`] and [`Calories`] are non-negative; [`Servings`] is strictly
+//! positive. Arithmetic on these types is checked: sums and products return
+//! `None` on overflow instead of panicking.
 
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
-use std::iter::Sum;
-use std::ops::{Add, AddAssign, Div, Mul, Sub};
 use std::str::FromStr;
 
-/// Storage precision: 0.001 g (1 mg) and 0.001 servings.
+/// Storage precision: 0.001 g (1 mg), 0.001 kcal, and 0.001 servings.
 const SCALE: u32 = 3;
 
 /// Round a raw decimal at midpoints, away from zero (matches `f64::round`).
@@ -91,8 +91,19 @@ macro_rules! decimal_type {
                 $t(self.0.round_dp(SCALE))
             }
 
+            /// Add, returning `None` on overflow instead of panicking.
+            pub fn checked_add(self, rhs: Self) -> Option<Self> {
+                self.0.checked_add(rhs.0).map($t)
+            }
+
+            /// Multiply by a decimal, returning `None` on overflow instead
+            /// of panicking.
+            pub fn checked_mul(self, rhs: Decimal) -> Option<Self> {
+                self.0.checked_mul(rhs).map($t)
+            }
+
             /// Divide by a decimal, rounding to storage precision. Returns
-            /// `None` for a zero divisor.
+            /// `None` for a zero divisor or on overflow.
             pub fn checked_div(self, rhs: Decimal) -> Option<Self> {
                 self.0.checked_div(rhs).map(|q| $t(q.round_dp(SCALE)))
             }
@@ -125,52 +136,6 @@ macro_rules! decimal_type {
         impl fmt::Display for $t {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{}", self.0.normalize())
-            }
-        }
-
-        impl Add for $t {
-            type Output = Self;
-
-            fn add(self, rhs: Self) -> Self {
-                $t(self.0 + rhs.0)
-            }
-        }
-
-        impl AddAssign for $t {
-            fn add_assign(&mut self, rhs: Self) {
-                self.0 += rhs.0;
-            }
-        }
-
-        impl Sub for $t {
-            type Output = Self;
-
-            fn sub(self, rhs: Self) -> Self {
-                $t(self.0 - rhs.0)
-            }
-        }
-
-        impl Mul<Decimal> for $t {
-            type Output = Self;
-
-            fn mul(self, rhs: Decimal) -> Self {
-                $t(self.0 * rhs)
-            }
-        }
-
-        impl Div<Decimal> for $t {
-            type Output = Self;
-
-            /// Panics if `rhs` is zero — use [`checked_div`](Self::checked_div)
-            /// when the divisor can be zero.
-            fn div(self, rhs: Decimal) -> Self {
-                self.checked_div(rhs).expect("division by zero")
-            }
-        }
-
-        impl Sum for $t {
-            fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-                iter.fold($t(Decimal::ZERO), |acc, item| acc + item)
             }
         }
 
@@ -246,9 +211,33 @@ decimal_type!(
     |d: Decimal| !d.is_sign_negative() && !d.is_zero()
 );
 
+decimal_type!(
+    Calories,
+    "a non-negative decimal number",
+    |v: f64| v >= 0.0,
+    |d: Decimal| !d.is_sign_negative()
+);
+
 impl Grams {
     /// Zero grams.
     pub const ZERO: Grams = Grams(Decimal::ZERO);
+}
+
+impl Calories {
+    /// Zero calories.
+    pub const ZERO: Calories = Calories(Decimal::ZERO);
+}
+
+/// Sum grams with overflow check; `None` if any partial sum overflows.
+pub(crate) fn grams_sum(iter: impl IntoIterator<Item = Grams>) -> Option<Grams> {
+    iter.into_iter()
+        .try_fold(Grams::ZERO, |acc, v| acc.checked_add(v))
+}
+
+/// Sum calories with overflow check; `None` if any partial sum overflows.
+pub(crate) fn calories_sum(iter: impl IntoIterator<Item = Calories>) -> Option<Calories> {
+    iter.into_iter()
+        .try_fold(Calories::ZERO, |acc, v| acc.checked_add(v))
 }
 
 #[cfg(test)]
@@ -261,6 +250,10 @@ mod tests {
 
     fn servings(s: &str) -> Servings {
         Servings::from_str(s).unwrap()
+    }
+
+    fn calories(s: &str) -> Calories {
+        Calories::from_str(s).unwrap()
     }
 
     #[test]
@@ -312,6 +305,16 @@ mod tests {
     }
 
     #[test]
+    fn test_calories_reject_negative_and_round() {
+        assert!(Calories::from_str("-0.1").is_err());
+        assert!(Calories::from_f64(-1.0).is_err());
+        assert!(Calories::try_from(Decimal::new(-1, 0)).is_err());
+        assert_eq!(Calories::from_u32(250), calories("250"));
+        assert_eq!(Calories::from_f64(1.23456).unwrap(), calories("1.235"));
+        assert_eq!(Calories::ZERO, calories("0"));
+    }
+
+    #[test]
     fn test_rounds_to_storage_precision() {
         let value = Grams::from_f64(1.23456).unwrap();
         assert_eq!(value, g("1.235"));
@@ -320,8 +323,11 @@ mod tests {
 
     #[test]
     fn test_division_rounds_to_storage_precision() {
-        assert_eq!(g("10") / Decimal::from(3u32), g("3.333"));
-        assert_eq!(g("5") / Decimal::from(3u32), g("1.667"));
+        assert_eq!(
+            g("10").checked_div(Decimal::from(3u32)).unwrap(),
+            g("3.333")
+        );
+        assert_eq!(g("5").checked_div(Decimal::from(3u32)).unwrap(), g("1.667"));
     }
 
     #[test]
@@ -331,16 +337,41 @@ mod tests {
     }
 
     #[test]
+    fn test_checked_add_mul_overflow_returns_none() {
+        let max = Grams::from_decimal(Decimal::MAX).unwrap();
+        assert_eq!(max.checked_add(g("1")), None);
+        assert_eq!(g("1").checked_add(g("2")), Some(g("3")));
+        assert_eq!(max.checked_mul(Decimal::from(2u32)), None);
+        assert_eq!(g("3.5").checked_mul(Decimal::from(2u32)), Some(g("7")));
+    }
+
+    #[test]
+    fn test_checked_sums() {
+        assert_eq!(grams_sum([g("1"), g("2"), g("3")]), Some(g("6")));
+        assert_eq!(
+            calories_sum([calories("1"), calories("2")]),
+            Some(calories("3"))
+        );
+        let max = Grams::from_decimal(Decimal::MAX).unwrap();
+        assert_eq!(grams_sum([max, g("1")]), None);
+    }
+
+    #[test]
     fn test_addition_is_exact_decimal() {
-        let sum = g("0.1") + g("0.2");
+        let sum = g("0.1").checked_add(g("0.2")).unwrap();
         assert_eq!(sum, g("0.3"));
         assert_eq!(sum.to_string(), "0.3");
     }
 
     #[test]
     fn test_multiplication_is_exact() {
-        assert_eq!(g("3.5") * Decimal::from(2u32), g("7"));
-        assert_eq!(g("3.5") * Decimal::from_str("1.5").unwrap(), g("5.25"));
+        assert_eq!(g("3.5").checked_mul(Decimal::from(2u32)).unwrap(), g("7"));
+        assert_eq!(
+            g("3.5")
+                .checked_mul(Decimal::from_str("1.5").unwrap())
+                .unwrap(),
+            g("5.25")
+        );
     }
 
     #[test]
@@ -368,6 +399,11 @@ mod tests {
         value: Servings,
     }
 
+    #[derive(Serialize, Deserialize)]
+    struct WrapCalories {
+        value: Calories,
+    }
+
     #[test]
     fn test_toml_round_trip() {
         for value in ["0", "0.3", "3.333", "9.999", "12.5", "100", "3.333333"] {
@@ -392,6 +428,17 @@ mod tests {
                 "round trip failed for {value}"
             );
         }
+        for value in ["0", "0.333", "250", "999.999"] {
+            let wrap = WrapCalories {
+                value: Calories::from_str(value).unwrap(),
+            };
+            let serialized = toml::to_string(&wrap).unwrap();
+            let deserialized: WrapCalories = toml::from_str(&serialized).unwrap();
+            assert_eq!(
+                deserialized.value, wrap.value,
+                "round trip failed for {value}"
+            );
+        }
     }
 
     #[test]
@@ -408,6 +455,23 @@ mod tests {
         assert!(toml::from_str::<Wrap>("value = -1").is_err());
         assert!(toml::from_str::<Wrap>("value = -1.5").is_err());
         assert!(toml::from_str::<WrapServings>("value = 0").is_err());
+        assert!(toml::from_str::<WrapCalories>("value = -5").is_err());
+        assert_eq!(
+            toml::from_str::<WrapCalories>("value = 250").unwrap().value,
+            calories("250")
+        );
+        assert_eq!(
+            toml::from_str::<WrapCalories>("value = 250.5")
+                .unwrap()
+                .value,
+            calories("250.5")
+        );
+        assert_eq!(
+            toml::from_str::<WrapCalories>("value = \"250.5\"")
+                .unwrap()
+                .value,
+            calories("250.5")
+        );
     }
 
     #[test]

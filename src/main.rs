@@ -21,7 +21,7 @@ mod config;
 mod display;
 mod food;
 mod log;
-use amount::{Grams, Servings};
+use amount::{Calories, Grams, Servings};
 use config::{Column, Config};
 use display::{ColumnValue, Table};
 use rust_decimal::Decimal;
@@ -273,7 +273,7 @@ fn main() -> Result<()> {
                 &name,
                 servings.unwrap_or(Servings::from_u32(1)),
                 &food::Macros {
-                    calories: calories.unwrap_or(0),
+                    calories: calories.map(Calories::from_u32).unwrap_or(Calories::ZERO),
                     protein_g: protein.unwrap_or(Grams::ZERO),
                     fiber_g: fiber.unwrap_or(Grams::ZERO),
                     fat_g: fat.unwrap_or(Grams::ZERO),
@@ -328,7 +328,7 @@ fn cmd_add(
     let food_path = foods_dir.join(format!("{}.toml", slug));
     let food = food::load_food(&food_path).with_context(|| format!("food '{}' not found", slug))?;
 
-    let ps = food.per_serving();
+    let ps = food.per_serving()?;
 
     let entry = log::LogEntry {
         slug: slug.to_string(),
@@ -432,20 +432,19 @@ fn cmd_log(
                 }
                 table.add_row(cells);
 
-                totals.calories += row.calories;
-                totals.protein += Decimal::from(row.protein_g);
-                totals.fiber += Decimal::from(row.fiber_g);
-                totals.fat += Decimal::from(row.fat_g);
-                totals.carbs += Decimal::from(row.carbs_g);
-                totals.alcohol += Decimal::from(row.alcohol_g);
-                total_servings += row.servings.to_decimal();
+                totals
+                    .checked_add_row(row)
+                    .context("day macro total overflow")?;
+                total_servings = total_servings
+                    .checked_add(row.servings.to_decimal())
+                    .context("day servings total overflow")?;
             }
 
             let (net_cal, deficit) = day_net_and_deficit(
                 totals.calories,
                 day_log.exercise_calories,
                 config.maintenance_calories,
-            );
+            )?;
 
             let now = (date == Local::now().date_naive()).then(|| Local::now().time());
             let targets = config.targets()?;
@@ -512,30 +511,34 @@ fn day_net_and_deficit(
     calories: Decimal,
     exercise_calories: u32,
     maintenance_calories: Option<u32>,
-) -> (Decimal, Option<Decimal>) {
-    let net_cal = calories - Decimal::from(exercise_calories);
-    let deficit = maintenance_calories.map(|mc| {
-        let tdee = Decimal::from(mc) + Decimal::from(exercise_calories);
-        tdee - net_cal
-    });
-    (net_cal, deficit)
+) -> Result<(Decimal, Option<Decimal>)> {
+    let exercise = Decimal::from(exercise_calories);
+    let net_cal = calories
+        .checked_sub(exercise)
+        .context("net calorie total overflow")?;
+    let deficit = maintenance_calories
+        .map(|mc| {
+            let tdee = Decimal::from(mc)
+                .checked_add(exercise)
+                .context("TDEE overflow")?;
+            tdee.checked_sub(net_cal).context("deficit overflow")
+        })
+        .transpose()?;
+    Ok((net_cal, deficit))
 }
 
 struct SummaryRow {
     date: chrono::NaiveDate,
-    calories: Decimal,
-    protein_g: Grams,
-    fiber_g: Grams,
-    fat_g: Grams,
-    carbs_g: Grams,
-    alcohol_g: Grams,
+    macros: display::DayTotals,
     exercise_calories: u32,
     deficit: Option<Decimal>,
 }
 
-crate::display::impl_column_value!(
-    SummaryRow, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g
-);
+impl ColumnValue for SummaryRow {
+    fn column_value(&self, column: Column) -> Decimal {
+        self.macros.column_value(column)
+    }
+}
 
 fn build_summary_rows(
     log_dir: &Path,
@@ -562,36 +565,22 @@ fn build_summary_rows(
     let mut rows = Vec::with_capacity(dates.len());
     for date in dates {
         if let Some(day_log) = log::load_day(log_dir, date)? {
-            let calories: Decimal = day_log
-                .entries
-                .iter()
-                .map(log::LogEntry::total_calories)
-                .sum();
-            let protein_g: Grams = day_log
-                .entries
-                .iter()
-                .map(log::LogEntry::total_protein)
-                .sum();
-            let fiber_g: Grams = day_log.entries.iter().map(log::LogEntry::total_fiber).sum();
-            let fat_g: Grams = day_log.entries.iter().map(log::LogEntry::total_fat).sum();
-            let carbs_g: Grams = day_log.entries.iter().map(log::LogEntry::total_carbs).sum();
-            let alcohol_g: Grams = day_log
-                .entries
-                .iter()
-                .map(log::LogEntry::total_alcohol)
-                .sum();
+            let mut macros = display::DayTotals::default();
+            for entry in &day_log.entries {
+                macros
+                    .checked_add_row(&entry.totals()?)
+                    .context("day macro total overflow")?;
+            }
 
-            let (_, deficit) =
-                day_net_and_deficit(calories, day_log.exercise_calories, maintenance_calories);
+            let (_, deficit) = day_net_and_deficit(
+                macros.calories,
+                day_log.exercise_calories,
+                maintenance_calories,
+            )?;
 
             rows.push(SummaryRow {
                 date,
-                calories,
-                protein_g,
-                fiber_g,
-                fat_g,
-                carbs_g,
-                alcohol_g,
+                macros,
                 exercise_calories: day_log.exercise_calories,
                 deficit,
             });
@@ -668,15 +657,17 @@ fn cmd_summary(
     let count = Decimal::from(rows.len());
     let mut totals = display::DayTotals::default();
     for row in &rows {
-        totals.calories += row.calories;
-        totals.protein += Decimal::from(row.protein_g);
-        totals.fiber += Decimal::from(row.fiber_g);
-        totals.fat += Decimal::from(row.fat_g);
-        totals.carbs += Decimal::from(row.carbs_g);
-        totals.alcohol += Decimal::from(row.alcohol_g);
+        totals
+            .checked_add_row(row)
+            .context("period macro total overflow")?;
     }
-    let total_exercise: u32 = rows.iter().map(|r| r.exercise_calories).sum();
-    let total_deficit: Decimal = rows.iter().filter_map(|r| r.deficit).sum();
+    let total_exercise: u64 = rows.iter().map(|r| u64::from(r.exercise_calories)).sum();
+    let total_deficit: Decimal = rows
+        .iter()
+        .try_fold(Decimal::ZERO, |acc, r| match r.deficit {
+            Some(d) => acc.checked_add(d).context("period deficit overflow"),
+            None => Ok(acc),
+        })?;
 
     let mut total_footer = vec!["Total".to_string()];
     for column in &columns {
@@ -694,18 +685,29 @@ fn cmd_summary(
     for column in &columns {
         avg_footer.push(display::log_cell(
             *column,
-            totals.column_value(*column) / count,
+            totals
+                .column_value(*column)
+                .checked_div(count)
+                .expect("rows checked non-empty"),
         ));
     }
     if any_exercise {
         avg_footer.push(
-            (Decimal::from(total_exercise) / count)
+            Decimal::from(total_exercise)
+                .checked_div(count)
+                .expect("rows checked non-empty")
                 .round_dp(0)
                 .to_string(),
         );
     }
     if show_deficit {
-        avg_footer.push((total_deficit / count).round_dp(0).to_string());
+        avg_footer.push(
+            total_deficit
+                .checked_div(count)
+                .expect("rows checked non-empty")
+                .round_dp(0)
+                .to_string(),
+        );
     }
     table.add_footer(avg_footer);
 
@@ -727,7 +729,7 @@ fn cmd_show_food(
 ) -> Result<()> {
     let food_path = foods_dir.join(format!("{}.toml", slug));
     let food = food::load_food(&food_path).with_context(|| format!("food '{}' not found", slug))?;
-    write!(writer, "{}", food.display(&config.columns()?))?;
+    write!(writer, "{}", food.display(&config.columns()?)?)?;
     Ok(())
 }
 
@@ -748,7 +750,7 @@ fn cmd_list(writer: &mut impl Write, foods_dir: &Path, config: &Config) -> Resul
     table.set_title("All Foods");
 
     for food in &foods {
-        let ps = food.per_serving();
+        let ps = food.per_serving()?;
         let mut cells = vec![food.title.clone(), food.servings.to_string()];
         for column in &columns {
             cells.push(display::food_cell(*column, ps.column_value(*column)));
@@ -763,29 +765,21 @@ fn cmd_list(writer: &mut impl Write, foods_dir: &Path, config: &Config) -> Resul
 struct DisplayRow {
     title: String,
     servings: Servings,
-    calories: Decimal,
-    protein_g: Grams,
-    fiber_g: Grams,
-    fat_g: Grams,
-    carbs_g: Grams,
-    alcohol_g: Grams,
+    macros: display::DayTotals,
 }
 
-crate::display::impl_column_value!(
-    DisplayRow, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g
-);
+impl ColumnValue for DisplayRow {
+    fn column_value(&self, column: Column) -> Decimal {
+        self.macros.column_value(column)
+    }
+}
 
-fn display_row_from_entry(title: String, entry: &log::LogEntry) -> DisplayRow {
-    DisplayRow {
+fn display_row_from_entry(title: String, entry: &log::LogEntry) -> Result<DisplayRow> {
+    Ok(DisplayRow {
         title,
         servings: entry.servings,
-        calories: entry.total_calories(),
-        protein_g: entry.total_protein(),
-        fiber_g: entry.total_fiber(),
-        fat_g: entry.total_fat(),
-        carbs_g: entry.total_carbs(),
-        alcohol_g: entry.total_alcohol(),
-    }
+        macros: entry.totals()?,
+    })
 }
 
 fn build_ungrouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
@@ -793,7 +787,7 @@ fn build_ungrouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<V
     let mut cache = HashMap::new();
     for entry in entries {
         let title = resolve_title(foods_dir, entry, &mut cache)?;
-        rows.push(display_row_from_entry(title, entry));
+        rows.push(display_row_from_entry(title, entry)?);
     }
     Ok(rows)
 }
@@ -805,20 +799,20 @@ fn build_grouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec
 
     for entry in entries {
         if let Some(title) = entry.title.clone() {
-            rows.push(display_row_from_entry(title, entry));
+            rows.push(display_row_from_entry(title, entry)?);
         } else if let Some(&idx) = slug_to_idx.get(entry.slug.as_str()) {
             let row = &mut rows[idx];
-            row.servings += entry.servings;
-            row.calories += entry.total_calories();
-            row.protein_g += entry.total_protein();
-            row.fiber_g += entry.total_fiber();
-            row.fat_g += entry.total_fat();
-            row.carbs_g += entry.total_carbs();
-            row.alcohol_g += entry.total_alcohol();
+            row.servings = row
+                .servings
+                .checked_add(entry.servings)
+                .context("grouped servings total overflow")?;
+            row.macros
+                .checked_add_row(&entry.totals()?)
+                .context("grouped macro total overflow")?;
         } else {
             let title = resolve_title(foods_dir, entry, &mut cache)?;
             slug_to_idx.insert(entry.slug.as_str(), rows.len());
-            rows.push(display_row_from_entry(title, entry));
+            rows.push(display_row_from_entry(title, entry)?);
         }
     }
 
@@ -829,6 +823,7 @@ fn build_grouped_rows(foods_dir: &Path, entries: &[log::LogEntry]) -> Result<Vec
 mod tests {
     use super::*;
     use crate::log::LogEntry;
+    use std::str::FromStr;
 
     fn foods_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/foods")
@@ -838,7 +833,7 @@ mod tests {
         LogEntry {
             slug: slug.to_string(),
             servings: Servings::from_f64(servings).unwrap(),
-            calories: 0,
+            calories: Calories::ZERO,
             protein_g: Grams::ZERO,
             fiber_g: Grams::ZERO,
             fat_g: Grams::ZERO,
@@ -852,7 +847,7 @@ mod tests {
         LogEntry {
             slug: slug.to_string(),
             servings: Servings::from_f64(servings).unwrap(),
-            calories: 0,
+            calories: Calories::ZERO,
             protein_g: Grams::ZERO,
             fiber_g: Grams::ZERO,
             fat_g: Grams::ZERO,
@@ -932,20 +927,34 @@ mod tests {
     #[test]
     fn test_build_ungrouped_rows_calories_scaled_by_servings() {
         let mut e = entry("coffee", 2.0);
-        e.calories = 24;
+        e.calories = Calories::from_u32(24);
         let rows = build_ungrouped_rows(&foods_dir(), &[e]).unwrap();
-        assert_eq!(rows[0].calories, Decimal::from(48));
+        assert_eq!(rows[0].macros.calories, Decimal::from(48));
     }
 
     #[test]
     fn test_build_grouped_rows_calories_accumulated() {
         let mut e1 = entry("coffee", 1.0);
-        e1.calories = 24;
+        e1.calories = Calories::from_u32(24);
         let mut e2 = entry("coffee", 2.0);
-        e2.calories = 24;
+        e2.calories = Calories::from_u32(24);
         let entries = vec![e1, e2];
         let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(rows[0].calories, Decimal::from(72));
+        assert_eq!(rows[0].macros.calories, Decimal::from(72));
+    }
+
+    #[test]
+    fn test_build_grouped_rows_fractional_calories_accumulated() {
+        let mut e1 = entry("coffee", 1.0);
+        e1.calories = Calories::from_str("33.333").unwrap();
+        let mut e2 = entry("coffee", 2.0);
+        e2.calories = Calories::from_str("33.333").unwrap();
+        let entries = vec![e1, e2];
+        let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
+        assert_eq!(
+            rows[0].macros.calories,
+            Decimal::from_str("99.999").unwrap()
+        );
     }
 
     #[test]
@@ -960,9 +969,9 @@ mod tests {
         e2.alcohol_g = Grams::from_f64(1.0).unwrap();
         let entries = vec![e1, e2];
         let rows = build_grouped_rows(&foods_dir(), &entries).unwrap();
-        assert_eq!(rows[0].fat_g, Grams::from_f64(12.0).unwrap());
-        assert_eq!(rows[0].carbs_g, Grams::from_f64(30.0).unwrap());
-        assert_eq!(rows[0].alcohol_g, Grams::from_f64(3.0).unwrap());
+        assert_eq!(rows[0].macros.fat, Grams::from_f64(12.0).unwrap().into());
+        assert_eq!(rows[0].macros.carbs, Grams::from_f64(30.0).unwrap().into());
+        assert_eq!(rows[0].macros.alcohol, Grams::from_f64(3.0).unwrap().into());
     }
 
     #[test]
@@ -972,9 +981,9 @@ mod tests {
         e.carbs_g = Grams::from_f64(15.0).unwrap();
         e.alcohol_g = Grams::from_f64(2.0).unwrap();
         let rows = build_ungrouped_rows(&foods_dir(), &[e]).unwrap();
-        assert_eq!(rows[0].fat_g, Grams::from_f64(10.0).unwrap());
-        assert_eq!(rows[0].carbs_g, Grams::from_f64(30.0).unwrap());
-        assert_eq!(rows[0].alcohol_g, Grams::from_f64(4.0).unwrap());
+        assert_eq!(rows[0].macros.fat, Grams::from_f64(10.0).unwrap().into());
+        assert_eq!(rows[0].macros.carbs, Grams::from_f64(30.0).unwrap().into());
+        assert_eq!(rows[0].macros.alcohol, Grams::from_f64(4.0).unwrap().into());
     }
 
     #[test]
@@ -1059,7 +1068,7 @@ mod tests {
             entries: vec![LogEntry {
                 slug: "coffee".to_string(),
                 servings: Servings::from_f64(1.0).unwrap(),
-                calories: calories as u32,
+                calories: Calories::from_f64(calories).unwrap(),
                 protein_g: Grams::from_f64(protein).unwrap(),
                 fiber_g: Grams::from_f64(4.0).unwrap(),
                 fat_g: Grams::from_f64(2.0).unwrap(),

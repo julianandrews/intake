@@ -1,10 +1,9 @@
-use crate::amount::{round_away, Grams};
+use crate::amount::{calories_sum, grams_sum, Calories, Grams};
 use crate::config::Column;
 use crate::display::{
     food_cell, Align, ColumnValue, Table, ANSI_BOLD_YELLOW, ANSI_DIM, ANSI_RESET,
 };
-use anyhow::{Context, Result};
-use rust_decimal::prelude::ToPrimitive;
+use anyhow::{anyhow, Context, Result};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::fs;
@@ -17,7 +16,7 @@ pub struct Ingredient {
     pub quantity: Option<String>,
     pub protein_g: Grams,
     pub fiber_g: Grams,
-    pub calories: u32,
+    pub calories: Calories,
     pub fat_g: Grams,
     pub carbs_g: Grams,
     pub alcohol_g: Grams,
@@ -38,7 +37,7 @@ pub struct Food {
 
 #[derive(Debug, Clone)]
 pub struct Macros {
-    pub calories: u32,
+    pub calories: Calories,
     pub protein_g: Grams,
     pub fiber_g: Grams,
     pub fat_g: Grams,
@@ -49,33 +48,57 @@ pub struct Macros {
 crate::display::impl_column_value!(Macros, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g);
 
 impl Food {
-    pub fn totals(&self) -> Macros {
-        Macros {
-            calories: self.ingredients.iter().map(|i| i.calories).sum(),
-            protein_g: self.ingredients.iter().map(|i| i.protein_g).sum(),
-            fiber_g: self.ingredients.iter().map(|i| i.fiber_g).sum(),
-            fat_g: self.ingredients.iter().map(|i| i.fat_g).sum(),
-            carbs_g: self.ingredients.iter().map(|i| i.carbs_g).sum(),
-            alcohol_g: self.ingredients.iter().map(|i| i.alcohol_g).sum(),
-        }
+    pub fn totals(&self) -> Result<Macros> {
+        Ok(Macros {
+            calories: calories_sum(self.ingredients.iter().map(|i| i.calories))
+                .ok_or_else(|| anyhow!("calorie total overflow"))?,
+            protein_g: grams_sum(self.ingredients.iter().map(|i| i.protein_g))
+                .ok_or_else(|| anyhow!("protein total overflow"))?,
+            fiber_g: grams_sum(self.ingredients.iter().map(|i| i.fiber_g))
+                .ok_or_else(|| anyhow!("fiber total overflow"))?,
+            fat_g: grams_sum(self.ingredients.iter().map(|i| i.fat_g))
+                .ok_or_else(|| anyhow!("fat total overflow"))?,
+            carbs_g: grams_sum(self.ingredients.iter().map(|i| i.carbs_g))
+                .ok_or_else(|| anyhow!("carbs total overflow"))?,
+            alcohol_g: grams_sum(self.ingredients.iter().map(|i| i.alcohol_g))
+                .ok_or_else(|| anyhow!("alcohol total overflow"))?,
+        })
     }
 
-    pub fn per_serving(&self) -> Macros {
-        let t = self.totals();
+    pub fn per_serving(&self) -> Result<Macros> {
+        let t = self.totals()?;
         let servings = Decimal::from(self.servings.get());
-        Macros {
-            calories: round_away(Decimal::from(t.calories) / servings, 0)
-                .to_u32()
-                .expect("calories per serving out of range"),
-            protein_g: t.protein_g / servings,
-            fiber_g: t.fiber_g / servings,
-            fat_g: t.fat_g / servings,
-            carbs_g: t.carbs_g / servings,
-            alcohol_g: t.alcohol_g / servings,
-        }
+        // Serving count is a nonzero u32, so division can neither hit zero nor
+        // overflow: x / servings <= x <= Decimal::MAX.
+        Ok(Macros {
+            calories: t
+                .calories
+                .checked_div(servings)
+                .expect("serving count is positive"),
+            protein_g: t
+                .protein_g
+                .checked_div(servings)
+                .expect("serving count is positive"),
+            fiber_g: t
+                .fiber_g
+                .checked_div(servings)
+                .expect("serving count is positive"),
+            fat_g: t
+                .fat_g
+                .checked_div(servings)
+                .expect("serving count is positive"),
+            carbs_g: t
+                .carbs_g
+                .checked_div(servings)
+                .expect("serving count is positive"),
+            alcohol_g: t
+                .alcohol_g
+                .checked_div(servings)
+                .expect("serving count is positive"),
+        })
     }
 
-    pub fn display(&self, columns: &[Column]) -> String {
+    pub fn display(&self, columns: &[Column]) -> Result<String> {
         let serving_label = if self.servings.get() == 1 {
             "serving"
         } else {
@@ -104,7 +127,7 @@ impl Food {
             table.add_row(cells);
         }
 
-        let t = self.totals();
+        let t = self.totals()?;
 
         let mut total = vec!["Total".to_string(), String::new()];
         for column in columns {
@@ -112,7 +135,7 @@ impl Food {
         }
         table.add_footer(total);
 
-        let ps = self.per_serving();
+        let ps = self.per_serving()?;
         let mut per_serving = vec!["Per serving".to_string(), String::new()];
         for column in columns {
             per_serving.push(food_cell(*column, ps.column_value(*column)));
@@ -127,7 +150,7 @@ impl Food {
             ));
         }
 
-        out
+        Ok(out)
     }
 }
 
@@ -209,7 +232,7 @@ mod tests {
             quantity: None,
             protein_g: grams(protein),
             fiber_g: grams(fiber),
-            calories,
+            calories: Calories::from_u32(calories),
             fat_g: grams(fat),
             carbs_g: grams(carbs),
             alcohol_g: grams(alcohol),
@@ -219,17 +242,25 @@ mod tests {
     #[test]
     fn test_per_serving_with_fractions() {
         let food = food_with_ingredient(3, ingredient(10.0, 5.0, 100, 0.0, 0.0, 0.0));
-        let ps = food.per_serving();
-        assert_eq!(ps.calories, 33);
+        let ps = food.per_serving().unwrap();
+        assert_eq!(ps.calories, Calories::from_str("33.333").unwrap());
         assert_eq!(ps.protein_g, Grams::from_str("3.333").unwrap());
         assert_eq!(ps.fiber_g, Grams::from_str("1.667").unwrap());
     }
 
     #[test]
+    fn test_per_serving_calories_keep_fractional_precision() {
+        let food = food_with_ingredient(3, ingredient(0.0, 0.0, 100, 0.0, 0.0, 0.0));
+        let ps = food.per_serving().unwrap();
+        assert_eq!(ps.calories, Calories::from_str("33.333").unwrap());
+        assert_eq!(food.totals().unwrap().calories, Calories::from_u32(100));
+    }
+
+    #[test]
     fn test_per_serving_exact_division() {
         let food = food_with_ingredient(2, ingredient(20.0, 6.0, 100, 4.0, 30.0, 2.0));
-        let ps = food.per_serving();
-        assert_eq!(ps.calories, 50);
+        let ps = food.per_serving().unwrap();
+        assert_eq!(ps.calories, Calories::from_u32(50));
         assert_eq!(ps.protein_g, grams(10.0));
         assert_eq!(ps.fiber_g, grams(3.0));
         assert_eq!(ps.fat_g, grams(2.0));
@@ -240,8 +271,8 @@ mod tests {
     #[test]
     fn test_per_serving_fractional_input() {
         let food = food_with_ingredient(1, ingredient(0.0, 0.3, 5, 0.0, 0.0, 0.0));
-        let ps = food.per_serving();
-        assert_eq!(ps.calories, 5);
+        let ps = food.per_serving().unwrap();
+        assert_eq!(ps.calories, Calories::from_u32(5));
         assert_eq!(ps.fiber_g, grams(0.3));
     }
 
@@ -296,7 +327,7 @@ mod tests {
                     quantity: Some("100g".to_string()),
                     protein_g: grams(10.0),
                     fiber_g: grams(5.0),
-                    calories: 200,
+                    calories: Calories::from_u32(200),
                     fat_g: grams(4.0),
                     carbs_g: grams(30.0),
                     alcohol_g: grams(0.0),
@@ -306,7 +337,7 @@ mod tests {
                     quantity: Some("200ml".to_string()),
                     protein_g: grams(8.0),
                     fiber_g: grams(0.0),
-                    calories: 120,
+                    calories: Calories::from_u32(120),
                     fat_g: grams(6.0),
                     carbs_g: grams(9.0),
                     alcohol_g: grams(0.0),
@@ -314,7 +345,7 @@ mod tests {
             ],
         };
 
-        let md = food.display(DEFAULT_COLUMNS);
+        let md = food.display(DEFAULT_COLUMNS).unwrap();
         assert!(md.starts_with("\u{1b}[1;36mOatmeal (2 servings)\u{1b}[0m\n"));
         assert!(
             md.contains("  Oats        100g         200     30.0g    4.0g       10.0g      5.0g")
@@ -342,14 +373,14 @@ mod tests {
                 quantity: None,
                 protein_g: grams(0.0),
                 fiber_g: grams(0.0),
-                calories: 0,
+                calories: Calories::from_u32(0),
                 fat_g: grams(0.0),
                 carbs_g: grams(0.0),
                 alcohol_g: grams(0.0),
             }],
         };
 
-        let md = food.display(DEFAULT_COLUMNS);
+        let md = food.display(DEFAULT_COLUMNS).unwrap();
         assert!(md.starts_with("\u{1b}[1;36mCoffee (1 serving)\u{1b}[0m\n"));
         assert!(md.contains("  Cold Brew"));
     }
@@ -365,14 +396,14 @@ mod tests {
                 quantity: None,
                 protein_g: grams(0.5),
                 fiber_g: grams(0.1),
-                calories: 5,
+                calories: Calories::from_u32(5),
                 fat_g: grams(0.0),
                 carbs_g: grams(0.0),
                 alcohol_g: grams(0.0),
             }],
         };
 
-        let md = food.display(DEFAULT_COLUMNS);
+        let md = food.display(DEFAULT_COLUMNS).unwrap();
         assert!(md.contains("  Secret Spice"));
         assert!(md.contains("  0.5g"));
         assert!(md.contains("  0.1g"));
@@ -381,7 +412,7 @@ mod tests {
     #[test]
     fn test_display_column_subset() {
         let food = food_with_ingredient(1, ingredient(10.0, 5.0, 100, 4.0, 30.0, 0.0));
-        let md = food.display(&[Column::Calories, Column::Fat]);
+        let md = food.display(&[Column::Calories, Column::Fat]).unwrap();
         assert!(md.contains("Calories"));
         assert!(md.contains("Fat(g)"));
         assert!(md.contains("100"));
@@ -399,20 +430,22 @@ mod tests {
 
     #[test]
     fn test_display_shows_notes_when_present() {
-        let md = test_food("Best eaten warm with salt.").display(DEFAULT_COLUMNS);
+        let md = test_food("Best eaten warm with salt.")
+            .display(DEFAULT_COLUMNS)
+            .unwrap();
         assert!(md.contains("Notes:"));
         assert!(md.contains("Best eaten warm with salt."));
     }
 
     #[test]
     fn test_display_hides_notes_when_empty() {
-        let md = test_food("").display(DEFAULT_COLUMNS);
+        let md = test_food("").display(DEFAULT_COLUMNS).unwrap();
         assert!(!md.contains("Notes:"));
     }
 
     #[test]
     fn test_display_hides_notes_when_whitespace() {
-        let md = test_food("   ").display(DEFAULT_COLUMNS);
+        let md = test_food("   ").display(DEFAULT_COLUMNS).unwrap();
         assert!(!md.contains("Notes:"));
     }
 }

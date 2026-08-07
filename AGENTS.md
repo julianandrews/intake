@@ -20,7 +20,7 @@ The file must match the `Food` and `Ingredient` structs in `src/food.rs`:
   - `quantity` (string, optional — e.g. `"400g"`, `"1 tbsp"`)
   - `protein_g` (decimal number)
   - `fiber_g` (decimal number)
-  - `calories` (int)
+  - `calories` (decimal number, whole or fractional)
   - `fat_g` (decimal number)
   - `carbs_g` (decimal number)
   - `alcohol_g` (decimal number)
@@ -29,15 +29,21 @@ All macro fields (`protein_g`, `fiber_g`, `calories`, `fat_g`, `carbs_g`,
 `alcohol_g`) are **required** — there is no default of zero, so a food with
 unrecorded macros fails loudly instead of silently counting as zero.
 
-Macro masses are stored as exact decimals rounded to 0.001 g (`Grams` in
-`src/amount.rs`): sums and products are exact, division (per-serving, day
-averages) rounds to 0.001 g, and display rounds to 0.1 g. Values are written
-to log files as decimal strings — no floats anywhere on disk, so files
-round-trip exactly; legacy float values in existing log files are still read
-and normalized on load. `servings = 0` is rejected at load — it previously
-caused silent inf/NaN. Log entries store a strictly positive decimal
-`servings` (`Servings`), so fractional servings (0.5, 1.5) are fine but
-zero/negative are rejected on load.
+Macro amounts are stored as exact decimals rounded to 0.001 (0.001 g for
+masses via `Grams` in `src/amount.rs`, 0.001 kcal for calories via
+`Calories`): sums and products are exact, per-serving division rounds to
+0.001, and display rounds to 0.1 g / whole calories.
+Per-serving calories are *not* rounded to whole numbers — a 100 kcal food
+with 3 servings logs 33.333 kcal/serving, so day totals stay exact. Values
+are written to log files as decimal strings — no floats anywhere on disk,
+so files round-trip exactly; legacy float/int values in existing log files
+(including integer `calories`) are still read and normalized on load.
+Food and log arithmetic is checked: overflow in ingredient sums, serving
+products, and day or period totals fails loudly with an error instead of
+panicking or wrapping. `servings = 0` is rejected
+at load — it previously caused silent inf/NaN. Log entries store a strictly
+positive decimal `servings` (`Servings`), so fractional servings (0.5, 1.5)
+are fine but zero/negative are rejected on load.
 
 See `tests/fixtures/foods/cheesy-popcorn.toml` for a simple example, or
 `tests/fixtures/foods/turkey-chili.toml` for a multi-ingredient one.

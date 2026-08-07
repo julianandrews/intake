@@ -1,5 +1,6 @@
-use crate::amount::{Grams, Servings};
-use anyhow::{Context, Result};
+use crate::amount::{Calories, Grams, Servings};
+use crate::display::DayTotals;
+use anyhow::{anyhow, Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 pub struct LogEntry {
     pub slug: String,
     pub servings: Servings,
-    pub calories: u32,
+    pub calories: Calories,
     pub protein_g: Grams,
     pub fiber_g: Grams,
     pub fat_g: Grams,
@@ -20,28 +21,53 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    pub fn total_calories(&self) -> Decimal {
-        Decimal::from(self.calories) * self.servings.to_decimal()
+    pub fn total_calories(&self) -> Result<Decimal> {
+        self.calories
+            .checked_mul(self.servings.to_decimal())
+            .map(Decimal::from)
+            .ok_or_else(|| anyhow!("calorie total overflow for '{}'", self.slug))
     }
 
-    pub fn total_protein(&self) -> Grams {
-        self.protein_g * self.servings.to_decimal()
+    pub fn total_protein(&self) -> Result<Grams> {
+        self.protein_g
+            .checked_mul(self.servings.to_decimal())
+            .ok_or_else(|| anyhow!("protein total overflow for '{}'", self.slug))
     }
 
-    pub fn total_fiber(&self) -> Grams {
-        self.fiber_g * self.servings.to_decimal()
+    pub fn total_fiber(&self) -> Result<Grams> {
+        self.fiber_g
+            .checked_mul(self.servings.to_decimal())
+            .ok_or_else(|| anyhow!("fiber total overflow for '{}'", self.slug))
     }
 
-    pub fn total_fat(&self) -> Grams {
-        self.fat_g * self.servings.to_decimal()
+    pub fn total_fat(&self) -> Result<Grams> {
+        self.fat_g
+            .checked_mul(self.servings.to_decimal())
+            .ok_or_else(|| anyhow!("fat total overflow for '{}'", self.slug))
     }
 
-    pub fn total_carbs(&self) -> Grams {
-        self.carbs_g * self.servings.to_decimal()
+    pub fn total_carbs(&self) -> Result<Grams> {
+        self.carbs_g
+            .checked_mul(self.servings.to_decimal())
+            .ok_or_else(|| anyhow!("carbs total overflow for '{}'", self.slug))
     }
 
-    pub fn total_alcohol(&self) -> Grams {
-        self.alcohol_g * self.servings.to_decimal()
+    pub fn total_alcohol(&self) -> Result<Grams> {
+        self.alcohol_g
+            .checked_mul(self.servings.to_decimal())
+            .ok_or_else(|| anyhow!("alcohol total overflow for '{}'", self.slug))
+    }
+
+    /// All macro totals scaled by servings; errors on overflow.
+    pub fn totals(&self) -> Result<DayTotals> {
+        Ok(DayTotals {
+            calories: self.total_calories()?,
+            protein: self.total_protein()?.into(),
+            fiber: self.total_fiber()?.into(),
+            fat: self.total_fat()?.into(),
+            carbs: self.total_carbs()?.into(),
+            alcohol: self.total_alcohol()?.into(),
+        })
     }
 }
 
@@ -139,6 +165,7 @@ pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: u32) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     fn entry(
         slug: &str,
@@ -153,7 +180,7 @@ mod tests {
         LogEntry {
             slug: slug.to_string(),
             servings: Servings::from_f64(servings).unwrap(),
-            calories,
+            calories: Calories::from_u32(calories),
             protein_g: Grams::from_f64(protein).unwrap(),
             fiber_g: Grams::from_f64(fiber).unwrap(),
             fat_g: Grams::from_f64(fat).unwrap(),
@@ -176,7 +203,7 @@ mod tests {
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].slug, "oatmeal");
         assert_eq!(loaded.entries[0].servings, Servings::from_f64(1.5).unwrap());
-        assert_eq!(loaded.entries[0].calories, 200);
+        assert_eq!(loaded.entries[0].calories, Calories::from_u32(200));
         assert_eq!(loaded.entries[0].protein_g, Grams::from_f64(15.0).unwrap());
         assert_eq!(loaded.entries[0].fiber_g, Grams::from_f64(5.0).unwrap());
         assert_eq!(loaded.entries[0].fat_g, Grams::from_f64(2.0).unwrap());
@@ -235,6 +262,37 @@ mod tests {
     }
 
     #[test]
+    fn test_log_entry_negative_calories_rejected() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "[[entries]]\nslug = \"coffee\"\nservings = 1.0\ncalories = -12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+        )?;
+        assert!(load_day(dir.path(), date).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_fractional_calories_round_trip() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "[[entries]]\nslug = \"chili\"\nservings = 1.0\ncalories = \"33.333\"\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Chili\"\n",
+        )?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert_eq!(
+            loaded.entries[0].calories,
+            Calories::from_str("33.333").unwrap()
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_log_entry_legacy_float_values_normalized() -> Result<()> {
         let dir = tempfile::TempDir::new()?;
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
@@ -252,19 +310,37 @@ mod tests {
     #[test]
     fn test_totals_scale_by_servings() {
         let e = entry("test", 2.0, 100, 10.0, 5.0, 4.0, 20.0, 3.0);
-        assert_eq!(e.total_calories(), Decimal::from(200));
-        assert_eq!(e.total_protein(), Grams::from_f64(20.0).unwrap());
-        assert_eq!(e.total_fiber(), Grams::from_f64(10.0).unwrap());
-        assert_eq!(e.total_fat(), Grams::from_f64(8.0).unwrap());
-        assert_eq!(e.total_carbs(), Grams::from_f64(40.0).unwrap());
-        assert_eq!(e.total_alcohol(), Grams::from_f64(6.0).unwrap());
+        assert_eq!(e.total_calories().unwrap(), Decimal::from(200));
+        assert_eq!(e.total_protein().unwrap(), Grams::from_f64(20.0).unwrap());
+        assert_eq!(e.total_fiber().unwrap(), Grams::from_f64(10.0).unwrap());
+        assert_eq!(e.total_fat().unwrap(), Grams::from_f64(8.0).unwrap());
+        assert_eq!(e.total_carbs().unwrap(), Grams::from_f64(40.0).unwrap());
+        assert_eq!(e.total_alcohol().unwrap(), Grams::from_f64(6.0).unwrap());
     }
 
     #[test]
     fn test_totals_fractional_servings() {
         let e = entry("test", 1.5, 100, 10.0, 0.0, 0.0, 0.0, 0.0);
-        assert_eq!(e.total_calories(), Decimal::from(150));
-        assert_eq!(e.total_protein(), Grams::from_f64(15.0).unwrap());
+        assert_eq!(e.total_calories().unwrap(), Decimal::from(150));
+        assert_eq!(e.total_protein().unwrap(), Grams::from_f64(15.0).unwrap());
+    }
+
+    #[test]
+    fn test_totals_fractional_calories_exact() {
+        let mut e = entry("test", 3.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        e.calories = Calories::from_str("33.333").unwrap();
+        assert_eq!(
+            e.total_calories().unwrap(),
+            Decimal::from_str("99.999").unwrap()
+        );
+    }
+
+    #[test]
+    fn test_totals_overflow_errors() {
+        let mut e = entry("test", 1.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        e.protein_g = Grams::from_decimal(Decimal::MAX).unwrap();
+        e.servings = Servings::from_u32(2);
+        assert!(e.total_protein().is_err());
     }
 
     #[test]

@@ -270,6 +270,28 @@ pub struct DayTotals {
 
 impl_column_value!(DayTotals, calories, protein, fiber, fat, carbs, alcohol);
 
+impl DayTotals {
+    fn slot_mut(&mut self, column: Column) -> &mut Decimal {
+        match column {
+            Column::Calories => &mut self.calories,
+            Column::Protein => &mut self.protein,
+            Column::Fiber => &mut self.fiber,
+            Column::Fat => &mut self.fat,
+            Column::Carbs => &mut self.carbs,
+            Column::Alcohol => &mut self.alcohol,
+        }
+    }
+
+    /// Accumulate one row's macro values; `None` on overflow.
+    pub fn checked_add_row(&mut self, row: &impl ColumnValue) -> Option<()> {
+        for column in Column::all() {
+            let slot = self.slot_mut(column);
+            *slot = slot.checked_add(row.column_value(column))?;
+        }
+        Some(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DayTargets {
     pub calories: ColumnTarget,

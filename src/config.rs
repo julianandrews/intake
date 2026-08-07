@@ -24,6 +24,17 @@ pub enum Column {
 }
 
 impl Column {
+    pub fn all() -> [Column; 6] {
+        [
+            Column::Calories,
+            Column::Protein,
+            Column::Fiber,
+            Column::Fat,
+            Column::Carbs,
+            Column::Alcohol,
+        ]
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Column::Calories => "Calories",
@@ -156,6 +167,16 @@ impl Config {
             ("carbs", targets.carbs),
             ("alcohol", targets.alcohol),
         ] {
+            if let Some(min) = target.min {
+                if min < Decimal::ZERO {
+                    bail!("{name} target min ({min}) must be non-negative");
+                }
+            }
+            if let Some(max) = target.max {
+                if max < Decimal::ZERO {
+                    bail!("{name} target max ({max}) must be non-negative");
+                }
+            }
             if let (Some(min), Some(max)) = (target.min, target.max) {
                 if min > max {
                     bail!("{name} target min ({min}) exceeds max ({max})");
@@ -244,6 +265,17 @@ mod tests {
         let config: Config = toml::from_str("min_fat = 90\nmax_fat = 50\n").unwrap();
         let err = config.targets().unwrap_err().to_string();
         assert!(err.contains("fat target min"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_targets_negative_rejected() {
+        let config: Config = toml::from_str("max_protein = -10\n").unwrap();
+        let err = config.targets().unwrap_err().to_string();
+        assert!(err.contains("non-negative"), "unexpected error: {err}");
+
+        let config: Config = toml::from_str("min_fat = -1.5\n").unwrap();
+        let err = config.targets().unwrap_err().to_string();
+        assert!(err.contains("non-negative"), "unexpected error: {err}");
     }
 
     #[test]
