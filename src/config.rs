@@ -113,8 +113,8 @@ impl Config {
     pub fn log_dir(&self) -> PathBuf {
         self.log_dir.clone().unwrap_or_else(|| {
             dirs::data_dir()
-                .map(|p| p.join("intake").join("log"))
-                .unwrap_or_else(|| PathBuf::from("log"))
+                .map(|p| p.join("intake").join("logs"))
+                .unwrap_or_else(|| PathBuf::from("logs"))
         })
     }
 

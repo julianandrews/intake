@@ -66,7 +66,7 @@ intake adhoc [--calories N] [--protein N] [--fiber N] [--fat N] [--carbs N] [--a
 - Macros are specified inline — no food file needed; every macro flag is
   optional and defaults to 0. Calorie values are decimals (e.g. `--calories 33.333`)
 - The entry is appended to today's log
-- Check existing entries in `log/` for the exact TOML format to follow:
+- Check existing entries in `logs/` for the exact TOML format to follow:
   every entry stores its display name in a `title` field (required, on disk
   as a plain string), plus `servings` and the six macros — food and adhoc
   entries have the same shape, and logs render without reading the foods
