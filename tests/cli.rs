@@ -42,9 +42,9 @@ fn run_with_log_dir(args: &[&str]) -> (String, bool) {
 fn write_day_log(
     dir: &std::path::Path,
     date: &str,
-    calories: u32,
-    protein: f64,
-    fiber: f64,
+    calories: &str,
+    protein: &str,
+    fiber: &str,
     exercise: u32,
 ) {
     let content = format!(
@@ -185,11 +185,11 @@ fn test_adhoc_macros_optional_zero_defaults() {
     let today = chrono::Local::now().date_naive();
     let log_file = std::fs::read_to_string(dir.path().join(format!("{today}.toml")))
         .expect("log file written");
-    assert!(log_file.contains("protein_g = \"0\""));
-    assert!(log_file.contains("fiber_g = \"0\""));
-    assert!(log_file.contains("fat_g = \"0\""));
-    assert!(log_file.contains("carbs_g = \"0\""));
-    assert!(log_file.contains("alcohol_g = \"0\""));
+    assert!(log_file.contains("protein_g = 0"));
+    assert!(log_file.contains("fiber_g = 0"));
+    assert!(log_file.contains("fat_g = 0"));
+    assert!(log_file.contains("carbs_g = 0"));
+    assert!(log_file.contains("alcohol_g = 0"));
 
     let (log_out, log_ok) = run(&[
         "--foods-dir",
@@ -238,7 +238,7 @@ fn test_log_net_row_with_exercise() {
     let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
 
-    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 300);
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 300);
 
     let (stdout, success) = run(&[
         "--foods-dir",
@@ -257,6 +257,34 @@ fn test_log_net_row_with_exercise() {
 }
 
 #[test]
+fn test_log_fractional_exercise_rounds_display() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    std::fs::write(
+        dir.path().join("2026-08-02.toml"),
+        "exercise_calories = 300.5\n\n[[entries]]\nservings = 1.0\ncalories = 1800\nprotein_g = 50.0\nfiber_g = 15.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Coffee\"\n",
+    )
+    .unwrap();
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "log",
+        "2026-08-02",
+    ]);
+    assert!(success, "log failed: {}", stdout);
+    assert!(stdout.contains("1800"));
+    // Exercise row rounds 300.5 away to 301; Net = 1800 - 300.5 = 1499.5 -> 1500
+    assert!(stdout.contains("-301"));
+    assert!(stdout.contains("1500"));
+    assert!(!stdout.contains("300.5"));
+}
+
+#[test]
 fn test_exercise_rows_hidden_when_calories_column_hidden() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
@@ -271,7 +299,7 @@ fn test_exercise_rows_hidden_when_calories_column_hidden() {
     )
     .unwrap();
 
-    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 300);
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 300);
 
     let (stdout, success) = run_in(
         &[
@@ -306,7 +334,7 @@ fn test_summary_exercise_column_hidden_when_calories_hidden() {
     )
     .unwrap();
 
-    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 300);
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 300);
 
     let (stdout, success) = run_in(
         &[
@@ -333,9 +361,9 @@ fn test_summary_multi_day() {
     let fd_str = foods_dir().to_string_lossy().to_string();
 
     // three logged days within a 7-day window; 08-02 also has exercise
-    write_day_log(dir.path(), "2026-07-30", 200, 10.0, 4.0, 0);
-    write_day_log(dir.path(), "2026-08-01", 300, 20.0, 8.0, 0);
-    write_day_log(dir.path(), "2026-08-02", 1000, 50.0, 15.0, 300);
+    write_day_log(dir.path(), "2026-07-30", "200", "10.0", "4.0", 0);
+    write_day_log(dir.path(), "2026-08-01", "300", "20.0", "8.0", 0);
+    write_day_log(dir.path(), "2026-08-02", "1000", "50.0", "15.0", 300);
 
     let (stdout, success) = run(&[
         "--foods-dir",
@@ -382,7 +410,7 @@ fn test_summary_deficit_with_config() {
     .unwrap();
 
     // food 1800, exercise 300 -> net 1500, tdee 2700, deficit 1200
-    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 300);
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 300);
 
     let (stdout, success) = run_in(
         &[
@@ -454,9 +482,9 @@ fn test_adhoc_with_fat_carbs_alcohol() {
     let today = chrono::Local::now().date_naive();
     let log_file = std::fs::read_to_string(dir.path().join(format!("{today}.toml")))
         .expect("log file written");
-    assert!(log_file.contains("fat_g = \"9\""));
-    assert!(log_file.contains("carbs_g = \"20\""));
-    assert!(log_file.contains("alcohol_g = \"5\""));
+    assert!(log_file.contains("fat_g = 9"));
+    assert!(log_file.contains("carbs_g = 20"));
+    assert!(log_file.contains("alcohol_g = 5"));
 
     // default view shows fat/carbs (scaled by 2 servings) but not alcohol
     let (log_out, log_ok) = run(&[
@@ -489,7 +517,7 @@ fn test_log_default_columns_include_fat_carbs_not_alcohol() {
     let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
 
-    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 0);
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
 
     let (stdout, success) = run(&[
         "--foods-dir",
@@ -520,7 +548,7 @@ fn test_show_columns_config_filters_columns() {
     )
     .unwrap();
 
-    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 0);
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
 
     let (stdout, success) = run_in(
         &[
@@ -556,7 +584,7 @@ fn test_summary_respects_show_columns() {
     )
     .unwrap();
 
-    write_day_log(dir.path(), "2026-08-02", 1800, 50.0, 15.0, 0);
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
 
     let (stdout, success) = run_in(
         &[

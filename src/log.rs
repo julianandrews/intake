@@ -73,8 +73,7 @@ impl LogEntry {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DayLog {
     pub entries: Vec<LogEntry>,
-    #[serde(default)]
-    pub exercise_calories: u32,
+    pub exercise_calories: Calories,
 }
 
 fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
@@ -92,7 +91,7 @@ pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result
     } else {
         DayLog {
             entries: Vec::new(),
-            exercise_calories: 0,
+            exercise_calories: Calories::ZERO,
         }
     };
 
@@ -137,7 +136,7 @@ pub fn load_day(log_dir: &Path, date: NaiveDate) -> Result<Option<DayLog>> {
     Ok(Some(day_log))
 }
 
-pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: u32) -> Result<()> {
+pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: Calories) -> Result<()> {
     let path = log_path(log_dir, date);
 
     let mut day_log: DayLog = if path.exists() {
@@ -148,7 +147,7 @@ pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: u32) -> 
     } else {
         DayLog {
             entries: Vec::new(),
-            exercise_calories: 0,
+            exercise_calories: Calories::ZERO,
         }
     };
 
@@ -168,23 +167,23 @@ mod tests {
 
     fn entry(
         title: &str,
-        servings: f64,
+        servings: &str,
         calories: u32,
-        protein: f64,
-        fiber: f64,
-        fat: f64,
-        carbs: f64,
-        alcohol: f64,
+        protein: &str,
+        fiber: &str,
+        fat: &str,
+        carbs: &str,
+        alcohol: &str,
     ) -> LogEntry {
         LogEntry {
             title: title.to_string(),
-            servings: Servings::from_f64(servings).unwrap(),
+            servings: Servings::from_str(servings).unwrap(),
             calories: Calories::from_u32(calories),
-            protein_g: Grams::from_f64(protein).unwrap(),
-            fiber_g: Grams::from_f64(fiber).unwrap(),
-            fat_g: Grams::from_f64(fat).unwrap(),
-            carbs_g: Grams::from_f64(carbs).unwrap(),
-            alcohol_g: Grams::from_f64(alcohol).unwrap(),
+            protein_g: Grams::from_str(protein).unwrap(),
+            fiber_g: Grams::from_str(fiber).unwrap(),
+            fat_g: Grams::from_str(fat).unwrap(),
+            carbs_g: Grams::from_str(carbs).unwrap(),
+            alcohol_g: Grams::from_str(alcohol).unwrap(),
         }
     }
 
@@ -193,20 +192,26 @@ mod tests {
         let dir = tempfile::TempDir::new()?;
 
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
-        let e = entry("oatmeal", 1.5, 200, 15.0, 5.0, 2.0, 30.0, 0.0);
+        let e = entry("oatmeal", "1.5", 200, "15.0", "5.0", "2.0", "30.0", "0.0");
 
         append_entry(dir.path(), date, &e)?;
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
 
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].title, "oatmeal");
-        assert_eq!(loaded.entries[0].servings, Servings::from_f64(1.5).unwrap());
+        assert_eq!(
+            loaded.entries[0].servings,
+            Servings::from_str("1.5").unwrap()
+        );
         assert_eq!(loaded.entries[0].calories, Calories::from_u32(200));
-        assert_eq!(loaded.entries[0].protein_g, Grams::from_f64(15.0).unwrap());
-        assert_eq!(loaded.entries[0].fiber_g, Grams::from_f64(5.0).unwrap());
-        assert_eq!(loaded.entries[0].fat_g, Grams::from_f64(2.0).unwrap());
-        assert_eq!(loaded.entries[0].carbs_g, Grams::from_f64(30.0).unwrap());
-        assert_eq!(loaded.entries[0].alcohol_g, Grams::from_f64(0.0).unwrap());
+        assert_eq!(
+            loaded.entries[0].protein_g,
+            Grams::from_str("15.0").unwrap()
+        );
+        assert_eq!(loaded.entries[0].fiber_g, Grams::from_str("5.0").unwrap());
+        assert_eq!(loaded.entries[0].fat_g, Grams::from_str("2.0").unwrap());
+        assert_eq!(loaded.entries[0].carbs_g, Grams::from_str("30.0").unwrap());
+        assert_eq!(loaded.entries[0].alcohol_g, Grams::from_str("0.0").unwrap());
 
         Ok(())
     }
@@ -273,59 +278,44 @@ mod tests {
     }
 
     #[test]
-    fn test_log_entry_fractional_calories_round_trip() -> Result<()> {
+    fn test_log_entry_float_literals_normalized() -> Result<()> {
         let dir = tempfile::TempDir::new()?;
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         std::fs::write(
             dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
-            "[[entries]]\nservings = 1.0\ncalories = \"33.333\"\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Chili\"\n",
+            "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 300\nprotein_g = 3.3333333333333335\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Chili\"\n",
         )?;
 
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
         assert_eq!(
-            loaded.entries[0].calories,
-            Calories::from_str("33.333").unwrap()
+            loaded.entries[0].protein_g,
+            Grams::from_str("3.333").unwrap()
         );
 
         Ok(())
     }
 
     #[test]
-    fn test_log_entry_legacy_float_values_normalized() -> Result<()> {
-        let dir = tempfile::TempDir::new()?;
-        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
-        std::fs::write(
-            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
-            "[[entries]]\nservings = 1.0\ncalories = 300\nprotein_g = 3.3333333333333335\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Chili\"\n",
-        )?;
-
-        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
-        assert_eq!(loaded.entries[0].protein_g, Grams::from_f64(3.333).unwrap());
-
-        Ok(())
-    }
-
-    #[test]
     fn test_totals_scale_by_servings() {
-        let e = entry("test", 2.0, 100, 10.0, 5.0, 4.0, 20.0, 3.0);
+        let e = entry("test", "2.0", 100, "10.0", "5.0", "4.0", "20.0", "3.0");
         assert_eq!(e.total_calories().unwrap(), Decimal::from(200));
-        assert_eq!(e.total_protein().unwrap(), Grams::from_f64(20.0).unwrap());
-        assert_eq!(e.total_fiber().unwrap(), Grams::from_f64(10.0).unwrap());
-        assert_eq!(e.total_fat().unwrap(), Grams::from_f64(8.0).unwrap());
-        assert_eq!(e.total_carbs().unwrap(), Grams::from_f64(40.0).unwrap());
-        assert_eq!(e.total_alcohol().unwrap(), Grams::from_f64(6.0).unwrap());
+        assert_eq!(e.total_protein().unwrap(), Grams::from_str("20.0").unwrap());
+        assert_eq!(e.total_fiber().unwrap(), Grams::from_str("10.0").unwrap());
+        assert_eq!(e.total_fat().unwrap(), Grams::from_str("8.0").unwrap());
+        assert_eq!(e.total_carbs().unwrap(), Grams::from_str("40.0").unwrap());
+        assert_eq!(e.total_alcohol().unwrap(), Grams::from_str("6.0").unwrap());
     }
 
     #[test]
     fn test_totals_fractional_servings() {
-        let e = entry("test", 1.5, 100, 10.0, 0.0, 0.0, 0.0, 0.0);
+        let e = entry("test", "1.5", 100, "10.0", "0.0", "0.0", "0.0", "0.0");
         assert_eq!(e.total_calories().unwrap(), Decimal::from(150));
-        assert_eq!(e.total_protein().unwrap(), Grams::from_f64(15.0).unwrap());
+        assert_eq!(e.total_protein().unwrap(), Grams::from_str("15.0").unwrap());
     }
 
     #[test]
-    fn test_totals_fractional_calories_exact() {
-        let mut e = entry("test", 3.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    fn test_totals_fractional_calories() {
+        let mut e = entry("test", "3.0", 0, "0.0", "0.0", "0.0", "0.0", "0.0");
         e.calories = Calories::from_str("33.333").unwrap();
         assert_eq!(
             e.total_calories().unwrap(),
@@ -335,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_totals_overflow_errors() {
-        let mut e = entry("test", 1.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let mut e = entry("test", "1.0", 0, "0.0", "0.0", "0.0", "0.0", "0.0");
         e.protein_g = Grams::from_decimal(Decimal::MAX).unwrap();
         e.servings = Servings::from_u32(2);
         assert!(e.total_protein().is_err());
@@ -350,13 +340,13 @@ mod tests {
         append_entry(
             dir.path(),
             date,
-            &entry("coffee", 2.0, 12, 0.0, 0.0, 0.0, 0.0, 0.0),
+            &entry("coffee", "2.0", 12, "0.0", "0.0", "0.0", "0.0", "0.0"),
         )?;
 
         append_entry(
             dir.path(),
             date,
-            &entry("oatmeal", 1.0, 418, 22.0, 9.0, 6.0, 60.0, 0.0),
+            &entry("oatmeal", "1.0", 418, "22.0", "9.0", "6.0", "60.0", "0.0"),
         )?;
 
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
@@ -385,7 +375,16 @@ mod tests {
         let dir = tempfile::TempDir::new()?;
 
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
-        let e = entry("Sour Cream - 60g", 1.0, 60, 1.5, 0.0, 4.0, 3.0, 0.0);
+        let e = entry(
+            "Sour Cream - 60g",
+            "1.0",
+            60,
+            "1.5",
+            "0.0",
+            "4.0",
+            "3.0",
+            "0.0",
+        );
 
         append_entry(dir.path(), date, &e)?;
         let content =
@@ -403,6 +402,55 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
         let result = load_day(dir.path(), date)?;
         assert!(result.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_exercise_calories_round_trip() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+
+        set_exercise_calories(dir.path(), date, Calories::from_str("300.5").unwrap())?;
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert_eq!(
+            loaded.exercise_calories,
+            Calories::from_str("300.5").unwrap()
+        );
+        assert!(loaded.entries.is_empty());
+
+        let content =
+            std::fs::read_to_string(dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))))?;
+        assert!(content.contains("exercise_calories = 300.5"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_exercise_calories_integer_normalized() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "exercise_calories = 300\n\n[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+        )?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert_eq!(loaded.exercise_calories, Calories::from_u32(300));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_exercise_calories_negative_rejected() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "exercise_calories = -50\n",
+        )?;
+
+        assert!(load_day(dir.path(), date).is_err());
 
         Ok(())
     }

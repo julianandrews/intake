@@ -1,3 +1,4 @@
+use crate::amount::Calories;
 use crate::display::{ColumnTarget, DayTargets};
 use anyhow::{bail, Context, Result};
 use rust_decimal::Decimal;
@@ -51,12 +52,12 @@ impl Column {
 pub struct Config {
     pub foods_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
-    pub max_calories: Option<u32>,
+    pub max_calories: Option<Calories>,
     pub min_protein: Option<Decimal>,
     pub min_fiber: Option<Decimal>,
-    pub maintenance_calories: Option<u32>,
+    pub maintenance_calories: Option<Calories>,
     pub show_columns: Option<Vec<Column>>,
-    pub min_calories: Option<Decimal>,
+    pub min_calories: Option<Calories>,
     pub max_protein: Option<Decimal>,
     pub max_fiber: Option<Decimal>,
     pub min_fat: Option<Decimal>,
@@ -135,7 +136,7 @@ impl Config {
     pub fn targets(&self) -> Result<DayTargets> {
         let targets = DayTargets {
             calories: ColumnTarget {
-                min: self.min_calories,
+                min: self.min_calories.map(Decimal::from),
                 max: self.max_calories.map(Decimal::from),
             },
             protein: ColumnTarget {
@@ -167,6 +168,21 @@ impl Config {
             ("carbs", targets.carbs),
             ("alcohol", targets.alcohol),
         ] {
+            if let (Some(min), Some(max)) = (target.min, target.max) {
+                if min > max {
+                    bail!("{name} target min ({min}) exceeds max ({max})");
+                }
+            }
+        }
+        // Non-negativity for the macro targets typed as bare `Decimal`;
+        // calorie targets are `Calories` and already enforce it at parse.
+        for (name, target) in [
+            ("protein", targets.protein),
+            ("fiber", targets.fiber),
+            ("fat", targets.fat),
+            ("carbs", targets.carbs),
+            ("alcohol", targets.alcohol),
+        ] {
             if let Some(min) = target.min {
                 if min < Decimal::ZERO {
                     bail!("{name} target min ({min}) must be non-negative");
@@ -175,11 +191,6 @@ impl Config {
             if let Some(max) = target.max {
                 if max < Decimal::ZERO {
                     bail!("{name} target max ({max}) must be non-negative");
-                }
-            }
-            if let (Some(min), Some(max)) = (target.min, target.max) {
-                if min > max {
-                    bail!("{name} target min ({min}) exceeds max ({max})");
                 }
             }
         }
@@ -282,6 +293,14 @@ mod tests {
     fn test_targets_valid_band_accepted() {
         let config: Config = toml::from_str("min_carbs = 100\nmax_carbs = 300\n").unwrap();
         assert!(config.targets().is_ok());
+    }
+
+    #[test]
+    fn test_negative_calorie_values_rejected_at_parse() {
+        assert!(toml::from_str::<Config>("max_calories = -10\n").is_err());
+        assert!(toml::from_str::<Config>("min_calories = -0.5\n").is_err());
+        assert!(toml::from_str::<Config>("maintenance_calories = -1\n").is_err());
+        assert!(toml::from_str::<Config>("maintenance_calories = 0\n").is_ok());
     }
 
     #[test]

@@ -34,10 +34,15 @@ masses via `Grams` in `src/amount.rs`, 0.001 kcal for calories via
 `Calories`): sums and products are exact, per-serving division rounds to
 0.001, and display rounds to 0.1 g / whole calories.
 Per-serving calories are *not* rounded to whole numbers — a 100 kcal food
-with 3 servings logs 33.333 kcal/serving, so day totals stay exact. Values
-are written to log files as decimal strings — no floats anywhere on disk,
-so files round-trip exactly; legacy float/int values in existing log files
-(including integer `calories`) are still read and normalized on load.
+with 3 servings logs 33.333 kcal/serving, keeping day totals within a
+rounding hair of exact. Values are written to log files as bare decimal
+literals (integers when integral, floats otherwise) — no quotes, and exact
+round-trip for values below ≈2.2×10^12 at full 0.001 precision (~15
+significant digits; any realistic diet quantity). Values too large for
+exact f64 round-trip — and integral values beyond the TOML integer range —
+are rejected at serialization, so writing never loses precision silently.
+Quoted strings are rejected on read; bare integers and floats are normalized
+to exact decimals at the parse boundary; internally everything is decimal.
 Food and log arithmetic is checked: overflow in ingredient sums, serving
 products, and day or period totals fails loudly with an error instead of
 panicking or wrapping. `servings = 0` is rejected
@@ -59,7 +64,7 @@ intake adhoc [--calories N] [--protein N] [--fiber N] [--fat N] [--carbs N] [--a
 ```
 
 - Macros are specified inline — no food file needed; every macro flag is
-  optional and defaults to 0
+  optional and defaults to 0. Calorie values are decimals (e.g. `--calories 33.333`)
 - The entry is appended to today's log
 - Check existing entries in `log/` for the exact TOML format to follow:
   every entry stores its display name in a `title` field (required, on disk
@@ -80,15 +85,21 @@ The config file lives at `~/.config/intake/config.toml`. Data defaults to
 - `show_columns` — which macro columns to display in `log`/`summary`/`list`/`show`.
   Values: `calories`, `protein`, `fiber`, `fat`, `carbs`, `alcohol`.
   Default: all except `alcohol`. Duplicate entries are a config error
-- `max_calories` — daily calorie target (u32)
+- `max_calories` — daily calorie target (decimal, `Calories`)
 - `min_protein` — daily protein target in grams (decimal)
 - `min_fiber` — daily fiber target in grams (decimal)
-- `maintenance_calories` — TDEE for deficit calculation (u32)
+- `maintenance_calories` — TDEE for deficit calculation (decimal, `Calories`)
+- `min_calories` — also accepted (decimal); pairs with `max_calories` as a
+  `[min, max]` band like the macros below
 - Every macro also accepts `min_<macro>` / `max_<macro>` targets (decimal), e.g.
   `min_fat`, `max_fat`, `min_carbs`, `max_carbs`, `max_alcohol`. When both a
   min and max are set the `[min, max]` range is the green band: below min →
   yellow, above max → red, inside → green. Targets scale with day progress
   (like `max_calories` does). Coloring logic: `column_color` in `src/display.rs`
+- Calorie targets are typed as `Calories` (non-negative decimal, rounded to
+  0.001 like macros); legacy integer config values still parse. Negative
+  calorie targets (`min_calories`, `max_calories`, `maintenance_calories`)
+  are rejected at parse
 
 Paths can also be set via `INTAKE_FOODS_DIR` / `INTAKE_LOG_DIR` env vars, or
 `--foods-dir` / `--log-dir` CLI flags. Resolution order:
@@ -102,12 +113,16 @@ The `Config` struct and its resolution logic live in `src/config.rs`.
 intake exercise 300
 ```
 
-Records calories burned for today. On exercise days the log table shows an
-`Exercise` row with a negative calorie adjustment and a `Net` row with
-post-exercise calories; exercise also raises the TDEE used for deficit
-calculation. If `show_columns` omits `calories`, the `Exercise`/`Net` rows are
-hidden (they have nothing to show); the summary command likewise hides its
-`Exercise` column in that case.
+Records calories burned for today (decimal, e.g. `intake exercise 300.5`,
+negative values rejected). On exercise days the log table shows an
+`Exercise` row with a negative calorie
+adjustment and a `Net` row with post-exercise calories; exercise also raises
+the TDEE used for deficit calculation. `exercise_calories` is stored in the
+day's log file as a bare decimal literal (`Calories`, like macros); quoted
+strings are rejected on read, integers and floats are normalized. If
+`show_columns` omits `calories`, the `Exercise`/`Net` rows are hidden (they
+have nothing to show); the summary command likewise hides its `Exercise`
+column in that case.
 
 ## Viewing a Multi-Day Summary
 

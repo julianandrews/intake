@@ -1,17 +1,23 @@
 //! Exact decimal quantities: macro masses in grams and serving counts.
 //!
 //! Values are rounded to [`SCALE`] decimal places (0.001 g) at construction,
-//! division, and serialization, and written to log files as decimal strings
-//! (never floats), so anything on disk is exactly representable and
-//! round-trips unchanged. In-memory sums and products stay exact.
+//! division, and serialization, and written to log files as bare decimal
+//! literals (integers when integral, floats otherwise) — no quotes, and
+//! exact round-trip for values below ≈2.2×10^12 at full 0.001 precision
+//! (~15 significant digits), which covers any realistic diet quantity.
+//! Values that cannot round-trip exactly through the `f64` representation —
+//! and integral values too large for a TOML integer — are rejected at
+//! serialization instead of being written lossily; strings are rejected on
+//! read. In-memory sums and products stay exact.
 //!
 //! [`Grams`] and [`Calories`] are non-negative; [`Servings`] is strictly
 //! positive. Arithmetic on these types is checked: sums and products return
 //! `None` on overflow instead of panicking.
 
-use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::de::Error as DeError;
+use serde::ser::Error as SerError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::str::FromStr;
@@ -51,7 +57,7 @@ macro_rules! decimal_type {
                 Ok($t(rounded))
             }
 
-            /// Build from a float (e.g. legacy TOML values), rounding to
+            /// Build from a float (e.g. bare TOML float literals), rounding to
             /// storage precision. Errors on NaN, infinity, or out-of-range.
             pub fn from_f64(value: f64) -> Result<Self, String> {
                 if value.is_nan() || value.is_infinite() || !$valid_f64(value) {
@@ -161,7 +167,22 @@ macro_rules! decimal_type {
 
         impl Serialize for $t {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                serializer.serialize_str(&self.0.round_dp(SCALE).normalize().to_string())
+                let value = self.0.round_dp(SCALE).normalize();
+                if value.fract().is_zero() {
+                    if let Some(i) = value.to_i64() {
+                        return serializer.serialize_i64(i);
+                    }
+                    return Err(S::Error::custom(format!(
+                        "{value} exceeds the TOML integer range"
+                    )));
+                }
+                let f = value.to_f64().expect("decimal always fits f64");
+                if Decimal::from_f64(f).map(|d| d.round_dp(SCALE).normalize()) != Some(value) {
+                    return Err(S::Error::custom(format!(
+                        "{value} cannot be serialized exactly as a TOML float"
+                    )));
+                }
+                serializer.serialize_f64(f)
             }
         }
 
@@ -185,10 +206,6 @@ macro_rules! decimal_type {
 
                     fn visit_f64<E: DeError>(self, v: f64) -> Result<Self::Value, E> {
                         Self::Value::from_f64(v).map_err(E::custom)
-                    }
-
-                    fn visit_str<E: DeError>(self, v: &str) -> Result<Self::Value, E> {
-                        Self::Value::from_str(v).map_err(E::custom)
                     }
                 }
                 deserializer.deserialize_any(Visitor)
@@ -406,7 +423,16 @@ mod tests {
 
     #[test]
     fn test_toml_round_trip() {
-        for value in ["0", "0.3", "3.333", "9.999", "12.5", "100", "3.333333"] {
+        for value in [
+            "0",
+            "0.3",
+            "3.333",
+            "9.999",
+            "12.5",
+            "100",
+            "3.333333",
+            "999999999999.999",
+        ] {
             let wrap = Wrap {
                 value: Grams::from_str(value).unwrap(),
             };
@@ -428,7 +454,7 @@ mod tests {
                 "round trip failed for {value}"
             );
         }
-        for value in ["0", "0.333", "250", "999.999"] {
+        for value in ["0", "0.333", "250", "999.999", "999999999999.999"] {
             let wrap = WrapCalories {
                 value: Calories::from_str(value).unwrap(),
             };
@@ -442,16 +468,12 @@ mod tests {
     }
 
     #[test]
-    fn test_toml_accepts_float_int_and_string() {
+    fn test_toml_accepts_float_and_int() {
         assert_eq!(
             toml::from_str::<Wrap>("value = 3.3").unwrap().value,
             g("3.3")
         );
         assert_eq!(toml::from_str::<Wrap>("value = 7").unwrap().value, g("7"));
-        assert_eq!(
-            toml::from_str::<Wrap>("value = \"2.5\"").unwrap().value,
-            g("2.5")
-        );
         assert!(toml::from_str::<Wrap>("value = -1").is_err());
         assert!(toml::from_str::<Wrap>("value = -1.5").is_err());
         assert!(toml::from_str::<WrapServings>("value = 0").is_err());
@@ -466,23 +488,53 @@ mod tests {
                 .value,
             calories("250.5")
         );
-        assert_eq!(
-            toml::from_str::<WrapCalories>("value = \"250.5\"")
-                .unwrap()
-                .value,
-            calories("250.5")
-        );
     }
 
     #[test]
-    fn test_toml_serializes_as_decimal_string() {
-        let wrap = Wrap { value: g("9.999") };
-        assert_eq!(toml::to_string(&wrap).unwrap().trim(), "value = \"9.999\"");
+    fn test_toml_rejects_quoted_strings() {
+        assert!(toml::from_str::<Wrap>("value = \"2.5\"").is_err());
+        assert!(toml::from_str::<WrapCalories>("value = \"250.5\"").is_err());
+    }
+
+    #[test]
+    fn test_toml_serialize_rejects_out_of_range_integer() {
+        let wrap = Wrap {
+            value: Grams::from_decimal(Decimal::MAX).unwrap(),
+        };
+        let err = toml::to_string(&wrap).unwrap_err().to_string();
+        assert!(err.contains("TOML integer range"), "got: {err}");
+    }
+
+    #[test]
+    fn test_toml_serialize_rejects_large_integrals() {
+        // 2^70 is exactly representable in f64 but exceeds the i64 TOML
+        // integer range; reject rather than write scientific notation.
+        let wrap = Wrap {
+            value: g("1180591620717411303424"),
+        };
+        let err = toml::to_string(&wrap).unwrap_err().to_string();
+        assert!(err.contains("TOML integer"), "got: {err}");
+    }
+
+    #[test]
+    fn test_toml_serializes_as_bare_numbers() {
+        let wrap = Wrap { value: g("9.99") };
+        assert_eq!(toml::to_string(&wrap).unwrap().trim(), "value = 9.99");
         let wrap = Wrap { value: Grams::ZERO };
-        assert_eq!(toml::to_string(&wrap).unwrap().trim(), "value = \"0\"");
+        assert_eq!(toml::to_string(&wrap).unwrap().trim(), "value = 0");
         let wrap = WrapServings {
             value: servings("1.5"),
         };
-        assert_eq!(toml::to_string(&wrap).unwrap().trim(), "value = \"1.5\"");
+        assert_eq!(toml::to_string(&wrap).unwrap().trim(), "value = 1.5");
+    }
+
+    #[test]
+    fn test_toml_serializes_integral_as_int() {
+        let wrap = Wrap { value: g("3") };
+        assert_eq!(toml::to_string(&wrap).unwrap().trim(), "value = 3");
+        let wrap = Wrap { value: g("2.5") };
+        assert_eq!(toml::to_string(&wrap).unwrap().trim(), "value = 2.5");
+        let wrap = Wrap { value: g("3.00") };
+        assert_eq!(toml::to_string(&wrap).unwrap().trim(), "value = 3");
     }
 }

@@ -206,8 +206,8 @@ mod tests {
     use std::num::NonZeroU32;
     use std::str::FromStr;
 
-    fn grams(value: f64) -> Grams {
-        Grams::from_f64(value).unwrap()
+    fn grams(value: &str) -> Grams {
+        Grams::from_str(value).unwrap()
     }
 
     fn food_with_ingredient(servings: u32, ingredient: Ingredient) -> Food {
@@ -220,12 +220,12 @@ mod tests {
     }
 
     fn ingredient(
-        protein: f64,
-        fiber: f64,
+        protein: &str,
+        fiber: &str,
         calories: u32,
-        fat: f64,
-        carbs: f64,
-        alcohol: f64,
+        fat: &str,
+        carbs: &str,
+        alcohol: &str,
     ) -> Ingredient {
         Ingredient {
             name: "A".to_string(),
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_per_serving_with_fractions() {
-        let food = food_with_ingredient(3, ingredient(10.0, 5.0, 100, 0.0, 0.0, 0.0));
+        let food = food_with_ingredient(3, ingredient("10.0", "5.0", 100, "0.0", "0.0", "0.0"));
         let ps = food.per_serving().unwrap();
         assert_eq!(ps.calories, Calories::from_str("33.333").unwrap());
         assert_eq!(ps.protein_g, Grams::from_str("3.333").unwrap());
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_per_serving_calories_keep_fractional_precision() {
-        let food = food_with_ingredient(3, ingredient(0.0, 0.0, 100, 0.0, 0.0, 0.0));
+        let food = food_with_ingredient(3, ingredient("0.0", "0.0", 100, "0.0", "0.0", "0.0"));
         let ps = food.per_serving().unwrap();
         assert_eq!(ps.calories, Calories::from_str("33.333").unwrap());
         assert_eq!(food.totals().unwrap().calories, Calories::from_u32(100));
@@ -258,22 +258,22 @@ mod tests {
 
     #[test]
     fn test_per_serving_exact_division() {
-        let food = food_with_ingredient(2, ingredient(20.0, 6.0, 100, 4.0, 30.0, 2.0));
+        let food = food_with_ingredient(2, ingredient("20.0", "6.0", 100, "4.0", "30.0", "2.0"));
         let ps = food.per_serving().unwrap();
         assert_eq!(ps.calories, Calories::from_u32(50));
-        assert_eq!(ps.protein_g, grams(10.0));
-        assert_eq!(ps.fiber_g, grams(3.0));
-        assert_eq!(ps.fat_g, grams(2.0));
-        assert_eq!(ps.carbs_g, grams(15.0));
-        assert_eq!(ps.alcohol_g, grams(1.0));
+        assert_eq!(ps.protein_g, grams("10.0"));
+        assert_eq!(ps.fiber_g, grams("3.0"));
+        assert_eq!(ps.fat_g, grams("2.0"));
+        assert_eq!(ps.carbs_g, grams("15.0"));
+        assert_eq!(ps.alcohol_g, grams("1.0"));
     }
 
     #[test]
     fn test_per_serving_fractional_input() {
-        let food = food_with_ingredient(1, ingredient(0.0, 0.3, 5, 0.0, 0.0, 0.0));
+        let food = food_with_ingredient(1, ingredient("0.0", "0.3", 5, "0.0", "0.0", "0.0"));
         let ps = food.per_serving().unwrap();
         assert_eq!(ps.calories, Calories::from_u32(5));
-        assert_eq!(ps.fiber_g, grams(0.3));
+        assert_eq!(ps.fiber_g, grams("0.3"));
     }
 
     #[test]
@@ -325,22 +325,22 @@ mod tests {
                 Ingredient {
                     name: "Oats".to_string(),
                     quantity: Some("100g".to_string()),
-                    protein_g: grams(10.0),
-                    fiber_g: grams(5.0),
+                    protein_g: grams("10.0"),
+                    fiber_g: grams("5.0"),
                     calories: Calories::from_u32(200),
-                    fat_g: grams(4.0),
-                    carbs_g: grams(30.0),
-                    alcohol_g: grams(0.0),
+                    fat_g: grams("4.0"),
+                    carbs_g: grams("30.0"),
+                    alcohol_g: grams("0.0"),
                 },
                 Ingredient {
                     name: "Milk".to_string(),
                     quantity: Some("200ml".to_string()),
-                    protein_g: grams(8.0),
-                    fiber_g: grams(0.0),
+                    protein_g: grams("8.0"),
+                    fiber_g: grams("0.0"),
                     calories: Calories::from_u32(120),
-                    fat_g: grams(6.0),
-                    carbs_g: grams(9.0),
-                    alcohol_g: grams(0.0),
+                    fat_g: grams("6.0"),
+                    carbs_g: grams("9.0"),
+                    alcohol_g: grams("0.0"),
                 },
             ],
         };
@@ -371,12 +371,12 @@ mod tests {
             ingredients: vec![Ingredient {
                 name: "Cold Brew".to_string(),
                 quantity: None,
-                protein_g: grams(0.0),
-                fiber_g: grams(0.0),
+                protein_g: grams("0.0"),
+                fiber_g: grams("0.0"),
                 calories: Calories::from_u32(0),
-                fat_g: grams(0.0),
-                carbs_g: grams(0.0),
-                alcohol_g: grams(0.0),
+                fat_g: grams("0.0"),
+                carbs_g: grams("0.0"),
+                alcohol_g: grams("0.0"),
             }],
         };
 
@@ -394,12 +394,12 @@ mod tests {
             ingredients: vec![Ingredient {
                 name: "Secret Spice".to_string(),
                 quantity: None,
-                protein_g: grams(0.5),
-                fiber_g: grams(0.1),
+                protein_g: grams("0.5"),
+                fiber_g: grams("0.1"),
                 calories: Calories::from_u32(5),
-                fat_g: grams(0.0),
-                carbs_g: grams(0.0),
-                alcohol_g: grams(0.0),
+                fat_g: grams("0.0"),
+                carbs_g: grams("0.0"),
+                alcohol_g: grams("0.0"),
             }],
         };
 
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_display_column_subset() {
-        let food = food_with_ingredient(1, ingredient(10.0, 5.0, 100, 4.0, 30.0, 0.0));
+        let food = food_with_ingredient(1, ingredient("10.0", "5.0", 100, "4.0", "30.0", "0.0"));
         let md = food.display(&[Column::Calories, Column::Fat]).unwrap();
         assert!(md.contains("Calories"));
         assert!(md.contains("Fat(g)"));
@@ -422,7 +422,8 @@ mod tests {
     }
 
     fn test_food(notes: &str) -> Food {
-        let mut food = food_with_ingredient(1, ingredient(10.0, 5.0, 100, 4.0, 30.0, 0.0));
+        let mut food =
+            food_with_ingredient(1, ingredient("10.0", "5.0", 100, "4.0", "30.0", "0.0"));
         food.title = "Test".to_string();
         food.notes = notes.to_string();
         food

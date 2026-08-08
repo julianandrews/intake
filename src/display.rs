@@ -1,5 +1,6 @@
-use crate::amount::round_away;
+use crate::amount::{round_away, Calories};
 use crate::config::Column;
+use anyhow::{anyhow, Result};
 use chrono::{NaiveTime, Timelike};
 use std::fmt::Write;
 
@@ -358,22 +359,27 @@ pub fn food_cell(column: Column, value: Decimal) -> String {
 }
 
 pub fn render_day_summary(
-    exercise_calories: u32,
-    maintenance_calories: Option<u32>,
+    exercise_calories: Calories,
+    maintenance_calories: Option<Calories>,
     deficit: Option<Decimal>,
-) -> String {
+) -> Result<String> {
     let mut lines: Vec<(String, String)> = Vec::new();
 
     if let Some(mc) = maintenance_calories {
-        let tdee = mc + exercise_calories;
-        lines.push(("TDEE:".to_string(), format!("{tdee}")));
+        let tdee = mc
+            .checked_add(exercise_calories)
+            .ok_or_else(|| anyhow!("TDEE overflow"))?;
+        lines.push((
+            "TDEE:".to_string(),
+            format!("{}", round_away(tdee.to_decimal(), 0)),
+        ));
     }
     if let Some(d) = deficit {
-        lines.push(("Deficit:".to_string(), d.round_dp(0).to_string()));
+        lines.push(("Deficit:".to_string(), round_away(d, 0).to_string()));
     }
 
     if lines.is_empty() {
-        String::new()
+        Ok(String::new())
     } else {
         let label_width = lines
             .iter()
@@ -394,7 +400,7 @@ pub fn render_day_summary(
             )
             .unwrap();
         }
-        out
+        Ok(out)
     }
 }
 
@@ -608,7 +614,12 @@ mod tests {
 
     #[test]
     fn test_render_day_summary() {
-        let out = render_day_summary(300, Some(2400), Some(Decimal::from(1500)));
+        let out = render_day_summary(
+            Calories::from_u32(300),
+            Some(Calories::from_u32(2400)),
+            Some(Decimal::from(1500)),
+        )
+        .unwrap();
         assert!(out.contains(&format!("{ANSI_BOLD_MAGENTA}TDEE:{ANSI_RESET}")));
         assert!(out.contains(&format!("{ANSI_BOLD_MAGENTA}Deficit:{ANSI_RESET}")));
         assert!(out.contains("2700"));
@@ -618,13 +629,31 @@ mod tests {
     }
 
     #[test]
+    fn test_render_day_summary_fractional_exercise_rounds() {
+        let out = render_day_summary(
+            Calories::from_str("300.5").unwrap(),
+            Some(Calories::from_u32(2400)),
+            Some(Decimal::from_str("1201.5").unwrap()),
+        )
+        .unwrap();
+        assert!(out.contains("2701"));
+        assert!(out.contains("1202"));
+        assert!(!out.contains("2700.5"));
+    }
+
+    #[test]
     fn test_render_day_summary_empty() {
-        assert_eq!(render_day_summary(0, None, None), "");
+        assert_eq!(render_day_summary(Calories::ZERO, None, None).unwrap(), "");
     }
 
     #[test]
     fn test_render_day_summary_negative_deficit() {
-        let out = render_day_summary(0, Some(2400), Some(Decimal::from(-500)));
+        let out = render_day_summary(
+            Calories::ZERO,
+            Some(Calories::from_u32(2400)),
+            Some(Decimal::from(-500)),
+        )
+        .unwrap();
         assert!(out.contains(&format!("{ANSI_BOLD_MAGENTA}Deficit:{ANSI_RESET}  -500")));
     }
 

@@ -20,7 +20,7 @@ mod config;
 mod display;
 mod food;
 mod log;
-use amount::{Calories, Grams, Servings};
+use amount::{round_away, Calories, Grams, Servings};
 use config::{Column, Config};
 use display::{ColumnValue, Table};
 use rust_decimal::Decimal;
@@ -87,7 +87,7 @@ enum Commands {
     /// Record exercise calories for today
     Exercise {
         /// Calories burned
-        calories: u32,
+        calories: Calories,
     },
     /// Add an ad-hoc entry with custom macros (no food file needed)
     Adhoc {
@@ -97,7 +97,7 @@ enum Commands {
         servings: Option<Servings>,
         /// Calories
         #[arg(long)]
-        calories: Option<u32>,
+        calories: Option<Calories>,
         /// Protein in grams
         #[arg(long)]
         protein: Option<Grams>,
@@ -265,7 +265,7 @@ fn main() -> Result<()> {
                 &name,
                 servings.unwrap_or(Servings::from_u32(1)),
                 &food::Macros {
-                    calories: calories.map(Calories::from_u32).unwrap_or(Calories::ZERO),
+                    calories: calories.unwrap_or(Calories::ZERO),
                     protein_g: protein.unwrap_or(Grams::ZERO),
                     fiber_g: fiber.unwrap_or(Grams::ZERO),
                     fat_g: fat.unwrap_or(Grams::ZERO),
@@ -364,7 +364,7 @@ fn fmt_servings(servings: Decimal) -> String {
     if servings.fract().is_zero() {
         servings.round_dp(0).to_string()
     } else {
-        servings.round_dp(1).to_string()
+        round_away(servings, 1).to_string()
     }
 }
 fn cmd_log(
@@ -415,7 +415,7 @@ fn cmd_log(
             let now = (date == Local::now().date_naive()).then(|| Local::now().time());
             let targets = config.targets()?;
             let show_exercise =
-                day_log.exercise_calories > 0 && columns.contains(&Column::Calories);
+                day_log.exercise_calories > Calories::ZERO && columns.contains(&Column::Calories);
 
             let mut plain_cells = Vec::new();
             let mut colored_cells = Vec::new();
@@ -435,7 +435,13 @@ fn cmd_log(
                 ));
                 if show_exercise {
                     exercise_cells.push(if *column == Column::Calories {
-                        format!("-{}", day_log.exercise_calories)
+                        format!(
+                            "-{}",
+                            display::log_cell(
+                                Column::Calories,
+                                day_log.exercise_calories.to_decimal()
+                            )
+                        )
                     } else {
                         String::new()
                     });
@@ -465,7 +471,7 @@ fn cmd_log(
                 day_log.exercise_calories,
                 config.maintenance_calories,
                 deficit,
-            );
+            )?;
             write!(writer, "{}", summary)?;
         }
     }
@@ -475,17 +481,18 @@ fn cmd_log(
 
 fn day_net_and_deficit(
     calories: Decimal,
-    exercise_calories: u32,
-    maintenance_calories: Option<u32>,
+    exercise_calories: Calories,
+    maintenance_calories: Option<Calories>,
 ) -> Result<(Decimal, Option<Decimal>)> {
-    let exercise = Decimal::from(exercise_calories);
+    let exercise = exercise_calories.to_decimal();
     let net_cal = calories
         .checked_sub(exercise)
         .context("net calorie total overflow")?;
     let deficit = maintenance_calories
         .map(|mc| {
-            let tdee = Decimal::from(mc)
-                .checked_add(exercise)
+            let tdee = mc
+                .checked_add(exercise_calories)
+                .map(|t| t.to_decimal())
                 .context("TDEE overflow")?;
             tdee.checked_sub(net_cal).context("deficit overflow")
         })
@@ -496,7 +503,7 @@ fn day_net_and_deficit(
 struct SummaryRow {
     date: chrono::NaiveDate,
     macros: display::DayTotals,
-    exercise_calories: u32,
+    exercise_calories: Calories,
     deficit: Option<Decimal>,
 }
 
@@ -510,7 +517,7 @@ fn build_summary_rows(
     log_dir: &Path,
     end: chrono::NaiveDate,
     days: u32,
-    maintenance_calories: Option<u32>,
+    maintenance_calories: Option<Calories>,
 ) -> Result<Vec<SummaryRow>> {
     if !log_dir.is_dir() {
         return Ok(Vec::new());
@@ -577,8 +584,8 @@ fn cmd_summary(
     }
 
     let columns = config.columns()?;
-    let any_exercise =
-        rows.iter().any(|r| r.exercise_calories > 0) && columns.contains(&Column::Calories);
+    let any_exercise = rows.iter().any(|r| r.exercise_calories > Calories::ZERO)
+        && columns.contains(&Column::Calories);
     let show_deficit = config.maintenance_calories.is_some();
 
     let mut headers: Vec<&str> = vec!["Date"];
@@ -603,11 +610,11 @@ fn cmd_summary(
             cells.push(display::log_cell(*column, row.column_value(*column)));
         }
         if any_exercise {
-            if row.exercise_calories > 0 {
+            if row.exercise_calories > Calories::ZERO {
                 cells.push(format!(
                     "{}{}{}",
                     display::ANSI_BOLD_RED,
-                    row.exercise_calories,
+                    display::log_cell(Column::Calories, row.exercise_calories.to_decimal()),
                     display::ANSI_RESET
                 ));
             } else {
@@ -615,7 +622,7 @@ fn cmd_summary(
             }
         }
         if let Some(d) = row.deficit {
-            cells.push(d.round_dp(0).to_string());
+            cells.push(display::log_cell(Column::Calories, d));
         }
         table.add_row(cells);
     }
@@ -627,7 +634,10 @@ fn cmd_summary(
             .checked_add_row(row)
             .context("period macro total overflow")?;
     }
-    let total_exercise: u64 = rows.iter().map(|r| u64::from(r.exercise_calories)).sum();
+    let total_exercise: Decimal = rows.iter().try_fold(Decimal::ZERO, |acc, r| {
+        acc.checked_add(r.exercise_calories.to_decimal())
+            .context("exercise total overflow")
+    })?;
     let total_deficit: Decimal = rows
         .iter()
         .try_fold(Decimal::ZERO, |acc, r| match r.deficit {
@@ -640,10 +650,10 @@ fn cmd_summary(
         total_footer.push(display::log_cell(*column, totals.column_value(*column)));
     }
     if any_exercise {
-        total_footer.push(total_exercise.to_string());
+        total_footer.push(display::log_cell(Column::Calories, total_exercise));
     }
     if show_deficit {
-        total_footer.push(total_deficit.round_dp(0).to_string());
+        total_footer.push(display::log_cell(Column::Calories, total_deficit));
     }
     table.add_footer(total_footer);
 
@@ -658,22 +668,20 @@ fn cmd_summary(
         ));
     }
     if any_exercise {
-        avg_footer.push(
-            Decimal::from(total_exercise)
+        avg_footer.push(display::log_cell(
+            Column::Calories,
+            total_exercise
                 .checked_div(count)
-                .expect("rows checked non-empty")
-                .round_dp(0)
-                .to_string(),
-        );
+                .expect("rows checked non-empty"),
+        ));
     }
     if show_deficit {
-        avg_footer.push(
+        avg_footer.push(display::log_cell(
+            Column::Calories,
             total_deficit
                 .checked_div(count)
-                .expect("rows checked non-empty")
-                .round_dp(0)
-                .to_string(),
-        );
+                .expect("rows checked non-empty"),
+        ));
     }
     table.add_footer(avg_footer);
 
@@ -756,11 +764,12 @@ fn build_rows(entries: &[log::LogEntry]) -> Result<Vec<DisplayRow>> {
 mod tests {
     use super::*;
     use crate::log::LogEntry;
+    use std::str::FromStr;
 
-    fn entry(title: &str, servings: f64) -> LogEntry {
+    fn entry(title: &str, servings: &str) -> LogEntry {
         LogEntry {
             title: title.to_string(),
-            servings: Servings::from_f64(servings).unwrap(),
+            servings: Servings::from_str(servings).unwrap(),
             calories: Calories::ZERO,
             protein_g: Grams::ZERO,
             fiber_g: Grams::ZERO,
@@ -773,9 +782,9 @@ mod tests {
     #[test]
     fn test_build_rows_one_per_entry() {
         let entries = vec![
-            entry("coffee", 1.0),
-            entry("coffee", 2.0),
-            entry("oatmeal", 1.0),
+            entry("coffee", "1.0"),
+            entry("coffee", "2.0"),
+            entry("oatmeal", "1.0"),
         ];
         let rows = build_rows(&entries).unwrap();
         assert_eq!(rows.len(), 3);
@@ -784,8 +793,8 @@ mod tests {
     #[test]
     fn test_build_rows_titles_preserved() {
         let entries = vec![
-            entry("Cherries - 155g", 1.0),
-            entry("Sour Cream - 60g", 1.0),
+            entry("Cherries - 155g", "1.0"),
+            entry("Sour Cream - 60g", "1.0"),
         ];
         let rows = build_rows(&entries).unwrap();
         assert_eq!(rows[0].title, "Cherries - 155g");
@@ -794,7 +803,7 @@ mod tests {
 
     #[test]
     fn test_build_rows_calories_scaled_by_servings() {
-        let mut e = entry("coffee", 2.0);
+        let mut e = entry("coffee", "2.0");
         e.calories = Calories::from_u32(24);
         let rows = build_rows(&[e]).unwrap();
         assert_eq!(rows[0].macros.calories, Decimal::from(48));
@@ -802,14 +811,20 @@ mod tests {
 
     #[test]
     fn test_build_rows_new_macros_scaled_by_servings() {
-        let mut e = entry("coffee", 2.0);
-        e.fat_g = Grams::from_f64(5.0).unwrap();
-        e.carbs_g = Grams::from_f64(15.0).unwrap();
-        e.alcohol_g = Grams::from_f64(2.0).unwrap();
+        let mut e = entry("coffee", "2.0");
+        e.fat_g = Grams::from_str("5.0").unwrap();
+        e.carbs_g = Grams::from_str("15.0").unwrap();
+        e.alcohol_g = Grams::from_str("2.0").unwrap();
         let rows = build_rows(&[e]).unwrap();
-        assert_eq!(rows[0].macros.fat, Grams::from_f64(10.0).unwrap().into());
-        assert_eq!(rows[0].macros.carbs, Grams::from_f64(30.0).unwrap().into());
-        assert_eq!(rows[0].macros.alcohol, Grams::from_f64(4.0).unwrap().into());
+        assert_eq!(rows[0].macros.fat, Grams::from_str("10.0").unwrap().into());
+        assert_eq!(
+            rows[0].macros.carbs,
+            Grams::from_str("30.0").unwrap().into()
+        );
+        assert_eq!(
+            rows[0].macros.alcohol,
+            Grams::from_str("4.0").unwrap().into()
+        );
     }
 
     #[test]
@@ -881,22 +896,22 @@ mod tests {
     fn write_day_log(
         dir: &Path,
         date: chrono::NaiveDate,
-        calories: f64,
-        protein: f64,
+        calories: &str,
+        protein: &str,
         exercise: u32,
     ) {
         let day_log = log::DayLog {
             entries: vec![LogEntry {
                 title: "coffee".to_string(),
-                servings: Servings::from_f64(1.0).unwrap(),
-                calories: Calories::from_f64(calories).unwrap(),
-                protein_g: Grams::from_f64(protein).unwrap(),
-                fiber_g: Grams::from_f64(4.0).unwrap(),
-                fat_g: Grams::from_f64(2.0).unwrap(),
-                carbs_g: Grams::from_f64(8.0).unwrap(),
+                servings: Servings::from_str("1.0").unwrap(),
+                calories: Calories::from_str(calories).unwrap(),
+                protein_g: Grams::from_str(protein).unwrap(),
+                fiber_g: Grams::from_str("4.0").unwrap(),
+                fat_g: Grams::from_str("2.0").unwrap(),
+                carbs_g: Grams::from_str("8.0").unwrap(),
                 alcohol_g: Grams::ZERO,
             }],
-            exercise_calories: exercise,
+            exercise_calories: Calories::from_u32(exercise),
         };
         let content = toml::to_string(&day_log).unwrap();
         std::fs::write(dir.join(format!("{}.toml", date)), content).unwrap();
@@ -906,8 +921,8 @@ mod tests {
     fn test_build_summary_rows_skips_empty_days() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end, 100.0, 10.0, 0);
-        write_day_log(dir.path(), end - chrono::Days::new(2), 200.0, 10.0, 0);
+        write_day_log(dir.path(), end, "100.0", "10.0", 0);
+        write_day_log(dir.path(), end - chrono::Days::new(2), "200.0", "10.0", 0);
 
         let rows = build_summary_rows(dir.path(), end, 7, None).unwrap();
         assert_eq!(rows.len(), 2);
@@ -919,9 +934,9 @@ mod tests {
     fn test_build_summary_rows_deficit_matches_day_math() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end, 1500.0, 10.0, 300);
+        write_day_log(dir.path(), end, "1500.0", "10.0", 300);
 
-        let rows = build_summary_rows(dir.path(), end, 7, Some(2400)).unwrap();
+        let rows = build_summary_rows(dir.path(), end, 7, Some(Calories::from_u32(2400))).unwrap();
         assert_eq!(rows.len(), 1);
         // net = 1500 - 300 = 1200; tdee = 2400 + 300 = 2700; deficit = 1500
         assert_eq!(rows[0].deficit, Some(Decimal::from(1500)));
@@ -939,7 +954,7 @@ mod tests {
     fn test_build_summary_rows_days_zero_clamped() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end, 100.0, 10.0, 0);
+        write_day_log(dir.path(), end, "100.0", "10.0", 0);
         let rows = build_summary_rows(dir.path(), end, 0, None).unwrap();
         assert_eq!(rows.len(), 1);
     }
@@ -948,7 +963,7 @@ mod tests {
     fn test_build_summary_rows_days_overflow_errors() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end, 100.0, 10.0, 0);
+        write_day_log(dir.path(), end, "100.0", "10.0", 0);
         let result = build_summary_rows(dir.path(), end, u32::MAX, None);
         assert!(result.is_err());
     }
@@ -957,7 +972,7 @@ mod tests {
     fn test_build_summary_rows_ignores_non_date_files() {
         let dir = tempfile::TempDir::new().unwrap();
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
-        write_day_log(dir.path(), end - chrono::Days::new(1), 100.0, 10.0, 0);
+        write_day_log(dir.path(), end - chrono::Days::new(1), "100.0", "10.0", 0);
         std::fs::write(dir.path().join("README.toml"), "title = \"x\"\n").unwrap();
         let rows = build_summary_rows(dir.path(), end, 7, None).unwrap();
         assert_eq!(rows.len(), 1);
