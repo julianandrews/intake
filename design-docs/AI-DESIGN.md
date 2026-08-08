@@ -27,26 +27,9 @@ uses DuckDuckGo (no API key).
 
 ## Workspace structure
 
-```
-intake/
-├── Cargo.toml              # [workspace] members = ["crates/intake", "crates/intake-ai"]
-├── AI-DESIGN.md
-└── crates/
-    ├── intake-ai/          # the resolve pipeline (temporary name — see Overview)
-    │   ├── Cargo.toml      # deps: ureq, serde, serde_json, anyhow (tempfile in tests)
-    │   └── src/
-    │       ├── lib.rs
-    │       ├── settings.rs # AiSettings (serde Deserialize)
-    │       ├── search.rs   # web_search tool: DuckDuckGo backend
-    │       ├── llm.rs      # LlmBackend trait + ureq impl + agent/tool loop
-    │       ├── pipeline.rs # generate_valid<T>: fences → parse → retry
-    │       └── confirm.rs  # Confirmer trait only — impls live at the consumer
-    └── intake/             # the existing binary, moved as-is
-        ├── Cargo.toml      # + intake-ai path dep, similar
-        ├── src/            # main, config, display, food, log, edit.rs, confirm.rs (y/n + gated 3-way)
-        │   └── ai/         # feature-gated; ai_cmd + prompts/*.md (include_str!)
-        └── tests/fixtures/
-```
+`intake-ai` is a new workspace member under `crates/`; the existing
+`intake` package stays at the workspace root. Only the new lib lives
+under `crates/`.
 
 ## Crate boundaries
 
@@ -54,7 +37,7 @@ intake/
 or TOML:
 
 - `settings.rs` — `AiSettings` (api_key, model, base_url, max_retries,
-  max_tool_iterations, timeout_secs, search_timeout_secs, verbose — bool,
+  max_tool_calls, timeout_secs, search_timeout_secs, verbose — bool,
   default false; see "Verbose mode"), deriving `Deserialize`
   so consumers map their config onto it directly.
 - `search.rs` — the `web_search` tool. Given a query, fetches results from
@@ -71,8 +54,15 @@ or TOML:
   `reasoning_content` / `reasoning` fields when the provider emits them
   (DeepSeek, OpenRouter, etc.). Agent loop: the caller registers the
   tools it wants available (the lib ships `web_search`); registered tools
-  become function definitions; `tool_calls` are executed in-process and
-  results fed back; capped at `max_tool_iterations` (default 8).
+  become function definitions; a response is final iff `tool_calls` is
+  absent — while it is non-empty, all `tool_calls` in the response are
+  executed in-process (each execution, successful or failed, counts against
+  `max_tool_calls`, default 8) and the results fed back, one message per
+  call id. When the budget is exhausted, no further tool executes: a single
+  "tool call budget exhausted (max N) — produce your final answer with the
+  data you have" message is appended, the *next* model response is taken
+  unconditionally as the loop's last (even if it still names tools), and the
+  parse step runs; retries after that re-request without tools.
 - `pipeline.rs` — the orchestrator: the `Resolver` struct with `resolve<T>`
   (see "The resolve loop" below), with `generate_valid<T>` as its internal
   parse/retry step: strip markdown
@@ -91,7 +81,7 @@ or TOML:
 The lib takes text in and returns the validated `T`; prompt capture
 (`$EDITOR` etc.) and confirmation UX are consumer concerns.
 
-**Stays in `crates/intake`** — everything intake-specific:
+**Stays in `intake`** (the root package) — everything intake-specific:
 
 - clap surface: the reworked tree (bare, `log`, `day`, `summary`, `exercise`,
   `food` group, `completions`) plus the `ai` tree and shared flags; the
@@ -140,9 +130,14 @@ impl Resolver<'_> {
 ```
 
 1. Agent loop (`llm.rs`) until the model returns a final answer with no
-   `tool_calls`.
+   `tool_calls` — or the tool-call budget is exhausted: then one
+   budget-exhausted message is sent, the next response is taken
+   unconditionally as the loop's last, and parsing proceeds (see `llm.rs`).
 2. Fence-strip + `parse` — on failure, append the error to the conversation
    and re-request, up to `max_retries` (automatic; no human in this loop).
+   After tool-budget exhaustion these re-requests carry no tools — the
+   parse-error message notes that and asks for a final answer from the data
+   already gathered.
 3. On success → `present(&T)` → `confirm()`:
     - `Accept` → return the resolved `T`
     - `Reject` → `ResolveError::Rejected`
@@ -168,9 +163,14 @@ Consequences:
   confirmer cover retries, feedback, reject, and exhaustion without network.
 - `present` is skipped for `ConfirmAlways` (nothing renders under `--yes`);
   the post-write reprint is the only display in that mode.
-- Worst-case cost per resolve round: `max_retries × (max_tool_iterations + 1)`
-  ≈ 27 LLM calls with defaults (3 × 9), plus user-driven feedback rounds —
-  bounded per round; the user is the overall bound.
+- Worst-case cost per resolve round: `max_retries × (max_tool_calls + 2)`
+  ≈ 30 LLM calls with defaults (3 × 10) — the +2 is the budget-exhausted
+  round and the final answer — plus user-driven feedback rounds —
+  bounded per round; the user is the overall bound. This counts calls,
+  not tokens: each call re-sends the whole conversation, so token volume
+  grows with the number of rounds (worst case ~O(rounds²), in practice
+  low tens of thousands of tokens per attempt, since per-round growth is
+  bounded by the tool output caps and the fixed retry-error shape).
 
 ## Commands
 
@@ -315,17 +315,34 @@ servings = 2
 Semantics:
 
 - `row` indices are **1-based** and always refer to the original day log
-  exactly as numbered in the prompt; they never shift as ops apply.
-  Removals and replacements apply first;
-  additions append at the end.
+  exactly as numbered in the prompt; they never shift as ops apply. The
+  result is built from the original list: `remove` drops its target row;
+  `replace` rewrites its target row's content, keeping the row's original
+  position even if other rows were removed; `add-*` ops append at the end.
+  Ops on the same row conflict (validation error), so application order
+  between removes and replaces never matters.
 - Validation errors feed the retry loop just like parse failures: unknown
   `slug` (must exist in the foods dir — `food_lookup` results are the model's
   only source of slugs), `row` out of range, duplicate or conflicting ops on
   the same row, `add-adhoc` with missing or invalid macros.
+- `add-adhoc` macro fields are the same exact-decimal types as food files
+  (`Calories`/`Grams`): whole and fractional values are both valid, and
+  the model must not round fractional macros to whole numbers.
+- Arithmetic is checked like everywhere else in intake: per-serving
+  products, entry totals, and the applied day's totals all use checked
+  math. An overflow — e.g. an `add-food` whose `servings` makes a macro
+  product exceed the decimal range — is a validation error like any
+  other: the parse closure returns `Err(String)`, the retry loop
+  re-requests with a fix hint ("smaller `servings`, or an `add-adhoc` op
+  with explicit macros"), and retries exhausted → `Exhausted` with the
+  raw output. Overflow never panics and never leaks out of the closure
+  as an `Io` error — it is the model's fault, so it must be fixable
+  through the retry loop.
 - `exercise_calories` is preserved by construction — `apply_ops` copies it
   through and no op can touch it (an explicit `exercise` op is future work).
 - The `ai log` parse closure is: deserialize `DayLogOps` → validate →
-  `apply_ops` → new `DayLog`. The lib stays generic;
+  `apply_ops` → new `DayLog`, each step returning `Err(String)` for the
+  retry loop. The lib stays generic;
   `resolve<DayLog>` only sees the final applied day.
 
 ### The `food_lookup` tool
@@ -406,7 +423,7 @@ exposed to the model as a function definition (name, description,
 JSON-schema parameters) on the OpenAI-compatible API, executed on
 `tool_calls`, and fed back as a plain string. A failed or timed-out call
 returns a short error string to the model and counts against
-`max_tool_iterations`.
+`max_tool_calls` like a successful one.
 
 The `Tool` trait (in `intake-ai`):
 
@@ -443,8 +460,10 @@ collision for the model to manage; `web_search` covers ingredient
 nutrition.
 
 Budget math: batched lookups keep a 10-entry edit at 1-2 tool calls;
-`max_tool_iterations` (default 8) covers the typical session with room for
-occasional `web_search` calls.
+`max_tool_calls` (default 8) covers the typical session with room for
+occasional `web_search` calls. Exhaustion is not an error to the user: the
+loop sends one budget-exhausted message, takes the model's next response
+unconditionally, and proceeds to the parse step (see `llm.rs`).
 
 ## Shared flow (all three commands)
 
@@ -455,11 +474,14 @@ occasional `web_search` calls.
 2. Build messages: base prompt (command-specific template, config-overridable)
    → `Resolver` constructor; user prompt → `resolve`.
 3. Agent loop: model may call the registered tools (see "Tools");
-   results fed back; capped at `max_tool_iterations` (default 8).
+   results fed back; at most `max_tool_calls` (default 8) executions, then
+   one budget-exhausted message and the next response is taken
+   unconditionally.
 4. Strip ```toml code fences, parse into the target struct
    (`Food` / `DayLogOps` — ops are validated and applied, see "`ai log` ops").
 5. Retry loop: on parse/validation failure, append the error to the
-   conversation and re-request, up to `max_retries` (default 3). On exhaustion,
+   conversation and re-request, up to `max_retries` (default 3) — without
+   tools after budget exhaustion. On exhaustion,
    print the last error and the model's raw output so the user can fix it
    manually. Errors appended to the conversation follow a fixed shape: quote
    the offending op, state the rule, and give the fix (valid slugs capped at
@@ -477,7 +499,8 @@ occasional `web_search` calls.
    continued. `--yes` skips proposal rendering and confirmation entirely —
    the write happens and the post-write reprint (step 8) is the only display.
    With `--yes` and an empty op list, print "no changes" and exit.
-8. Write the change (or nothing on reject/abort). Before writing, intake
+8. Write the change (or nothing on reject/abort — both exit 0; see "Exit
+   codes"). Before writing, intake
    **reloads the target** (day log or food file); if it differs from the
    snapshot the context was built from, abort with "changed since this
    proposal was generated — re-run" instead of overwriting. For `ai food
@@ -490,6 +513,13 @@ occasional `web_search` calls.
 Steps 2–7 run inside the lib's `resolve` loop (see "The resolve loop"); intake
 builds the system prompt, constructs a `Resolver` with `ctx` + its confirmer,
 passes the user prompt to `resolve` per call, and performs the write.
+
+Non-TTY invocation: confirmation reads stdin, so piped answers work —
+`echo y | intake ai log` accepts "y" (POSIX `rm -i` behavior). Closed
+stdin is `Cancelled`: exit 0 with a stderr hint (see "Exit codes"); the
+`[f]eedback` sub-prompt follows the same rule. Prompt capture never reads
+stdin — without `[prompt...]`/`--prompt` and without a usable editor it
+errors, it does not block.
 
 ## Verbose mode
 
@@ -521,8 +551,41 @@ additions — entries cannot vanish accidentally. `exercise_calories` is
 likewise safe by construction: `apply_ops` copies it through and no op can
 change it.
 
+All day-log writes are full-file rewrites (`append_entry`,
+`set_exercise_calories`, and the new `log::write_day`), so a rewrite can
+only preserve the fields the binary knows. `DayLog` and `LogEntry`
+therefore carry `#[serde(deny_unknown_fields)]`: a day file containing a
+field this binary doesn't know fails loudly at load instead of being
+silently dropped on write. Adding a log-field in the future is thus a
+breaking schema change for older binaries — intentional, since an old
+binary must never silently delete data it cannot read; the upgrade path is
+a migration at the point the field lands. `Food` / `Ingredient` get the
+same treatment for the `ai food edit` overwrite path.
+
 `similar` is an intake-crate dependency: proposal rendering is intake's job
 (the lib's `present` callback), so the lib stays generic.
+
+## Exit codes
+
+The conventional contract — 0 = "ran as the user intended", non-zero =
+failure — with the POSIX `rm(1p)` rule applied to confirmation: exit
+status 0 covers work **cancelled by a non-affirmative response to a
+prompt**; an error is >0.
+
+| Code | Meaning |
+|---|---|
+| 0 | Success — the change was written, **or** the user deliberately declined (`Reject`) / cancelled (`Cancelled`); a "Nothing written" line is printed so exit 0 is never a silent no-op |
+| 1 | Failure — `ResolveError::Exhausted` / `Io`, config and file errors (the existing anyhow `?` flow) |
+| 2 | Usage error — clap's default on argument-parse errors |
+| 130 | Ctrl-C — 128+SIGINT, delivered by the OS; no signal handler is installed, so the default death is kept |
+
+`Cancelled` is user-initiated and not an error: EOF at the confirm prompt
+(non-interactive stdin without `--yes`) and aborted editor capture both
+exit 0, the former with a stderr note ("no confirmation received —
+nothing written; use `--yes` to skip confirmation") so a script piping
+empty stdin isn't silently no-op'd. `--yes` is the script's guarantee,
+like `rm -f`. The same rule applies to the plain y/n confirm path
+(`food new` / `food edit`), so both confirmers behave identically.
 
 ## Configuration
 
@@ -532,7 +595,7 @@ api_key = "..."          # or INTAKE_AI_API_KEY / --api-key
 model = "gpt-4o-mini"    # or INTAKE_AI_MODEL / --model
 base_url = "..."         # optional; default api.openai.com
 max_retries = 3
-max_tool_iterations = 8
+max_tool_calls = 8           # tool executions per resolve attempt; exhaustion → one "answer now" round
 timeout_secs = 60            # per LLM API call
 search_timeout_secs = 15     # per web_search backend fetch
 verbose = false          # or --verbose; per-round LLM trace on stderr
@@ -561,6 +624,27 @@ food_edit_prompt = "..."
 - Known limitation: web search requires a model/provider that supports
   function/tool calling. If the endpoint rejects `tools`, error clearly and
   suggest a different model.
+
+## Privacy
+
+Running an `ai` command sends data to the configured LLM provider: the
+user's prompt; the command's context (`ai log`: the edited day's entries,
+the 7-day history window, totals and targets; `ai food edit`: the target
+food's TOML; `ai food new`: the two sample foods); the queries the model
+makes via `web_search`; and the generated proposal. `food_lookup` queries
+are also visible to the provider (they are part of the conversation),
+though the results never leave the machine. `web_search` additionally
+sends its query from intake's process straight to DuckDuckGo — the
+provider is not involved in that hop. Nothing is sent unless an `ai`
+command is run, and nothing is stored beyond intake's existing local
+files: the conversation lives in memory only, for the duration of the
+resolve.
+
+The API key travels only in the `Authorization` header to the configured
+`base_url`; it is never logged or printed. The design is
+provider-neutral, so users who want the data to never leave their
+machine can point `base_url` at a local endpoint (Ollama, vLLM, etc.) —
+the same flow then runs fully offline.
 
 ## Feature gating
 
@@ -605,7 +689,7 @@ ai = ["dep:intake-ai"]
 
 ## Prompt templates
 
-Templates are `.md` files under `crates/intake/src/ai/prompts/` (`log.md`,
+Templates are `.md` files under `src/ai/prompts/` (`log.md`,
 `food_new.md`, `food_edit.md`), embedded at compile time via `include_str!`
 (built into the binary). The `[ai]` config keys (`log_prompt`,
 `food_new_prompt`, `food_edit_prompt`) override only the **static text** —
@@ -651,10 +735,10 @@ Per-command content:
 
 ## Implementation steps
 
-1. **Workspace restructure** — root `Cargo.toml` → `[workspace]` with
-   `resolver = "2"`, `members = ["crates/intake", "crates/intake-ai"]`; move
-   the existing package to `crates/intake/` (src, tests/fixtures, Cargo.toml)
-   with no code changes. Verify all four quality gates stay green at the root.
+1. **Workspace setup** — root `Cargo.toml` → `[workspace]` with
+   `resolver = "2"`, `members = [".", "crates/intake-ai"]`; the existing
+   package stays at the root (no moves). Verify all four quality gates stay
+   green at the root.
 2. **Non-AI CLI rework** — the surface rework (`log` write + `day` read +
    bare `intake`, `adhoc` merged into `log` flags, shared `--date`,
    `day`'s `-d`); the `food` group with `list`/`show`; plain `food new <slug>`/
@@ -662,7 +746,8 @@ Per-command content:
    check, editor capture, schema-skeleton prefill,
    validation, y/n confirm helper, confirm); `log::write_day`.
    No `intake-ai` dependency; all four gates green.
-3. **`crates/intake-ai`** — settings, search, llm, pipeline, confirm (trait
+3. **`crates/intake-ai`** — the new workspace member: settings, search, llm,
+   pipeline, confirm (trait
    only) modules with unit tests. Text in, validated `T` out; no editor, no
    terminal confirmer impl.
 4. **AI integration** — `[features] default = ["ai"]`,
@@ -680,7 +765,13 @@ Per-command content:
 
 - `intake-ai` unit: fence stripping; retry loop via scripted fake backend
   (bad → good TOML in sequence); search result parsing from canned HTML;
-  tool-call execution roundtrip; confirmation decision mapping (a scripted
+  tool-call execution roundtrip; multiple `tool_calls` in one response each
+  count against the budget and all results feed back; tool budget
+  exhaustion — scripted backend emitting tool calls past `max_tool_calls`
+  sees exactly one budget-exhausted message, the next response is taken
+  unconditionally (even when it still names tools), and parsing proceeds;
+  failed/timed-out calls count against the budget; confirmation decision
+  mapping (a scripted
   `Confirmer` impl driving the loop); timeout aborts with a clear error
   (hang-mode fake backend + tiny timeout, no slow tests); transport retry
   (scripted 429/5xx then success, no slow tests); verbose mode —
@@ -689,10 +780,13 @@ Per-command content:
 - `intake` unit: prompt capture via a mocked `$EDITOR` (spawns, unchanged
   file aborts, no `$EDITOR` set errors); the y/n confirm helper (always
   built); the three-option confirmer decision mapping (in the `ai` build);
+  exit-code mapping — reject and EOF-at-prompt cancel exit 0, `Exhausted`
+  and `Io` exit 1 (both confirmers);
   plain `food new`/`food edit` save-failure loop (error comments + last
   content preserved, unchanged aborts); `--yes` skips proposal rendering;
   `[ai]` config parsing and env/flag resolution;
-  `log::write_day` roundtrip; clap parsing of the reworked surface — bare
+  `log::write_day` roundtrip; day log with an unknown field errors at load
+  (deny-unknown-field guard); clap parsing of the reworked surface — bare
   `intake` shows today, `log` write vs. `day` read, `log` food-vs-adhoc
   disambiguation (macro flags always win — a slug-matching name plus a macro
   flag logs an adhoc entry; a non-slug name with no macros errors), the
@@ -702,7 +796,8 @@ Per-command content:
   `ai` tree and shared flags, `--prompt` vs. `[prompt...]` conflict;
   `apply_ops` (add-food / add-adhoc / remove / replace; row out of
   range; duplicate and conflicting ops; additions append, replacements keep
-  position); `food_lookup` matching (normalized exact match on slug and
+  position; overflow — huge `servings` returns a retryable `Err(String)`,
+  never a panic or `Io`); `food_lookup` matching (normalized exact match on slug and
   title; containment fallback; top-N ordering; batch mode — multiple
   queries in one call; empty result for unknown foods and for an empty
   foods dir); context assembly (totals line, history window anchored to the
@@ -719,8 +814,12 @@ Per-command content:
   its key schema field names, e.g. `protein_g` / `add-adhoc` — fails if serde
   structs change without prompt updates).
 - Quality gates (workspace root): `cargo test`, `cargo clippy -- -D warnings`,
-  `cargo fmt --check`, `cargo build`, plus `cargo test --no-default-features`
-  and `cargo build --no-default-features` for the no-AI configuration.
+  `cargo fmt --check`, `cargo build`, plus `cargo test -p intake
+  --no-default-features` and `cargo build -p intake --no-default-features`
+  for the no-AI configuration — scoped to the `intake` package: a
+  root-level `--no-default-features` run also compiles `intake-ai`,
+  whose dependencies the no-AI build is supposed to avoid. `intake-ai`
+  keeps its coverage through the plain root gates.
 
 ## Docs
 
@@ -769,3 +868,4 @@ layout.
   by `apply_ops`, unchangeable).
 - Renaming `intake-ai` (e.g. `resolve-ai`, `llm-resolve`) and publishing it to
   crates.io as part of the split-off.
+
