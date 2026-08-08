@@ -1,8 +1,7 @@
-use crate::amount::{Calories, Grams, Servings};
+use crate::amount::{Calories, Grams, Macros, Servings};
 use crate::cli::{Cli, Commands};
 use crate::completion;
 use crate::config::Config;
-use crate::food::Macros;
 use anyhow::{Context, Result};
 use chrono::Local;
 use clap::CommandFactory;

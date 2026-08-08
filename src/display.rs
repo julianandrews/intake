@@ -1,5 +1,6 @@
-use crate::amount::{round_away, Calories};
+use crate::amount::{round_away, Calories, Macros};
 use crate::config::{Column, ColumnTarget};
+use crate::food::Ingredient;
 use anyhow::{anyhow, Result};
 use chrono::{NaiveTime, Timelike};
 use std::fmt::Write;
@@ -251,42 +252,8 @@ macro_rules! impl_column_value {
         }
     };
 }
-pub(crate) use impl_column_value;
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DayTotals {
-    pub calories: Decimal,
-    pub protein: Decimal,
-    pub fiber: Decimal,
-    pub fat: Decimal,
-    pub carbs: Decimal,
-    pub alcohol: Decimal,
-}
-
-impl_column_value!(DayTotals, calories, protein, fiber, fat, carbs, alcohol);
-
-impl DayTotals {
-    fn slot_mut(&mut self, column: Column) -> &mut Decimal {
-        match column {
-            Column::Calories => &mut self.calories,
-            Column::Protein => &mut self.protein,
-            Column::Fiber => &mut self.fiber,
-            Column::Fat => &mut self.fat,
-            Column::Carbs => &mut self.carbs,
-            Column::Alcohol => &mut self.alcohol,
-        }
-    }
-
-    /// Accumulate one row's macro values; `None` on overflow.
-    pub fn checked_add_row(&mut self, row: &impl ColumnValue) -> Option<()> {
-        for column in Column::all() {
-            let slot = self.slot_mut(column);
-            *slot = slot.checked_add(row.column_value(column))?;
-        }
-        Some(())
-    }
-}
-
+impl_column_value!(Ingredient, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g);
+impl_column_value!(Macros, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g);
 pub fn column_color(
     now: Option<NaiveTime>,
     value: Decimal,

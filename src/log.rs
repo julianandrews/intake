@@ -1,5 +1,4 @@
-use crate::amount::{Calories, Grams, Servings};
-use crate::display::DayTotals;
+use crate::amount::{Calories, Grams, Macros, Servings};
 use anyhow::{anyhow, Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -20,10 +19,9 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    pub fn total_calories(&self) -> Result<Decimal> {
+    pub fn total_calories(&self) -> Result<Calories> {
         self.calories
             .checked_mul(self.servings.to_decimal())
-            .map(Decimal::from)
             .ok_or_else(|| anyhow!("calorie total overflow for '{}'", self.title))
     }
 
@@ -58,14 +56,14 @@ impl LogEntry {
     }
 
     /// All macro totals scaled by servings; errors on overflow.
-    pub fn totals(&self) -> Result<DayTotals> {
-        Ok(DayTotals {
+    pub fn totals(&self) -> Result<Macros> {
+        Ok(Macros {
             calories: self.total_calories()?,
-            protein: self.total_protein()?.into(),
-            fiber: self.total_fiber()?.into(),
-            fat: self.total_fat()?.into(),
-            carbs: self.total_carbs()?.into(),
-            alcohol: self.total_alcohol()?.into(),
+            protein_g: self.total_protein()?,
+            fiber_g: self.total_fiber()?,
+            fat_g: self.total_fat()?,
+            carbs_g: self.total_carbs()?,
+            alcohol_g: self.total_alcohol()?,
         })
     }
 }
@@ -306,7 +304,7 @@ mod tests {
     #[test]
     fn test_totals_scale_by_servings() {
         let e = entry("test", "2.0", 100, "10.0", "5.0", "4.0", "20.0", "3.0");
-        assert_eq!(e.total_calories().unwrap(), Decimal::from(200));
+        assert_eq!(e.total_calories().unwrap(), Calories::from_u32(200));
         assert_eq!(e.total_protein().unwrap(), Grams::from_str("20.0").unwrap());
         assert_eq!(e.total_fiber().unwrap(), Grams::from_str("10.0").unwrap());
         assert_eq!(e.total_fat().unwrap(), Grams::from_str("8.0").unwrap());
@@ -317,7 +315,7 @@ mod tests {
     #[test]
     fn test_totals_fractional_servings() {
         let e = entry("test", "1.5", 100, "10.0", "0.0", "0.0", "0.0", "0.0");
-        assert_eq!(e.total_calories().unwrap(), Decimal::from(150));
+        assert_eq!(e.total_calories().unwrap(), Calories::from_u32(150));
         assert_eq!(e.total_protein().unwrap(), Grams::from_str("15.0").unwrap());
     }
 
@@ -327,7 +325,7 @@ mod tests {
         e.calories = Calories::from_str("33.333").unwrap();
         assert_eq!(
             e.total_calories().unwrap(),
-            Decimal::from_str("99.999").unwrap()
+            Calories::from_str("99.999").unwrap()
         );
     }
 

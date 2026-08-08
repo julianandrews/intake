@@ -24,17 +24,6 @@ pub enum Column {
 }
 
 impl Column {
-    pub fn all() -> [Column; 6] {
-        [
-            Column::Calories,
-            Column::Protein,
-            Column::Fiber,
-            Column::Fat,
-            Column::Carbs,
-            Column::Alcohol,
-        ]
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Column::Calories => "Calories",

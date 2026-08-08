@@ -1,4 +1,4 @@
-use crate::amount::{calories_sum, grams_sum, Calories, Grams};
+use crate::amount::{calories_sum, grams_sum, Calories, Grams, Macros};
 use anyhow::{anyhow, Context, Result};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -18,10 +18,6 @@ pub struct Ingredient {
     pub alcohol_g: Grams,
 }
 
-crate::display::impl_column_value!(
-    Ingredient, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g
-);
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct Food {
     pub title: String,
@@ -30,18 +26,6 @@ pub struct Food {
     #[serde(default)]
     pub notes: String,
 }
-
-#[derive(Debug, Clone)]
-pub struct Macros {
-    pub calories: Calories,
-    pub protein_g: Grams,
-    pub fiber_g: Grams,
-    pub fat_g: Grams,
-    pub carbs_g: Grams,
-    pub alcohol_g: Grams,
-}
-
-crate::display::impl_column_value!(Macros, calories, protein_g, fiber_g, fat_g, carbs_g, alcohol_g);
 
 impl Food {
     pub fn totals(&self) -> Result<Macros> {

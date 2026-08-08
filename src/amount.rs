@@ -245,6 +245,41 @@ impl Calories {
     pub const ZERO: Calories = Calories(Decimal::ZERO);
 }
 
+/// The six macros: calories plus five masses in grams.
+#[derive(Debug, Clone, Copy)]
+pub struct Macros {
+    pub calories: Calories,
+    pub protein_g: Grams,
+    pub fiber_g: Grams,
+    pub fat_g: Grams,
+    pub carbs_g: Grams,
+    pub alcohol_g: Grams,
+}
+
+impl Macros {
+    /// Zero macros.
+    pub const ZERO: Macros = Macros {
+        calories: Calories::ZERO,
+        protein_g: Grams::ZERO,
+        fiber_g: Grams::ZERO,
+        fat_g: Grams::ZERO,
+        carbs_g: Grams::ZERO,
+        alcohol_g: Grams::ZERO,
+    };
+
+    /// Add another macros set element-wise; `None` on overflow.
+    pub fn checked_add(&self, other: &Macros) -> Option<Macros> {
+        Some(Macros {
+            calories: self.calories.checked_add(other.calories)?,
+            protein_g: self.protein_g.checked_add(other.protein_g)?,
+            fiber_g: self.fiber_g.checked_add(other.fiber_g)?,
+            fat_g: self.fat_g.checked_add(other.fat_g)?,
+            carbs_g: self.carbs_g.checked_add(other.carbs_g)?,
+            alcohol_g: self.alcohol_g.checked_add(other.alcohol_g)?,
+        })
+    }
+}
+
 /// Sum grams with overflow check; `None` if any partial sum overflows.
 pub(crate) fn grams_sum(iter: impl IntoIterator<Item = Grams>) -> Option<Grams> {
     iter.into_iter()
@@ -271,6 +306,36 @@ mod tests {
 
     fn calories(s: &str) -> Calories {
         Calories::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn test_macros_checked_add() {
+        let a = Macros {
+            calories: calories("100.0"),
+            protein_g: g("10.0"),
+            fiber_g: g("5.0"),
+            fat_g: g("4.0"),
+            carbs_g: g("30.0"),
+            alcohol_g: g("2.0"),
+        };
+        let b = Macros::ZERO;
+        let sum = a.checked_add(&b).unwrap();
+        assert_eq!(sum.calories, calories("100.0"));
+        assert_eq!(sum.protein_g, g("10.0"));
+        assert_eq!(a.checked_add(&a).unwrap().fat_g, g("8.0"));
+    }
+
+    #[test]
+    fn test_macros_checked_add_overflow() {
+        let a = Macros {
+            calories: Calories::from_decimal(Decimal::MAX).unwrap(),
+            protein_g: Grams::ZERO,
+            fiber_g: Grams::ZERO,
+            fat_g: Grams::ZERO,
+            carbs_g: Grams::ZERO,
+            alcohol_g: Grams::ZERO,
+        };
+        assert!(a.checked_add(&a).is_none());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::amount::{Calories, Servings};
+use crate::amount::{Calories, Macros, Servings};
 use crate::config::{Column, Config};
 use crate::display;
 use crate::display::{ColumnValue, Table};
@@ -29,7 +29,7 @@ pub(crate) fn cmd_adhoc(
     log_dir: &Path,
     name: &str,
     servings: Servings,
-    macros: &food::Macros,
+    macros: &Macros,
 ) -> Result<()> {
     let entry = log::LogEntry {
         title: name.to_string(),
@@ -110,7 +110,7 @@ pub(crate) fn cmd_log(
 
             let rows = build_rows(&day_log.entries)?;
 
-            let mut totals = display::DayTotals::default();
+            let mut totals = Macros::ZERO;
             let mut total_servings = Decimal::ZERO;
 
             for row in &rows {
@@ -122,8 +122,8 @@ pub(crate) fn cmd_log(
                 }
                 table.add_row(cells);
 
-                totals
-                    .checked_add_row(row)
+                totals = totals
+                    .checked_add(&row.macros)
                     .context("day macro total overflow")?;
                 total_servings = total_servings
                     .checked_add(row.servings.to_decimal())
@@ -131,7 +131,7 @@ pub(crate) fn cmd_log(
             }
 
             let (net_cal, deficit) = log::day_net_and_deficit(
-                totals.calories,
+                totals.calories.to_decimal(),
                 day_log.exercise_calories,
                 config.maintenance_calories,
             )?;
@@ -206,7 +206,7 @@ pub(crate) fn cmd_log(
 struct DisplayRow {
     title: String,
     servings: Servings,
-    macros: display::DayTotals,
+    macros: Macros,
 }
 
 impl ColumnValue for DisplayRow {
@@ -274,7 +274,7 @@ mod tests {
         let mut e = entry("coffee", "2.0");
         e.calories = Calories::from_u32(24);
         let rows = build_rows(&[e]).unwrap();
-        assert_eq!(rows[0].macros.calories, Decimal::from(48));
+        assert_eq!(rows[0].macros.calories, Calories::from_u32(48));
     }
 
     #[test]
@@ -284,14 +284,8 @@ mod tests {
         e.carbs_g = Grams::from_str("15.0").unwrap();
         e.alcohol_g = Grams::from_str("2.0").unwrap();
         let rows = build_rows(&[e]).unwrap();
-        assert_eq!(rows[0].macros.fat, Grams::from_str("10.0").unwrap().into());
-        assert_eq!(
-            rows[0].macros.carbs,
-            Grams::from_str("30.0").unwrap().into()
-        );
-        assert_eq!(
-            rows[0].macros.alcohol,
-            Grams::from_str("4.0").unwrap().into()
-        );
+        assert_eq!(rows[0].macros.fat_g, Grams::from_str("10.0").unwrap());
+        assert_eq!(rows[0].macros.carbs_g, Grams::from_str("30.0").unwrap());
+        assert_eq!(rows[0].macros.alcohol_g, Grams::from_str("4.0").unwrap());
     }
 }

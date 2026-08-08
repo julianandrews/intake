@@ -1,4 +1,4 @@
-use crate::amount::Calories;
+use crate::amount::{Calories, Macros};
 use crate::config::{Column, Config};
 use crate::display;
 use crate::display::{ColumnValue, Table};
@@ -10,7 +10,7 @@ use std::path::Path;
 
 struct SummaryRow {
     date: chrono::NaiveDate,
-    macros: display::DayTotals,
+    macros: Macros,
     exercise_calories: Calories,
     deficit: Option<Decimal>,
 }
@@ -46,15 +46,15 @@ fn build_summary_rows(
     let mut rows = Vec::with_capacity(dates.len());
     for date in dates {
         if let Some(day_log) = log::load_day(log_dir, date)? {
-            let mut macros = display::DayTotals::default();
+            let mut macros = Macros::ZERO;
             for entry in &day_log.entries {
-                macros
-                    .checked_add_row(&entry.totals()?)
+                macros = macros
+                    .checked_add(&entry.totals()?)
                     .context("day macro total overflow")?;
             }
 
             let (_, deficit) = log::day_net_and_deficit(
-                macros.calories,
+                macros.calories.to_decimal(),
                 day_log.exercise_calories,
                 maintenance_calories,
             )?;
@@ -136,10 +136,10 @@ pub(crate) fn cmd_summary(
     }
 
     let count = Decimal::from(rows.len());
-    let mut totals = display::DayTotals::default();
+    let mut totals = Macros::ZERO;
     for row in &rows {
-        totals
-            .checked_add_row(row)
+        totals = totals
+            .checked_add(&row.macros)
             .context("period macro total overflow")?;
     }
     let total_exercise: Decimal = rows.iter().try_fold(Decimal::ZERO, |acc, r| {
