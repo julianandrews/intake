@@ -1,5 +1,4 @@
 use crate::amount::Calories;
-use crate::display::{ColumnTarget, DayTargets};
 use anyhow::{bail, Context, Result};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -44,6 +43,35 @@ impl Column {
             Column::Fat => "Fat(g)",
             Column::Carbs => "Carbs(g)",
             Column::Alcohol => "Alcohol(g)",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ColumnTarget {
+    pub min: Option<Decimal>,
+    pub max: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DayTargets {
+    pub calories: ColumnTarget,
+    pub protein: ColumnTarget,
+    pub fiber: ColumnTarget,
+    pub fat: ColumnTarget,
+    pub carbs: ColumnTarget,
+    pub alcohol: ColumnTarget,
+}
+
+impl DayTargets {
+    pub fn for_column(&self, column: Column) -> ColumnTarget {
+        match column {
+            Column::Calories => self.calories,
+            Column::Protein => self.protein,
+            Column::Fiber => self.fiber,
+            Column::Fat => self.fat,
+            Column::Carbs => self.carbs,
+            Column::Alcohol => self.alcohol,
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::amount::{round_away, Calories};
-use crate::config::Column;
+use crate::config::{Column, ColumnTarget};
 use anyhow::{anyhow, Result};
 use chrono::{NaiveTime, Timelike};
 use std::fmt::Write;
@@ -231,12 +231,6 @@ pub fn wrap_color(value: &str, color: Option<&str>) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct ColumnTarget {
-    pub min: Option<Decimal>,
-    pub max: Option<Decimal>,
-}
-
 pub trait ColumnValue {
     fn column_value(&self, column: Column) -> Decimal;
 }
@@ -293,29 +287,6 @@ impl DayTotals {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DayTargets {
-    pub calories: ColumnTarget,
-    pub protein: ColumnTarget,
-    pub fiber: ColumnTarget,
-    pub fat: ColumnTarget,
-    pub carbs: ColumnTarget,
-    pub alcohol: ColumnTarget,
-}
-
-impl DayTargets {
-    pub fn for_column(&self, column: Column) -> ColumnTarget {
-        match column {
-            Column::Calories => self.calories,
-            Column::Protein => self.protein,
-            Column::Fiber => self.fiber,
-            Column::Fat => self.fat,
-            Column::Carbs => self.carbs,
-            Column::Alcohol => self.alcohol,
-        }
-    }
-}
-
 pub fn column_color(
     now: Option<NaiveTime>,
     value: Decimal,
@@ -355,6 +326,14 @@ pub fn food_cell(column: Column, value: Decimal) -> String {
     match column {
         Column::Calories => rescale(round_away(value, 0), 0).to_string(),
         _ => format!("{}g", rescale(round_away(value, 1), 1)),
+    }
+}
+
+pub fn servings_cell(servings: Decimal) -> String {
+    if servings.fract().is_zero() {
+        servings.round_dp(0).to_string()
+    } else {
+        round_away(servings, 1).to_string()
     }
 }
 
@@ -407,6 +386,7 @@ pub fn render_day_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DayTargets;
     use std::str::FromStr;
 
     #[test]
@@ -701,6 +681,14 @@ mod tests {
             food_cell(Column::Carbs, Decimal::from_str("30.25").unwrap()),
             "30.3g"
         );
+    }
+
+    #[test]
+    fn test_servings_cell_formats() {
+        assert_eq!(servings_cell(Decimal::from(2)), "2");
+        assert_eq!(servings_cell(Decimal::from_str("2.0").unwrap()), "2");
+        assert_eq!(servings_cell(Decimal::from_str("1.5").unwrap()), "1.5");
+        assert_eq!(servings_cell(Decimal::from_str("1.25").unwrap()), "1.3");
     }
 
     #[test]

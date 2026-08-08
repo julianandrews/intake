@@ -80,7 +80,10 @@ fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
     log_dir.join(format!("{}.toml", date.format("%Y-%m-%d")))
 }
 
-pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result<()> {
+fn update_day<F>(log_dir: &Path, date: NaiveDate, mutate: F) -> Result<()>
+where
+    F: FnOnce(&mut DayLog),
+{
     let path = log_path(log_dir, date);
 
     let mut day_log: DayLog = if path.exists() {
@@ -95,13 +98,17 @@ pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result
         }
     };
 
-    day_log.entries.push(entry.clone());
+    mutate(&mut day_log);
 
     let content = toml::to_string(&day_log).context("failed to serialize log")?;
     fs::write(&path, &content)
         .with_context(|| format!("failed to write log: {}", path.display()))?;
 
     Ok(())
+}
+
+pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result<()> {
+    update_day(log_dir, date, |day| day.entries.push(entry.clone()))
 }
 
 pub fn list_log_dates(log_dir: &Path) -> Result<Vec<String>> {
@@ -137,27 +144,28 @@ pub fn load_day(log_dir: &Path, date: NaiveDate) -> Result<Option<DayLog>> {
 }
 
 pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: Calories) -> Result<()> {
-    let path = log_path(log_dir, date);
+    update_day(log_dir, date, |day| day.exercise_calories = calories)
+}
 
-    let mut day_log: DayLog = if path.exists() {
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read log: {}", path.display()))?;
-        toml::from_str(&content)
-            .with_context(|| format!("failed to parse log: {}", path.display()))?
-    } else {
-        DayLog {
-            entries: Vec::new(),
-            exercise_calories: Calories::ZERO,
-        }
-    };
-
-    day_log.exercise_calories = calories;
-
-    let content = toml::to_string(&day_log).context("failed to serialize log")?;
-    fs::write(&path, &content)
-        .with_context(|| format!("failed to write log: {}", path.display()))?;
-
-    Ok(())
+pub(crate) fn day_net_and_deficit(
+    calories: Decimal,
+    exercise_calories: Calories,
+    maintenance_calories: Option<Calories>,
+) -> Result<(Decimal, Option<Decimal>)> {
+    let exercise = exercise_calories.to_decimal();
+    let net_cal = calories
+        .checked_sub(exercise)
+        .context("net calorie total overflow")?;
+    let deficit = maintenance_calories
+        .map(|mc| {
+            let tdee = mc
+                .checked_add(exercise_calories)
+                .map(|t| t.to_decimal())
+                .context("TDEE overflow")?;
+            tdee.checked_sub(net_cal).context("deficit overflow")
+        })
+        .transpose()?;
+    Ok((net_cal, deficit))
 }
 
 #[cfg(test)]
