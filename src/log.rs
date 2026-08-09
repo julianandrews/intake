@@ -163,11 +163,9 @@ pub(crate) fn day_net_and_deficit(
         .context("net calorie total overflow")?;
     let deficit = maintenance_calories
         .map(|mc| {
-            let tdee = mc
-                .checked_add(exercise_calories)
-                .map(|t| t.to_decimal())
-                .context("TDEE overflow")?;
-            tdee.checked_sub(net_cal).context("deficit overflow")
+            mc.to_decimal()
+                .checked_sub(net_cal)
+                .context("deficit overflow")
         })
         .transpose()?;
     Ok((net_cal, deficit))

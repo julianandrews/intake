@@ -409,7 +409,7 @@ fn test_summary_deficit_with_config() {
     )
     .unwrap();
 
-    // food 1800, exercise 300 -> net 1500, tdee 2700, deficit 1200
+    // food 1800, exercise 300 -> net 1500, deficit = 2400 - 1500 = 900
     write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 300);
 
     let (stdout, success) = run_in(
@@ -427,7 +427,7 @@ fn test_summary_deficit_with_config() {
     );
     assert!(success);
     assert!(stdout.contains("Deficit"));
-    assert!(stdout.contains("1200")); // per-day deficit, total, and avg
+    assert!(stdout.contains("900")); // per-day deficit, total, and avg
     assert!(!stdout.contains("maintenance_calories"));
 }
 

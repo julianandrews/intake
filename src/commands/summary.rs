@@ -253,10 +253,16 @@ mod tests {
         let end = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
         write_day_log(dir.path(), end, "1500.0", "10.0", 300);
 
-        let rows = build_summary_rows(dir.path(), end, 7, Some(Calories::from_u32(2400))).unwrap();
+        let rows = build_summary_rows(
+            dir.path(),
+            end,
+            7,
+            Some(Calories::from_str("2400").unwrap()),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 1);
-        // net = 1500 - 300 = 1200; tdee = 2400 + 300 = 2700; deficit = 1500
-        assert_eq!(rows[0].deficit, Some(Decimal::from(1500)));
+        // net = 1500 - 300 = 1200; deficit = maintenance - net = 2400 - 1200 = 1200
+        assert_eq!(rows[0].deficit, Some(Decimal::from(1200)));
     }
 
     #[test]
