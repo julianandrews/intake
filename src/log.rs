@@ -85,6 +85,20 @@ where
 {
     let path = log_path(log_dir, date);
 
+    fs::create_dir_all(log_dir)
+        .with_context(|| format!("failed to create log directory: {}", log_dir.display()))?;
+
+    // Serialize day-log writers: the lock must cover the whole
+    // read-modify-write transaction so a concurrent writer sees the latest
+    // state. The directory inode is stable — never renamed or replaced,
+    // unlike the day file itself — so the lock stays correct across the
+    // atomic rename below. Released on drop; flock is also released by the
+    // kernel if the process dies mid-write, so a crash cannot wedge future
+    // writes.
+    let _dir_lock = fs::File::open(log_dir)
+        .with_context(|| format!("failed to open log directory: {}", log_dir.display()))?;
+    _dir_lock.lock().context("failed to lock log directory")?;
+
     let mut day_log: DayLog = if path.exists() {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read log: {}", path.display()))?;
@@ -100,8 +114,6 @@ where
     mutate(&mut day_log);
 
     let content = toml::to_string(&day_log).context("failed to serialize log")?;
-    fs::create_dir_all(log_dir)
-        .with_context(|| format!("failed to create log directory: {}", log_dir.display()))?;
     let mut tmp = tempfile::NamedTempFile::new_in(log_dir)
         .with_context(|| format!("failed to create temporary log in: {}", log_dir.display()))?;
     tmp.write_all(content.as_bytes())
@@ -196,6 +208,38 @@ mod tests {
             carbs_g: Grams::from_str(carbs).unwrap(),
             alcohol_g: Grams::from_str(alcohol).unwrap(),
         }
+    }
+
+    #[test]
+    fn test_update_day_waits_for_lock() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+
+        let dir_handle = std::fs::File::open(dir.path())?;
+        dir_handle.lock()?;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir_path = dir.path().to_path_buf();
+        let thread = std::thread::spawn(move || {
+            let result = append_entry(
+                &dir_path,
+                date,
+                &entry("coffee", "1.0", 12, "0.0", "0.0", "0.0", "0.0", "0.0"),
+            );
+            tx.send(result).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            rx.try_recv().is_err(),
+            "append_entry completed while the lock was held"
+        );
+
+        drop(dir_handle);
+
+        assert!(rx.recv().unwrap().is_ok());
+        thread.join().unwrap();
+        Ok(())
     }
 
     #[test]
