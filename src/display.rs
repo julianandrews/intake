@@ -118,6 +118,11 @@ impl Table {
     }
 
     pub fn add_row(&mut self, cells: Vec<String>) {
+        debug_assert_eq!(
+            cells.len(),
+            self.headers.len(),
+            "row must have exactly one cell per header"
+        );
         self.rows.push(cells);
     }
 
@@ -126,6 +131,11 @@ impl Table {
     }
 
     pub fn add_footer(&mut self, row: Vec<String>) {
+        debug_assert_eq!(
+            row.len(),
+            self.headers.len(),
+            "footer must have exactly one cell per header"
+        );
         self.footers.push(FooterRow {
             cells: row,
             style: FooterStyle::Alternating,
@@ -133,6 +143,11 @@ impl Table {
     }
 
     pub fn add_footer_custom(&mut self, row: Vec<String>) {
+        debug_assert_eq!(
+            row.len(),
+            self.headers.len(),
+            "footer must have exactly one cell per header"
+        );
         self.footers.push(FooterRow {
             cells: row,
             style: FooterStyle::Custom,
