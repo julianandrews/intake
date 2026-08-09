@@ -87,6 +87,9 @@ All macro fields (`protein_g`, `fiber_g`, `calories`, `fat_g`, `carbs_g`,
 `alcohol_g`) are required — a food with unrecorded macros fails loudly
 instead of silently counting as zero.
 
+`intake show <food>` reports parse errors, while `intake list` skips food
+files that fail to parse, printing a warning to stderr for each one.
+
 See `tests/fixtures/foods/` in the repo for examples.
 
 ## Adhoc Entries
