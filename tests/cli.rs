@@ -1582,7 +1582,7 @@ fn test_rm_removes_entry_with_confirmation() {
         "y\n",
     );
     assert!(rm_ok, "rm failed: {}", rm_out);
-    assert!(rm_out.contains("Removed entry 2 (Oatmeal, 1 serving(s), 418 kcal) from 2026-08-02"));
+    assert!(rm_out.contains("Removed entry 2 (Oatmeal, 1 serving, 418 kcal) from 2026-08-02"));
     let oatmeal_rows = rm_out
         .lines()
         .filter(|l| l.split_whitespace().nth(1) == Some("Oatmeal"))

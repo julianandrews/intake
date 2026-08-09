@@ -77,13 +77,23 @@ pub(crate) fn cmd_rm(
 /// calories column.
 fn entry_label(index: u32, entry: &log::LogEntry, date: chrono::NaiveDate) -> Result<String> {
     Ok(format!(
-        "entry {} ({}, {} serving(s), {} kcal) from {}",
+        "entry {} ({}, {} {}, {} kcal) from {}",
         index,
         entry.title,
         entry.servings,
+        servings_word(entry.servings),
         entry.total_calories()?,
         date
     ))
+}
+
+/// "serving" for exactly one, "servings" otherwise.
+fn servings_word(servings: Servings) -> &'static str {
+    if servings == Servings::ONE {
+        "serving"
+    } else {
+        "servings"
+    }
 }
 
 /// The user's `log` request: the food-or-adhoc decision is made before the
@@ -130,9 +140,14 @@ pub(crate) fn cmd_log(
 
         writeln!(
             writer,
-            "Added {} serving(s) of {} to {}",
-            servings, name, date
+            "Added {} {} of {} to {}",
+            servings,
+            servings_word(servings),
+            name,
+            date
         )?;
+        writeln!(writer)?;
+        cmd_day(writer, log_dir, date, config)?;
         return Ok(());
     }
 
@@ -168,8 +183,11 @@ pub(crate) fn cmd_log(
 
     writeln!(
         writer,
-        "Added {} servings of {} to {}",
-        servings, food.title, date
+        "Added {} {} of {} to {}",
+        servings,
+        servings_word(servings),
+        food.title,
+        date
     )?;
     writeln!(writer)?;
     cmd_day(writer, log_dir, date, config)?;
