@@ -207,25 +207,18 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    fn entry(
-        title: &str,
-        servings: &str,
-        calories: u32,
-        protein: &str,
-        fiber: &str,
-        fat: &str,
-        carbs: &str,
-        alcohol: &str,
-    ) -> LogEntry {
+    /// The six macro values in TOML order: calories, protein, fiber, fat,
+    /// carbs, alcohol.
+    fn entry(title: &str, servings: &str, macros: [&str; 6]) -> LogEntry {
         LogEntry {
             title: title.to_string(),
             servings: Servings::from_str(servings).unwrap(),
-            calories: Calories::from_str(&calories.to_string()).unwrap(),
-            protein_g: Grams::from_str(protein).unwrap(),
-            fiber_g: Grams::from_str(fiber).unwrap(),
-            fat_g: Grams::from_str(fat).unwrap(),
-            carbs_g: Grams::from_str(carbs).unwrap(),
-            alcohol_g: Grams::from_str(alcohol).unwrap(),
+            calories: Calories::from_str(macros[0]).unwrap(),
+            protein_g: Grams::from_str(macros[1]).unwrap(),
+            fiber_g: Grams::from_str(macros[2]).unwrap(),
+            fat_g: Grams::from_str(macros[3]).unwrap(),
+            carbs_g: Grams::from_str(macros[4]).unwrap(),
+            alcohol_g: Grams::from_str(macros[5]).unwrap(),
         }
     }
 
@@ -243,7 +236,7 @@ mod tests {
             let result = append_entry(
                 &dir_path,
                 date,
-                &entry("coffee", "1.0", 12, "0.0", "0.0", "0.0", "0.0", "0.0"),
+                &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
             );
             tx.send(result).unwrap();
         });
@@ -266,7 +259,11 @@ mod tests {
         let dir = tempfile::TempDir::new()?;
 
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
-        let e = entry("oatmeal", "1.5", 200, "15.0", "5.0", "2.0", "30.0", "0.0");
+        let e = entry(
+            "oatmeal",
+            "1.5",
+            ["200", "15.0", "5.0", "2.0", "30.0", "0.0"],
+        );
 
         append_entry(dir.path(), date, &e)?;
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
@@ -374,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_totals_scale_by_servings() {
-        let e = entry("test", "2.0", 100, "10.0", "5.0", "4.0", "20.0", "3.0");
+        let e = entry("test", "2.0", ["100", "10.0", "5.0", "4.0", "20.0", "3.0"]);
         assert_eq!(
             e.total_calories().unwrap(),
             Calories::from_str("200").unwrap()
@@ -388,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_totals_fractional_servings() {
-        let e = entry("test", "1.5", 100, "10.0", "0.0", "0.0", "0.0", "0.0");
+        let e = entry("test", "1.5", ["100", "10.0", "0.0", "0.0", "0.0", "0.0"]);
         assert_eq!(
             e.total_calories().unwrap(),
             Calories::from_str("150").unwrap()
@@ -398,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_totals_fractional_calories() {
-        let mut e = entry("test", "3.0", 0, "0.0", "0.0", "0.0", "0.0", "0.0");
+        let mut e = entry("test", "3.0", ["0", "0.0", "0.0", "0.0", "0.0", "0.0"]);
         e.calories = Calories::from_str("33.333").unwrap();
         assert_eq!(
             e.total_calories().unwrap(),
@@ -408,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_totals_overflow_errors() {
-        let mut e = entry("test", "1.0", 0, "0.0", "0.0", "0.0", "0.0", "0.0");
+        let mut e = entry("test", "1.0", ["0", "0.0", "0.0", "0.0", "0.0", "0.0"]);
         e.protein_g = Grams::from_decimal(Decimal::MAX).unwrap();
         e.servings = Servings::from_str("2").unwrap();
         assert!(e.total_protein().is_err());
@@ -423,13 +420,17 @@ mod tests {
         append_entry(
             dir.path(),
             date,
-            &entry("coffee", "2.0", 12, "0.0", "0.0", "0.0", "0.0", "0.0"),
+            &entry("coffee", "2.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
         )?;
 
         append_entry(
             dir.path(),
             date,
-            &entry("oatmeal", "1.0", 418, "22.0", "9.0", "6.0", "60.0", "0.0"),
+            &entry(
+                "oatmeal",
+                "1.0",
+                ["418", "22.0", "9.0", "6.0", "60.0", "0.0"],
+            ),
         )?;
 
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
@@ -461,12 +462,7 @@ mod tests {
         let e = entry(
             "Sour Cream - 60g",
             "1.0",
-            60,
-            "1.5",
-            "0.0",
-            "4.0",
-            "3.0",
-            "0.0",
+            ["60", "1.5", "0.0", "4.0", "3.0", "0.0"],
         );
 
         append_entry(dir.path(), date, &e)?;

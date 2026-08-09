@@ -1047,7 +1047,7 @@ fn test_food_new_writes_file_with_editor() {
     let foods_dir_tmp = tempfile::TempDir::new().unwrap();
     let log_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
+    let editor = write_editor_script(config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
 
     let (stdout, success) = run_in_env_stdin(
         &[
@@ -1076,7 +1076,7 @@ fn test_food_new_yes_flag_skips_confirmation() {
     let foods_dir_tmp = tempfile::TempDir::new().unwrap();
     let log_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
+    let editor = write_editor_script(config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
 
     let (stdout, success) = run_in_env(
         &[
@@ -1125,7 +1125,7 @@ fn test_food_new_unchanged_aborts() {
     let foods_dir_tmp = tempfile::TempDir::new().unwrap();
     let log_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let editor = write_editor_script(&config_dir.path(), "editor.sh", "#!/bin/sh\nexit 0\n");
+    let editor = write_editor_script(config_dir.path(), "editor.sh", "#!/bin/sh\nexit 0\n");
 
     let (stdout, success) = run_in_env(
         &[
@@ -1175,7 +1175,7 @@ fn test_food_new_invalid_then_valid_retries() {
     let config_dir = tempfile::TempDir::new().unwrap();
     let state = config_dir.path().join("state");
     let script = script_sequence(&state, "this is not valid toml\n", VALID_FOOD);
-    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script);
+    let editor = write_editor_script(config_dir.path(), "editor.sh", &script);
 
     let (stdout, success) = run_in_env_stdin(
         &[
@@ -1201,7 +1201,7 @@ fn test_food_new_reject_writes_nothing() {
     let foods_dir_tmp = tempfile::TempDir::new().unwrap();
     let log_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
+    let editor = write_editor_script(config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
 
     let (stdout, success) = run_in_env_stdin(
         &[
@@ -1227,7 +1227,7 @@ fn test_food_new_closed_stdin_cancels() {
     let foods_dir_tmp = tempfile::TempDir::new().unwrap();
     let log_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
+    let editor = write_editor_script(config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
 
     let (stdout, success) = run_in_env(
         &[
@@ -1252,7 +1252,7 @@ fn test_food_edit_roundtrip() {
     let foods_dir_tmp = temp_foods_with_fixture("coffee");
     let log_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(EDITED_FOOD));
+    let editor = write_editor_script(config_dir.path(), "editor.sh", &script_writes(EDITED_FOOD));
 
     let (stdout, success) = run_in_env_stdin(
         &[
@@ -1280,7 +1280,7 @@ fn test_food_edit_reject_keeps_file() {
     let foods_dir_tmp = temp_foods_with_fixture("coffee");
     let log_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(EDITED_FOOD));
+    let editor = write_editor_script(config_dir.path(), "editor.sh", &script_writes(EDITED_FOOD));
 
     let (stdout, success) = run_in_env_stdin(
         &[
