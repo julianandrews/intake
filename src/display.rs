@@ -4,6 +4,7 @@ use crate::food::Ingredient;
 use anyhow::{anyhow, Result};
 use chrono::{NaiveTime, Timelike};
 use std::fmt::Write;
+use unicode_width::UnicodeWidthChar;
 
 pub use rust_decimal::Decimal;
 pub const ANSI_RESET: &str = "\x1b[0m";
@@ -56,7 +57,7 @@ pub fn visible_width(s: &str) -> usize {
                 }
             }
         } else {
-            len += 1;
+            len += UnicodeWidthChar::width(c).unwrap_or(0);
         }
     }
     len
@@ -220,9 +221,9 @@ impl Table {
     }
 }
 
-fn day_proportion(now: &NaiveTime) -> Decimal {
+fn day_proportion(now: &NaiveTime) -> Option<Decimal> {
     let elapsed = now.hour() * 3600 + now.minute() * 60 + now.second();
-    Decimal::from(elapsed) / Decimal::from(86400)
+    Decimal::from(elapsed).checked_div(Decimal::from(86400))
 }
 
 pub fn wrap_color(value: &str, color: Option<&str>) -> String {
@@ -259,7 +260,10 @@ pub fn column_color(
     value: Decimal,
     target: &ColumnTarget,
 ) -> Option<&'static str> {
-    let dp = now.as_ref().map(day_proportion).unwrap_or(Decimal::ONE);
+    let dp = now
+        .as_ref()
+        .and_then(day_proportion)
+        .unwrap_or(Decimal::ONE);
 
     if let Some(max) = target.max {
         if value > max {
