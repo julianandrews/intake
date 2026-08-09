@@ -66,6 +66,7 @@ impl DayTargets {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub foods_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
@@ -343,6 +344,14 @@ mod tests {
     #[test]
     fn test_unknown_column_rejected() {
         assert!(toml::from_str::<Config>("show_columns = [\"bogus\"]\n").is_err());
+    }
+
+    #[test]
+    fn test_unknown_config_key_rejected() {
+        let err = toml::from_str::<Config>("max_calorys = 1800\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("max_calorys"), "got: {err}");
     }
 
     #[test]

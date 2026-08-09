@@ -41,8 +41,9 @@ Flags like `--foods-dir` and `--log-dir` are available on every command.
 `intake day --days-ago N` (or `-d N`) shows the log from N days ago, e.g.
 `intake day -d 1` for yesterday. `intake log <name> --date D` logs to day D
 instead of today. `intake summary` shows one row per logged day (unlogged
-days in the window are skipped) with period totals and per-day averages; the
-Deficit column appears when `maintenance_calories` is configured.
+days in the window are skipped) with period totals and per-day averages;
+the averages and totals are over the logged days only, not the full window
+length. The Deficit column appears when `maintenance_calories` is configured.
 
 `intake day` numbers its rows (the `#` column); `intake rm <n> --date D`
 removes that entry (default: today's log) after a confirmation prompt,

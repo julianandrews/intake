@@ -226,6 +226,12 @@ pub fn remove_food(foods_dir: &Path, name: &FoodName) -> Result<()> {
         bail!("food '{}' not found", name);
     }
     fs::remove_file(&path).with_context(|| format!("failed to remove food: {}", path.display()))?;
+    // Sync the directory so the unlink is durable, matching the sync before
+    // the atomic rename in write_food_impl and the day-log removal.
+    fs::File::open(foods_dir)
+        .with_context(|| format!("failed to open foods directory: {}", foods_dir.display()))?
+        .sync_all()
+        .with_context(|| format!("failed to sync foods directory: {}", foods_dir.display()))?;
     Ok(())
 }
 
