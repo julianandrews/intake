@@ -193,12 +193,7 @@ pub(crate) fn cmd_new_food(
             match confirm::confirm_yes_no(&format!("Write {}?", path.display()))? {
                 Some(true) => {}
                 Some(false) => return write_nothing(writer, "Nothing written"),
-                None => {
-                    eprintln!(
-                        "no confirmation received — nothing written; use `--yes` to skip confirmation"
-                    );
-                    return write_nothing(writer, "Nothing written");
-                }
+                None => return confirm::nothing_confirmed(writer, "written"),
             }
         }
 
@@ -246,12 +241,7 @@ pub(crate) fn cmd_edit_food(
             match confirm::confirm_yes_no(&format!("Overwrite {}?", path.display()))? {
                 Some(true) => {}
                 Some(false) => return write_nothing(writer, "Nothing written"),
-                None => {
-                    eprintln!(
-                        "no confirmation received — nothing written; use `--yes` to skip confirmation"
-                    );
-                    return write_nothing(writer, "Nothing written");
-                }
+                None => return confirm::nothing_confirmed(writer, "written"),
             }
         }
 
@@ -278,12 +268,7 @@ pub(crate) fn cmd_rm_food(
         match confirm::confirm_yes_no(&format!("Remove {}?", path.display()))? {
             Some(true) => {}
             Some(false) => return write_nothing(writer, "Nothing removed"),
-            None => {
-                eprintln!(
-                    "no confirmation received — nothing removed; use `--yes` to skip confirmation"
-                );
-                return write_nothing(writer, "Nothing removed");
-            }
+            None => return confirm::nothing_confirmed(writer, "removed"),
         }
     }
 

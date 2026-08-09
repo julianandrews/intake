@@ -97,6 +97,17 @@ pub(crate) enum Commands {
         /// Calories burned
         calories: Calories,
     },
+    /// Remove an entry from a day's log
+    Rm {
+        /// Entry number to remove (see the # column in `intake day`)
+        #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+        index: u32,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        date: LogDateArgs,
+    },
     /// Manage foods
     Food {
         #[command(subcommand)]
@@ -263,6 +274,35 @@ mod tests {
             }
             _ => panic!("expected Summary command"),
         }
+    }
+
+    #[test]
+    fn test_rm_parses_index_yes_and_date() {
+        let cli = Cli::try_parse_from(["intake", "rm", "2"]).unwrap();
+        match cli.command {
+            Some(Commands::Rm { index, yes, date }) => {
+                assert_eq!(index, 2);
+                assert!(!yes);
+                assert_eq!(date.date, None);
+            }
+            _ => panic!("expected Rm command"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["intake", "rm", "3", "--yes", "--date", "2026-08-01"]).unwrap();
+        match cli.command {
+            Some(Commands::Rm { index, yes, date }) => {
+                assert_eq!(index, 3);
+                assert!(yes);
+                assert_eq!(date.date, Some("2026-08-01".to_string()));
+            }
+            _ => panic!("expected Rm command"),
+        }
+    }
+
+    #[test]
+    fn test_rm_rejects_zero_index() {
+        assert!(Cli::try_parse_from(["intake", "rm", "0"]).is_err());
     }
 
     #[test]

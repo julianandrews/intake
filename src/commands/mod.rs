@@ -71,6 +71,14 @@ pub(crate) fn run(command: Option<Commands>, config: &Config) -> Result<()> {
         Some(Commands::Exercise { calories }) => {
             log::cmd_exercise(&mut stdout, &log_dir, calories)?;
         }
+        Some(Commands::Rm {
+            index,
+            yes,
+            date: date_args,
+        }) => {
+            let date = resolve_log_date(date_args.date)?;
+            log::cmd_rm(&mut stdout, &log_dir, date, index, yes, config)?;
+        }
         Some(Commands::Food { command }) => match command {
             FoodCommands::List => {
                 food::cmd_list(&mut stdout, &foods_dir, config)?;

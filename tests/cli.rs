@@ -105,6 +105,15 @@ fn write_day_log(
     std::fs::write(dir.join(format!("{date}.toml")), content).unwrap();
 }
 
+/// The table row whose Item cell (column 1) equals `title` (single-word
+/// titles only); panics if no such row exists.
+fn item_row<'a>(stdout: &'a str, title: &str) -> &'a str {
+    stdout
+        .lines()
+        .find(|l| l.split_whitespace().nth(1) == Some(title))
+        .unwrap_or_else(|| panic!("no row for {title:?} in:\n{stdout}"))
+}
+
 fn write_editor_script(config_dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = config_dir.join(name);
     std::fs::write(&path, body).unwrap();
@@ -814,18 +823,12 @@ fn test_day_total_row_does_not_sum_servings() {
     ]);
     assert!(success, "day failed: {}", stdout);
 
-    // per-row servings cells remain
-    let chili = stdout
-        .lines()
-        .find(|l| l.trim_start().starts_with("Chili"))
-        .expect("chili row present");
-    assert_eq!(chili.split_whitespace().nth(1), Some("2"), "row: {chili}");
-    let oatmeal = stdout
-        .lines()
-        .find(|l| l.trim_start().starts_with("Oatmeal"))
-        .expect("oatmeal row present");
+    // per-row servings cells remain (cell 0 is the entry number)
+    let chili = item_row(&stdout, "Chili");
+    assert_eq!(chili.split_whitespace().nth(2), Some("2"), "row: {chili}");
+    let oatmeal = item_row(&stdout, "Oatmeal");
     assert_eq!(
-        oatmeal.split_whitespace().nth(1),
+        oatmeal.split_whitespace().nth(2),
         Some("1"),
         "row: {oatmeal}"
     );
@@ -1491,4 +1494,308 @@ fn test_food_rm_leaves_log_entries_intact() {
     assert!(day_ok, "day failed: {}", day_out);
     assert!(day_out.contains("Coffee"));
     assert!(day_out.contains("24")); // 1 serving × 24 cal, from the removed food
+}
+
+#[test]
+fn test_day_shows_entry_numbers() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    std::fs::write(
+        dir.path().join("2026-08-02.toml"),
+        "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 100\nprotein_g = 10.0\nfiber_g = 4.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Chili\"\n\n[[entries]]\nservings = 1.0\ncalories = 50\nprotein_g = 5.0\nfiber_g = 2.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Oatmeal\"\n",
+    )
+    .unwrap();
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "day",
+        "2026-08-02",
+    ]);
+    assert!(success, "day failed: {}", stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.contains('#') && l.contains("Item")),
+        "header row missing: {stdout}"
+    );
+
+    let chili = item_row(&stdout, "Chili");
+    assert_eq!(chili.split_whitespace().nth(0), Some("1"), "row: {chili}");
+    let oatmeal = item_row(&stdout, "Oatmeal");
+    assert_eq!(
+        oatmeal.split_whitespace().nth(0),
+        Some("2"),
+        "row: {oatmeal}"
+    );
+}
+
+#[test]
+fn test_rm_removes_entry_with_confirmation() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let (log_out, log_ok) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "log",
+        "coffee",
+        "2",
+        "--date",
+        "2026-08-02",
+    ]);
+    assert!(log_ok, "log failed: {}", log_out);
+    let (log_out, log_ok) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "log",
+        "oatmeal",
+        "1",
+        "--date",
+        "2026-08-02",
+    ]);
+    assert!(log_ok, "log failed: {}", log_out);
+
+    let (rm_out, rm_ok) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "rm",
+            "2",
+            "--date",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+        &[],
+        "y\n",
+    );
+    assert!(rm_ok, "rm failed: {}", rm_out);
+    assert!(rm_out.contains("Removed entry 2 (Oatmeal, 1 serving(s), 418 kcal) from 2026-08-02"));
+    let oatmeal_rows = rm_out
+        .lines()
+        .filter(|l| l.split_whitespace().nth(1) == Some("Oatmeal"))
+        .count();
+    assert_eq!(
+        oatmeal_rows, 0,
+        "removed entry must not appear in the day table: {rm_out}"
+    );
+    assert!(rm_out.contains("Coffee"));
+}
+
+#[test]
+fn test_rm_yes_flag_skips_confirmation() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
+    std::fs::write(
+        dir.path().join("2026-08-02.toml"),
+        "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 1800\nprotein_g = 50.0\nfiber_g = 15.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Coffee\"\n\n[[entries]]\nservings = 1.0\ncalories = 100\nprotein_g = 10.0\nfiber_g = 4.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Chili\"\n",
+    )
+    .unwrap();
+
+    let (rm_out, rm_ok) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "rm",
+        "1",
+        "--date",
+        "2026-08-02",
+        "--yes",
+    ]);
+    assert!(rm_ok, "rm failed: {}", rm_out);
+    assert!(rm_out.contains("Removed entry 1"));
+
+    let (day_out, day_ok) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "day",
+        "2026-08-02",
+    ]);
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(!day_out.contains("Coffee"));
+    assert!(day_out.contains("Chili"));
+}
+
+#[test]
+fn test_rm_reject_keeps_entry() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
+
+    let (rm_out, rm_ok) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "rm",
+            "1",
+            "--date",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+        &[],
+        "n\n",
+    );
+    assert!(rm_ok, "reject should exit 0: {}", rm_out);
+    assert!(rm_out.contains("Nothing removed"));
+    assert!(!rm_out.contains("Removed entry"));
+
+    let (day_out, day_ok) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "day",
+        "2026-08-02",
+    ]);
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(day_out.contains("Coffee"));
+}
+
+#[test]
+fn test_rm_out_of_range_errors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
+
+    let (_, stderr, success) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "rm",
+            "5",
+            "--date",
+            "2026-08-02",
+            "--yes",
+        ],
+        tempfile::TempDir::new().unwrap().path(),
+        &[],
+    );
+    assert!(!success);
+    assert!(stderr.contains("entry 5 not found"));
+    assert!(stderr.contains("1 entry"));
+}
+
+#[test]
+fn test_rm_no_entries_errors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (_, stderr, success) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "rm",
+            "1",
+            "--date",
+            "2026-08-02",
+            "--yes",
+        ],
+        tempfile::TempDir::new().unwrap().path(),
+        &[],
+    );
+    assert!(!success);
+    assert!(stderr.contains("no entries for 2026-08-02"));
+}
+
+#[test]
+fn test_rm_last_entry_removes_day_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
+
+    let (rm_out, rm_ok) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "rm",
+        "1",
+        "--date",
+        "2026-08-02",
+        "--yes",
+    ]);
+    assert!(rm_ok, "rm failed: {}", rm_out);
+    assert!(rm_out.contains("Removed entry 1"));
+
+    assert!(!dir.path().join("2026-08-02.toml").exists());
+
+    let (day_out, day_ok) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "day",
+        "2026-08-02",
+    ]);
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(day_out.contains("No entries for 2026-08-02"));
+}
+
+#[test]
+fn test_rm_preserves_exercise() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 300);
+
+    let (rm_out, rm_ok) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "rm",
+        "1",
+        "--date",
+        "2026-08-02",
+        "--yes",
+    ]);
+    assert!(rm_ok, "rm failed: {}", rm_out);
+
+    assert!(dir.path().join("2026-08-02.toml").exists());
+
+    let (day_out, day_ok) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "day",
+        "2026-08-02",
+    ]);
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(!day_out.contains("Coffee"));
+    assert!(day_out.contains("Exercise"));
+    assert!(day_out.contains("300"));
 }

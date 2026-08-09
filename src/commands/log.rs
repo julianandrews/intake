@@ -1,9 +1,10 @@
 use crate::amount::{Calories, Macros, Servings};
 use crate::config::{Column, Config};
+use crate::confirm;
 use crate::display;
-use crate::display::{ColumnValue, Table};
+use crate::display::{Align, ColumnValue, Table};
 use crate::{food, log};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
 use rust_decimal::Decimal;
 use std::io::Write;
@@ -23,6 +24,66 @@ pub(crate) fn cmd_exercise(
         calories, date
     )?;
     Ok(())
+}
+
+/// Remove entry `index` (1-based, as shown in the `#` column of `intake day`)
+/// from the day log for `date`, then show the updated day.
+pub(crate) fn cmd_rm(
+    writer: &mut impl Write,
+    log_dir: &Path,
+    date: chrono::NaiveDate,
+    index: u32,
+    yes: bool,
+    config: &Config,
+) -> Result<()> {
+    let day_log =
+        log::load_day(log_dir, date)?.with_context(|| format!("no entries for {}", date))?;
+    if index as usize > day_log.entries.len() {
+        bail!(
+            "entry {} not found — day {} has {}",
+            index,
+            date,
+            log::entry_count_label(day_log.entries.len())
+        );
+    }
+
+    let entry = &day_log.entries[index as usize - 1];
+    let label = entry_label(index, entry, date)?;
+
+    if !yes {
+        match confirm::confirm_yes_no(&format!("Remove {}?", label))? {
+            Some(true) => {}
+            Some(false) => {
+                writeln!(writer, "Nothing removed")?;
+                return Ok(());
+            }
+            None => return confirm::nothing_confirmed(writer, "removed"),
+        }
+    }
+
+    // `remove_entry` revalidates `entry` against the day file under the lock:
+    // if the day changed since the confirmation read, the removal aborts
+    // instead of silently removing a different entry.
+    log::remove_entry(log_dir, date, index as usize, entry)?;
+    writeln!(writer, "Removed {}", label)?;
+    writeln!(writer)?;
+    cmd_day(writer, log_dir, date, config)?;
+
+    Ok(())
+}
+
+/// "entry N (Title, X serving(s), Y kcal) from D": Y is the row's total
+/// calories (per-serving scaled by servings), matching the day table's
+/// calories column.
+fn entry_label(index: u32, entry: &log::LogEntry, date: chrono::NaiveDate) -> Result<String> {
+    Ok(format!(
+        "entry {} ({}, {} serving(s), {} kcal) from {}",
+        index,
+        entry.title,
+        entry.servings,
+        entry.total_calories()?,
+        date
+    ))
 }
 
 /// The user's `log` request: the food-or-adhoc decision is made before the
@@ -128,19 +189,21 @@ pub(crate) fn cmd_day(
         None => writeln!(writer, "No entries for {}", date)?,
         Some(day_log) => {
             let columns = config.columns()?;
-            let mut headers: Vec<&str> = vec!["Item", "Servings"];
+            let mut headers: Vec<&str> = vec!["#", "Item", "Servings"];
             headers.extend(columns.iter().map(|c| c.label()));
-            let mut table = Table::new(&headers);
+            let mut aligns = vec![Align::Right, Align::Left, Align::Right];
+            aligns.extend(columns.iter().map(|_| Align::Right));
+            let mut table = Table::with_align(&headers, &aligns);
             table.set_title(&date.to_string());
 
             let rows = build_rows(&day_log.entries)?;
 
             let mut totals = Macros::ZERO;
 
-            for row in &rows {
+            for (i, row) in rows.iter().enumerate() {
                 let serv_str = display::servings_cell(row.servings.to_decimal());
 
-                let mut cells = vec![row.title.clone(), serv_str];
+                let mut cells = vec![(i + 1).to_string(), row.title.clone(), serv_str];
                 for column in &columns {
                     cells.push(display::log_cell(*column, row.column_value(*column)));
                 }
@@ -194,16 +257,16 @@ pub(crate) fn cmd_day(
                 }
             }
 
-            let mut total_row = vec!["Total".to_string(), String::new()];
+            let mut total_row = vec![String::new(), "Total".to_string(), String::new()];
             if show_exercise {
                 total_row.extend(plain_cells);
                 table.add_footer_custom(total_row);
 
-                let mut exercise_row = vec!["Exercise".to_string(), String::new()];
+                let mut exercise_row = vec![String::new(), "Exercise".to_string(), String::new()];
                 exercise_row.extend(exercise_cells);
                 table.add_footer_custom(exercise_row);
 
-                let mut net_row = vec!["Net".to_string(), String::new()];
+                let mut net_row = vec![String::new(), "Net".to_string(), String::new()];
                 net_row.extend(colored_cells);
                 table.add_footer_custom(net_row);
             } else {

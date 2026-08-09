@@ -10,6 +10,14 @@ fn classify(line: &str) -> Option<bool> {
     }
 }
 
+/// Report a canceled confirmation (stdin closed): warn on stderr that
+/// nothing was done, and print `Nothing {verb}` to `writer`.
+pub(crate) fn nothing_confirmed(writer: &mut impl Write, verb: &str) -> Result<()> {
+    eprintln!("no confirmation received — nothing {verb}; use `--yes` to skip confirmation");
+    writeln!(writer, "Nothing {verb}")?;
+    Ok(())
+}
+
 /// Prompt `[y]es` / `[n]o` on stderr and read the answer from stdin.
 ///
 /// Returns `Some(true)` on yes, `Some(false)` on no, and `None` when stdin

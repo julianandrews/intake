@@ -28,6 +28,7 @@ intake log "<name>" [servings] --calories N --protein N --fiber N --fat N --carb
 intake day [date] [-d N]                Show a day's totals (default: today)
 intake summary [date] [-d N]            Multi-day summary of macros and deficit (default: last 7 days)
 intake exercise <calories>              Record exercise calories for today
+intake rm <n> [--date D]                Remove an entry from a day's log
 intake food list                        List all foods with per-serving values
 intake food show <name>                 Show food details with ingredients
 intake food new <name>                  Create a food in your editor
@@ -42,6 +43,11 @@ Flags like `--foods-dir` and `--log-dir` are available on every command.
 instead of today. `intake summary` shows one row per logged day (unlogged
 days in the window are skipped) with period totals and per-day averages; the
 Deficit column appears when `maintenance_calories` is configured.
+
+`intake day` numbers its rows (the `#` column); `intake rm <n> --date D`
+removes that entry (default: today's log) after a confirmation prompt,
+`--yes` skips it. Removing the last entry of a day that has no exercise
+calories deletes the day file itself, so `intake day` reports "No entries".
 
 Bare `intake` with no subcommand shows today's log.
 

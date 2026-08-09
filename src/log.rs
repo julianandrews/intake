@@ -1,5 +1,5 @@
 use crate::amount::{Calories, Grams, Macros, Servings};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogEntry {
     pub title: String,
@@ -181,6 +181,79 @@ pub fn load_day(log_dir: &Path, date: NaiveDate) -> Result<Option<DayLog>> {
 
 pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: Calories) -> Result<()> {
     update_day(log_dir, date, |day| day.exercise_calories = calories)
+}
+
+/// Remove the entry at 1-based `index` from the day log for `date`, holding
+/// the directory lock across the whole read-modify-write.
+///
+/// The entry at `index` must equal `expected` exactly: callers read the day
+/// log first (e.g. to show a confirmation), so a concurrent modification
+/// between that read and this removal is an error instead of silently
+/// removing a different entry. Also errors if the day log doesn't exist or
+/// the index is out of range. If the removal leaves no entries and no
+/// exercise calories, the day file itself is deleted so `day` reports
+/// "no entries" instead of an empty table.
+pub fn remove_entry(
+    log_dir: &Path,
+    date: NaiveDate,
+    index: usize,
+    expected: &LogEntry,
+) -> Result<LogEntry> {
+    let dir_lock = lock_log_dir(log_dir)?;
+    let path = log_path(log_dir, date);
+
+    let day_log: DayLog = if path.exists() {
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read log: {}", path.display()))?;
+        toml::from_str(&content)
+            .with_context(|| format!("failed to parse log: {}", path.display()))?
+    } else {
+        bail!("no entries for {}", date);
+    };
+
+    if index == 0 || index > day_log.entries.len() {
+        bail!(
+            "entry {} not found — day {} has {}",
+            index,
+            date,
+            entry_count_label(day_log.entries.len())
+        );
+    }
+
+    let found = &day_log.entries[index - 1];
+    if found != expected {
+        bail!(
+            "entry {} changed since it was listed — day {} was modified concurrently; nothing removed",
+            index,
+            date
+        );
+    }
+
+    let mut day_log = day_log;
+    let removed = day_log.entries.remove(index - 1);
+    if day_log.entries.is_empty() && day_log.exercise_calories == Calories::ZERO {
+        fs::remove_file(&path)
+            .with_context(|| format!("failed to remove log: {}", path.display()))?;
+        // Sync the directory so the unlink is durable, matching the sync
+        // before the atomic rename in write_day_locked: a crash must not
+        // resurrect an entry the user was told was removed.
+        dir_lock
+            .sync_all()
+            .with_context(|| format!("failed to sync log directory: {}", log_dir.display()))?;
+    } else {
+        write_day_locked(log_dir, date, &day_log)?;
+    }
+
+    Ok(removed)
+}
+
+/// "1 entry" or "N entries", for out-of-range error messages.
+pub(crate) fn entry_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 entry".to_string()
+    } else {
+        format!("{} entries", count)
+    }
 }
 
 pub(crate) fn day_net_and_deficit(
@@ -556,6 +629,243 @@ mod tests {
             "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\nbogus = 1\n",
         )?;
         assert!(load_day(dir.path(), date).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_entry_middle() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        append_entry(
+            dir.path(),
+            date,
+            &entry(
+                "oatmeal",
+                "1.0",
+                ["418", "22.0", "9.0", "6.0", "60.0", "0.0"],
+            ),
+        )?;
+        append_entry(
+            dir.path(),
+            date,
+            &entry(
+                "chili",
+                "2.0",
+                ["200", "20.0", "10.0", "8.0", "30.0", "0.0"],
+            ),
+        )?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        let removed = remove_entry(dir.path(), date, 2, &loaded.entries[1])?;
+        assert_eq!(removed.title, "oatmeal");
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].title, "coffee");
+        assert_eq!(loaded.entries[1].title, "chili");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_entry_last_removes_day_file() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        append_entry(
+            dir.path(),
+            date,
+            &entry(
+                "chili",
+                "1.0",
+                ["200", "20.0", "10.0", "8.0", "30.0", "0.0"],
+            ),
+        )?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert!(remove_entry(dir.path(), date, 1, &loaded.entries[0])?.title == "coffee");
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries.len(), 1);
+
+        assert!(remove_entry(dir.path(), date, 1, &loaded.entries[0])?.title == "chili");
+        assert!(
+            load_day(dir.path(), date)?.is_none(),
+            "empty day file should be removed"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_entry_keeps_day_file_with_exercise() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        set_exercise_calories(dir.path(), date, Calories::from_str("300").unwrap())?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        remove_entry(dir.path(), date, 1, &loaded.entries[0])?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert!(loaded.entries.is_empty());
+        assert_eq!(loaded.exercise_calories, Calories::from_str("300").unwrap());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_entry_out_of_range_errors() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+
+        let err = remove_entry(dir.path(), date, 2, &loaded.entries[0]).unwrap_err();
+        assert!(err.to_string().contains("entry 2 not found"));
+        assert!(err.to_string().contains("has 1 entry"));
+
+        let err = remove_entry(dir.path(), date, 0, &loaded.entries[0]).unwrap_err();
+        assert!(err.to_string().contains("entry 0 not found"));
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_entry_no_day_errors() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        let expected = entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]);
+        let err = remove_entry(dir.path(), date, 1, &expected).unwrap_err();
+        assert!(err.to_string().contains("no entries"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_entry_rejects_changed_entry() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        append_entry(
+            dir.path(),
+            date,
+            &entry(
+                "chili",
+                "1.0",
+                ["200", "20.0", "10.0", "8.0", "30.0", "0.0"],
+            ),
+        )?;
+        append_entry(
+            dir.path(),
+            date,
+            &entry(
+                "oatmeal",
+                "1.0",
+                ["418", "22.0", "9.0", "6.0", "60.0", "0.0"],
+            ),
+        )?;
+
+        // A concurrent removal of an earlier entry shifts the confirmed
+        // index: the entry at index 2 is no longer the chili.
+        let expected = load_day(dir.path(), date)?
+            .expect("day should exist")
+            .entries[1]
+            .clone();
+        let entries = load_day(dir.path(), date)?.expect("day should exist");
+        remove_entry(dir.path(), date, 1, &entries.entries[0])?;
+
+        let err = remove_entry(dir.path(), date, 2, &expected).unwrap_err();
+        assert!(err.to_string().contains("changed since it was listed"));
+        assert!(err.to_string().contains("nothing removed"));
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].title, "chili");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_entry_rejects_modified_entry() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+
+        let expected = load_day(dir.path(), date)?
+            .expect("day should exist")
+            .entries[0]
+            .clone();
+        let mut changed = expected.clone();
+        changed.servings = Servings::from_str("2.0").unwrap();
+
+        let err = remove_entry(dir.path(), date, 1, &changed).unwrap_err();
+        assert!(err.to_string().contains("changed since it was listed"));
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(
+            loaded.entries[0].servings,
+            Servings::from_str("1.0").unwrap()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_entry_preserves_remaining_entries() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "2.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        let removed = remove_entry(dir.path(), date, 1, &loaded.entries[0])?;
+        assert_eq!(removed.servings, Servings::from_str("2.0").unwrap());
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(
+            loaded.entries[0].servings,
+            Servings::from_str("1.0").unwrap()
+        );
 
         Ok(())
     }
