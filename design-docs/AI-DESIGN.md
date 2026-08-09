@@ -83,7 +83,7 @@ The lib takes text in and returns the validated `T`; prompt capture
 
 **Stays in `intake`** (the root package) — everything intake-specific:
 
-- clap surface: the reworked tree (bare, `log`, `day`, `summary`, `exercise`,
+- clap surface: the tree (bare, `log`, `day`, `summary`, `exercise`,
   `food` group, `completions`) plus the `ai` tree and shared flags; the
   shared `--date` arg (one `Args` definition, flattened into `log` and
   `ai log`); `day` and `summary` own their date args (`[date]` + `-d`)
@@ -197,20 +197,12 @@ intake ai food new <slug> [prompt...]  # AI recipe generation
 intake ai food edit <slug> [prompt...] # AI recipe editing (slug completion)
 ```
 
-This reworks the old surface: `add` → `log` (write), the read `log` → `day`,
-`show`/`list` → `food show`/`food list`, `adhoc` → `log` with macro flags,
-`ai edit-log` → `ai log`, `ai add-recipe` → `ai food new`, `ai edit-recipe` →
-`ai food edit`. All existing long-form flags are preserved: `--days-ago`
-(short `-d`, on `day`), `--days` (short `-d`, on `summary`), `--install`, the
-`--calories` / `--protein` / `--fiber` / `--fat` /
-`--carbs` / `--alcohol` flags, and the global `--foods-dir` / `--log-dir`.
-
 `log` disambiguation: any macro flag present selects the adhoc path,
 decisively — the name is a free-form title and is never slug-resolved
 (`log turkey-chili 2 --calories 500` logs an adhoc entry titled
 "turkey-chili" with 500 cal and zeros for the rest). With no macro flags,
 the name must resolve to an existing slug → the food path, macros computed
-from the file (exactly like today's `cmd_add`); a non-resolving name with no
+from the file; a non-resolving name with no
 macros → a clear error pointing at `ai log`. Nothing is ever logged with
 silent zero macros.
 
@@ -234,30 +226,13 @@ The AI commands, in full:
 | `ai food new <slug>` | user prompt + slug positional | `Food` TOML | new `<slug>.toml` in foods dir; an existing slug errors at parse time (see "Slug argument") — never a model retry |
 | `ai food edit <slug>` | current food TOML + user prompt | updated `Food` | overwrite food file |
 
-### Plain food editing
-
-`food new <slug>` and `food edit <slug>` never touch the model and are
-**not** gated behind the `ai` feature — pure CLI UX, no LLM involvement.
-`food new` validates the slug first (strict charset, no existing file — see
-"Slug argument"), then opens `$EDITOR` on a schema skeleton (a serialized
-canned example with `#` guidance comments, including a `# slug: <slug>`
-line); `food edit <slug>` pre-fills the editor with the current
-food's TOML. On save: parse and validate
-with the same serde structs the AI path uses. A failed save re-opens the
-editor with the user's last content preserved and the validation error
-prepended as `#` comments — unchanged-file exit aborts; the loop continues
-until valid or aborted. On success: render the proposed food via the
-existing `display::Table` code, and confirm (`[y]es` / `[n]o`, or `--yes` to
-accept). Editor capture and the y/n confirm helper are intake-owned; the AI
-path's three-option confirmer and Resolver are simply absent. Food mutation
-being longer-winded than logging is fine — it is an uncommon operation.
-
 ### Slug argument
 
 `food new` and `ai food new` take the slug as a required CLI positional —
 the filename the food will be written to, matching `log` / `show` / `edit`.
-The slug is validated strictly (lowercase alphanumerics + dashes only,
-matching the existing slug charset; easy to loosen later). An existing slug
+The slug is validated for filesystem safety only: non-empty, no path
+separators (`/` or `\`), and not `.` / `..` — anything else is accepted, so
+filenames with uppercase or spaces work. An existing slug
 errors immediately at parse time: "food 'X' already exists — use
 `food edit X` / `ai food edit X` to modify it". The AI returns plain `Food`
 TOML — no slug field, the filename is the slug — and intake writes it to
@@ -676,8 +651,7 @@ ai = ["dep:intake-ai"]
   `Ai` subcommand variant, the match arm); config.rs has two (the
   `ai: Option<AiConfig>` field and the gated `AiConfig` wrapper holding
   `intake_ai::AiSettings`).
-- Without the feature, the CLI is the reworked surface plus plain `food new`/
-  `food edit` (editor + validation + confirm), minus the `ai` tree; the only
+- Without the feature, the CLI is the full surface minus the `ai` tree; the only
   `[ai]`-specific behavior is a one-line stderr
   warning when config.toml contains an `[ai]` table ("config contains `[ai]`
   but this binary was built
@@ -735,22 +709,14 @@ Per-command content:
 
 ## Implementation steps
 
-1. **Workspace setup** — root `Cargo.toml` → `[workspace]` with
-   `resolver = "2"`, `members = [".", "crates/intake-ai"]`; the existing
-   package stays at the root (no moves). Verify all four quality gates stay
-   green at the root.
-2. **Non-AI CLI rework** — the surface rework (`log` write + `day` read +
-   bare `intake`, `adhoc` merged into `log` flags, shared `--date`,
-   `day`'s `-d`); the `food` group with `list`/`show`; plain `food new <slug>`/
-   `food edit <slug>` (non-gated: slug validation + parse-time collision
-   check, editor capture, schema-skeleton prefill,
-   validation, y/n confirm helper, confirm); `log::write_day`.
-   No `intake-ai` dependency; all four gates green.
-3. **`crates/intake-ai`** — the new workspace member: settings, search, llm,
-   pipeline, confirm (trait
+1. **`crates/intake-ai` + workspace** — root `Cargo.toml` → `[workspace]` with
+   `resolver = "2"`, `members = [".", "crates/intake-ai"]`; the `intake`
+   package stays at the root (no moves). The new member: settings, search,
+   llm, pipeline, and confirm (trait
    only) modules with unit tests. Text in, validated `T` out; no editor, no
-   terminal confirmer impl.
-4. **AI integration** — `[features] default = ["ai"]`,
+   terminal confirmer impl. Verify all four quality gates stay green at the
+   root.
+2. **AI integration** — `[features] default = ["ai"]`,
    `ai = ["dep:intake-ai"]`; `[ai]` config wiring + no-feature warning, the
    feature-gated `ai` tree (`ai log`, `ai food new`, `ai food edit`) with the
    Resolver + confirmation flow, the three-option terminal `Confirmer`
@@ -758,8 +724,8 @@ Per-command content:
    template files (`src/ai/prompts/*.md`), the `Tool` trait wiring
    (`web_search` +
    batched `food_lookup` with per-command registration), the `DayLogOps`
-   schema with `apply_ops`, and the stale-write check.
-5. **Docs** — AGENTS.md / README `[ai]` section and path touch-ups.
+   schema with `apply_ops`, `log::write_day`, and the stale-write check.
+3. **Docs** — AGENTS.md / README `[ai]` section and path touch-ups.
 
 ## Testing
 
@@ -777,23 +743,14 @@ Per-command content:
   (scripted 429/5xx then success, no slow tests); verbose mode —
   scripted fake backend responses carrying `reasoning_content` produce the
   expected stderr trace lines.
-- `intake` unit: prompt capture via a mocked `$EDITOR` (spawns, unchanged
-  file aborts, no `$EDITOR` set errors); the y/n confirm helper (always
-  built); the three-option confirmer decision mapping (in the `ai` build);
+- `intake` unit: the three-option confirmer decision mapping (in the `ai` build);
   exit-code mapping — reject and EOF-at-prompt cancel exit 0, `Exhausted`
   and `Io` exit 1 (both confirmers);
-  plain `food new`/`food edit` save-failure loop (error comments + last
-  content preserved, unchanged aborts); `--yes` skips proposal rendering;
+  `--yes` skips proposal rendering;
   `[ai]` config parsing and env/flag resolution;
-  `log::write_day` roundtrip; day log with an unknown field errors at load
-  (deny-unknown-field guard); clap parsing of the reworked surface — bare
-  `intake` shows today, `log` write vs. `day` read, `log` food-vs-adhoc
-  disambiguation (macro flags always win — a slug-matching name plus a macro
-  flag logs an adhoc entry; a non-slug name with no macros errors), the
-  shared `--date` arg on `log` and `ai log` (no short
-  form), `day` `[date]`/`-d` conflict errors, `summary` `-d` window, the
-  `food` group with plain `food new`/`food edit`, the
-  `ai` tree and shared flags, `--prompt` vs. `[prompt...]` conflict;
+  `log::write_day` roundtrip;
+  clap parsing of the `ai` tree and shared flags (the shared `--date` arg,
+  no short form, `--prompt` vs. `[prompt...]` conflict);
   `apply_ops` (add-food / add-adhoc / remove / replace; row out of
   range; duplicate and conflicting ops; additions append, replacements keep
   position; overflow — huge `servings` returns a retryable `Err(String)`,
@@ -804,8 +761,8 @@ Per-command content:
   edited day, truncation cap, empty day, sample foods embedded for
   `ai food new`/`edit` with empty-dir canned fallback); stale-write abort (target changed
   between context build and write); empty ops proposal (empty diff, no
-  write); slug argument (strict charset validation; parse-time collision
-  error on both `food new` and `ai food new`, suggesting `food edit`);
+  write); slug argument — parse-time collision error for `ai food new`,
+  suggesting `food edit`;
   write-time recheck for `ai food new`;
   row diff (one macro
   changed → exactly one `-`/`+` pair; entry added → one `+` line; unchanged →
