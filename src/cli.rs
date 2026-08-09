@@ -2,7 +2,7 @@ use crate::amount::{Calories, Grams, Servings};
 use crate::completion::{complete_foods, complete_log_dates};
 use crate::food::Slug;
 use clap::builder::styling::{AnsiColor, Effects, Styles};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use clap_complete::engine::ArgValueCandidates;
 use clap_complete::Shell;
 use std::path::PathBuf;
@@ -25,7 +25,7 @@ const CLAP_STYLES: Styles = Styles::styled()
 #[command(name = "intake", color = clap::ColorChoice::Auto, styles = CLAP_STYLES)]
 pub(crate) struct Cli {
     #[command(subcommand)]
-    pub(crate) command: Commands,
+    pub(crate) command: Option<Commands>,
 
     /// Directory containing food files
     #[arg(long)]
@@ -36,40 +36,52 @@ pub(crate) struct Cli {
     pub(crate) log_dir: Option<PathBuf>,
 }
 
+/// The shared log-date argument: logging commands target a day via `--date`.
+#[derive(Args)]
+pub(crate) struct LogDateArgs {
+    /// Date to log to (YYYY-MM-DD, default: today)
+    #[arg(long, add = ArgValueCandidates::new(complete_log_dates))]
+    pub(crate) date: Option<String>,
+}
+
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    /// Add a food to today's log
-    Add {
-        /// Food slug (filename without .toml)
-        #[arg(add = ArgValueCandidates::new(complete_foods))]
-        food: Slug,
+    /// Log a food, or an ad-hoc entry when macro flags are given
+    Log {
+        /// Food slug (filename without .toml), or the item's name for an ad-hoc entry
+        #[arg(value_parser = non_blank_name, add = ArgValueCandidates::new(complete_foods))]
+        name: String,
         /// Number of servings (default: 1)
         #[arg(default_value = "1")]
         servings: Servings,
+        /// Calories (ad-hoc entry)
+        #[arg(long)]
+        calories: Option<Calories>,
+        /// Protein in grams (ad-hoc entry)
+        #[arg(long)]
+        protein: Option<Grams>,
+        /// Fiber in grams (ad-hoc entry)
+        #[arg(long)]
+        fiber: Option<Grams>,
+        /// Fat in grams (ad-hoc entry)
+        #[arg(long)]
+        fat: Option<Grams>,
+        /// Carbs in grams (ad-hoc entry)
+        #[arg(long)]
+        carbs: Option<Grams>,
+        /// Alcohol in grams (ad-hoc entry)
+        #[arg(long)]
+        alcohol: Option<Grams>,
+        #[command(flatten)]
+        date: LogDateArgs,
     },
-    /// Show totals for a date (default: today)
-    Log {
+    /// Show a day's totals (default: today)
+    Day {
         #[arg(add = ArgValueCandidates::new(complete_log_dates))]
         date: Option<String>,
         /// Number of days before today to show (e.g. 1 = yesterday)
         #[arg(long, short = 'd', conflicts_with = "date")]
         days_ago: Option<u32>,
-    },
-    /// Show a food with ingredients and per-serving values
-    Show {
-        /// Food slug (filename without .toml)
-        #[arg(add = ArgValueCandidates::new(complete_foods))]
-        food: Slug,
-    },
-    /// List all foods with per-serving values
-    List,
-    /// Generate shell completion script
-    Completions {
-        /// Shell to generate completions for (bash, zsh, fish, powershell, elvish)
-        shell: Shell,
-        /// Install to the standard completion directory for the shell
-        #[arg(long)]
-        install: bool,
     },
     /// Show a multi-day summary of macros and deficit
     Summary {
@@ -85,60 +97,158 @@ pub(crate) enum Commands {
         /// Calories burned
         calories: Calories,
     },
-    /// Add an ad-hoc entry with custom macros (no food file needed)
-    Adhoc {
-        /// Name of the item
-        #[arg(value_parser = non_blank_name)]
-        name: String,
-        /// Number of servings (default: 1)
-        servings: Option<Servings>,
-        /// Calories
+    /// Manage foods
+    Food {
+        #[command(subcommand)]
+        command: FoodCommands,
+    },
+    /// Generate shell completion script
+    Completions {
+        /// Shell to generate completions for (bash, zsh, fish, powershell, elvish)
+        shell: Shell,
+        /// Install to the standard completion directory for the shell
         #[arg(long)]
-        calories: Option<Calories>,
-        /// Protein in grams
+        install: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum FoodCommands {
+    /// List all foods with per-serving values
+    List,
+    /// Show a food with ingredients and per-serving values
+    Show {
+        /// Food slug (filename without .toml)
+        #[arg(add = ArgValueCandidates::new(complete_foods))]
+        food: Slug,
+    },
+    /// Create a new food in the editor
+    New {
+        /// Food slug (filename without .toml)
+        slug: Slug,
+        /// Skip the confirmation prompt
         #[arg(long)]
-        protein: Option<Grams>,
-        /// Fiber in grams
+        yes: bool,
+    },
+    /// Edit an existing food in the editor
+    Edit {
+        /// Food slug (filename without .toml)
+        #[arg(add = ArgValueCandidates::new(complete_foods))]
+        slug: Slug,
+        /// Skip the confirmation prompt
         #[arg(long)]
-        fiber: Option<Grams>,
-        /// Fat in grams
-        #[arg(long)]
-        fat: Option<Grams>,
-        /// Carbs in grams
-        #[arg(long)]
-        carbs: Option<Grams>,
-        /// Alcohol in grams
-        #[arg(long)]
-        alcohol: Option<Grams>,
+        yes: bool,
     },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
-    fn test_log_days_ago_short_flag_parses() {
-        let cli = Cli::try_parse_from(["intake", "log", "-d", "2"]).unwrap();
+    fn test_bare_intake_parses() {
+        let cli = Cli::try_parse_from(["intake"]).unwrap();
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_log_name_servings_and_macros() {
+        let cli = Cli::try_parse_from([
+            "intake",
+            "log",
+            "coffee",
+            "2",
+            "--calories",
+            "100",
+            "--protein",
+            "5.5",
+        ])
+        .unwrap();
         match cli.command {
-            Commands::Log { date, days_ago } => {
-                assert_eq!(date, None);
-                assert_eq!(days_ago, Some(2));
+            Some(Commands::Log {
+                name,
+                servings,
+                calories,
+                protein,
+                fiber,
+                fat,
+                carbs,
+                alcohol,
+                date,
+            }) => {
+                assert_eq!(name, "coffee");
+                assert_eq!(servings, Servings::from_str("2").unwrap());
+                assert_eq!(calories, Some(Calories::from_str("100").unwrap()));
+                assert_eq!(protein, Some(Grams::from_str("5.5").unwrap()));
+                assert_eq!(fiber, None);
+                assert_eq!(fat, None);
+                assert_eq!(carbs, None);
+                assert_eq!(alcohol, None);
+                assert_eq!(date.date, None);
             }
             _ => panic!("expected Log command"),
         }
     }
 
     #[test]
-    fn test_log_date_and_days_ago_conflict() {
-        assert!(Cli::try_parse_from(["intake", "log", "2026-08-01", "--days-ago", "2"]).is_err());
+    fn test_log_servings_defaults_to_one() {
+        let cli = Cli::try_parse_from(["intake", "log", "coffee"]).unwrap();
+        match cli.command {
+            Some(Commands::Log { servings, .. }) => assert_eq!(servings, Servings::ONE),
+            _ => panic!("expected Log command"),
+        }
+    }
+
+    #[test]
+    fn test_log_date_flag_parses() {
+        let cli = Cli::try_parse_from(["intake", "log", "coffee", "--date", "2026-08-01"]).unwrap();
+        match cli.command {
+            Some(Commands::Log { date, .. }) => {
+                assert_eq!(date.date, Some("2026-08-01".to_string()));
+            }
+            _ => panic!("expected Log command"),
+        }
+    }
+
+    #[test]
+    fn test_log_date_has_no_short_flag() {
+        assert!(Cli::try_parse_from(["intake", "log", "coffee", "-d", "1"]).is_err());
+    }
+
+    #[test]
+    fn test_log_name_rejects_blank_and_trims() {
+        assert!(Cli::try_parse_from(["intake", "log", ""]).is_err());
+        assert!(Cli::try_parse_from(["intake", "log", "   "]).is_err());
+        let cli = Cli::try_parse_from(["intake", "log", "  Greek yogurt  "]).unwrap();
+        match cli.command {
+            Some(Commands::Log { name, .. }) => assert_eq!(name, "Greek yogurt"),
+            _ => panic!("expected Log command"),
+        }
+    }
+
+    #[test]
+    fn test_day_days_ago_short_flag_parses() {
+        let cli = Cli::try_parse_from(["intake", "day", "-d", "2"]).unwrap();
+        match cli.command {
+            Some(Commands::Day { date, days_ago }) => {
+                assert_eq!(date, None);
+                assert_eq!(days_ago, Some(2));
+            }
+            _ => panic!("expected Day command"),
+        }
+    }
+
+    #[test]
+    fn test_day_date_and_days_ago_conflict() {
+        assert!(Cli::try_parse_from(["intake", "day", "2026-08-01", "--days-ago", "2"]).is_err());
     }
 
     #[test]
     fn test_summary_days_short_flag_parses() {
         let cli = Cli::try_parse_from(["intake", "summary", "-d", "5"]).unwrap();
         match cli.command {
-            Commands::Summary { date, days } => {
+            Some(Commands::Summary { date, days }) => {
                 assert_eq!(date, None);
                 assert_eq!(days, 5);
             }
@@ -147,22 +257,61 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_slug_rejected_at_parse() {
-        assert!(Cli::try_parse_from(["intake", "add", ""]).is_err());
-        assert!(Cli::try_parse_from(["intake", "add", "a/b"]).is_err());
-        assert!(Cli::try_parse_from(["intake", "add", ".."]).is_err());
-        assert!(Cli::try_parse_from(["intake", "show", "."]).is_err());
-        assert!(Cli::try_parse_from(["intake", "add", "coffee"]).is_ok());
+    fn test_food_group_subcommands() {
+        let cli = Cli::try_parse_from(["intake", "food", "list"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Food { .. })));
+
+        let cli = Cli::try_parse_from(["intake", "food", "show", "coffee"]).unwrap();
+        match cli.command {
+            Some(Commands::Food {
+                command: FoodCommands::Show { food },
+            }) => assert_eq!(food.to_string(), "coffee"),
+            _ => panic!("expected Food Show command"),
+        }
     }
 
     #[test]
-    fn test_adhoc_name_rejects_blank_and_trims() {
-        assert!(Cli::try_parse_from(["intake", "adhoc", ""]).is_err());
-        assert!(Cli::try_parse_from(["intake", "adhoc", "   "]).is_err());
-        let cli = Cli::try_parse_from(["intake", "adhoc", "  Greek yogurt  "]).unwrap();
+    fn test_food_new_parses_slug_and_yes() {
+        let cli = Cli::try_parse_from(["intake", "food", "new", "my-food"]).unwrap();
         match cli.command {
-            Commands::Adhoc { name, .. } => assert_eq!(name, "Greek yogurt"),
-            _ => panic!("expected Adhoc command"),
+            Some(Commands::Food {
+                command: FoodCommands::New { slug, yes },
+            }) => {
+                assert_eq!(slug.to_string(), "my-food");
+                assert!(!yes);
+            }
+            _ => panic!("expected Food New command"),
         }
+
+        let cli = Cli::try_parse_from(["intake", "food", "new", "my-food", "--yes"]).unwrap();
+        match cli.command {
+            Some(Commands::Food {
+                command: FoodCommands::New { yes, .. },
+            }) => assert!(yes),
+            _ => panic!("expected Food New command"),
+        }
+    }
+
+    #[test]
+    fn test_food_edit_parses_slug_and_yes() {
+        let cli = Cli::try_parse_from(["intake", "food", "edit", "coffee", "--yes"]).unwrap();
+        match cli.command {
+            Some(Commands::Food {
+                command: FoodCommands::Edit { slug, yes },
+            }) => {
+                assert_eq!(slug.to_string(), "coffee");
+                assert!(yes);
+            }
+            _ => panic!("expected Food Edit command"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_slug_rejected_at_parse() {
+        assert!(Cli::try_parse_from(["intake", "food", "new", ""]).is_err());
+        assert!(Cli::try_parse_from(["intake", "food", "new", "a/b"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "food", "new", ".."]).is_err());
+        assert!(Cli::try_parse_from(["intake", "food", "show", "."]).is_err());
+        assert!(Cli::try_parse_from(["intake", "food", "new", "coffee"]).is_ok());
     }
 }

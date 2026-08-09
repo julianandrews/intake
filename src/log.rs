@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogEntry {
     pub title: String,
     pub servings: Servings,
@@ -70,6 +71,7 @@ impl LogEntry {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DayLog {
     pub entries: Vec<LogEntry>,
     pub exercise_calories: Calories,
@@ -79,25 +81,50 @@ fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
     log_dir.join(format!("{}.toml", date.format("%Y-%m-%d")))
 }
 
+/// Create the log directory and hold the directory lock for the duration of
+/// the returned guard, so read-modify-write transactions stay serialized
+/// against concurrent writers. The directory inode is stable — never renamed
+/// or replaced, unlike the day file itself — so the lock stays correct
+/// across the atomic rename below. Released on drop; flock is also released
+/// by the kernel if the process dies mid-write, so a crash cannot wedge
+/// future writes.
+fn lock_log_dir(log_dir: &Path) -> Result<fs::File> {
+    fs::create_dir_all(log_dir)
+        .with_context(|| format!("failed to create log directory: {}", log_dir.display()))?;
+    let dir = fs::File::open(log_dir)
+        .with_context(|| format!("failed to open log directory: {}", log_dir.display()))?;
+    dir.lock().context("failed to lock log directory")?;
+    Ok(dir)
+}
+
+fn write_day_locked(log_dir: &Path, date: NaiveDate, day_log: &DayLog) -> Result<()> {
+    let path = log_path(log_dir, date);
+
+    let content = toml::to_string(day_log).context("failed to serialize log")?;
+    let mut tmp = tempfile::NamedTempFile::new_in(log_dir)
+        .with_context(|| format!("failed to create temporary log in: {}", log_dir.display()))?;
+    tmp.write_all(content.as_bytes())
+        .with_context(|| format!("failed to write temporary log: {}", path.display()))?;
+    // Sync the data before the rename so the rename only ever publishes
+    // fully-durable content: an OS crash can then never leave a zero-length
+    // day log behind (which would parse as an error on every later read).
+    tmp.as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync temporary log: {}", path.display()))?;
+    tmp.persist(&path)
+        .with_context(|| format!("failed to write log: {}", path.display()))?;
+
+    Ok(())
+}
+
+/// Read-modify-write transaction on the day log for `date`, holding the
+/// directory lock across the whole operation and writing atomically.
 fn update_day<F>(log_dir: &Path, date: NaiveDate, mutate: F) -> Result<()>
 where
     F: FnOnce(&mut DayLog),
 {
+    let _dir_lock = lock_log_dir(log_dir)?;
     let path = log_path(log_dir, date);
-
-    fs::create_dir_all(log_dir)
-        .with_context(|| format!("failed to create log directory: {}", log_dir.display()))?;
-
-    // Serialize day-log writers: the lock must cover the whole
-    // read-modify-write transaction so a concurrent writer sees the latest
-    // state. The directory inode is stable — never renamed or replaced,
-    // unlike the day file itself — so the lock stays correct across the
-    // atomic rename below. Released on drop; flock is also released by the
-    // kernel if the process dies mid-write, so a crash cannot wedge future
-    // writes.
-    let _dir_lock = fs::File::open(log_dir)
-        .with_context(|| format!("failed to open log directory: {}", log_dir.display()))?;
-    _dir_lock.lock().context("failed to lock log directory")?;
 
     let mut day_log: DayLog = if path.exists() {
         let content = fs::read_to_string(&path)
@@ -113,21 +140,7 @@ where
 
     mutate(&mut day_log);
 
-    let content = toml::to_string(&day_log).context("failed to serialize log")?;
-    let mut tmp = tempfile::NamedTempFile::new_in(log_dir)
-        .with_context(|| format!("failed to create temporary log in: {}", log_dir.display()))?;
-    tmp.write_all(content.as_bytes())
-        .with_context(|| format!("failed to write temporary log: {}", path.display()))?;
-    // Sync the data before the rename so the rename only ever publishes
-    // fully-durable content: an OS crash can then never leave a zero-length
-    // day log behind (which would parse as an error on every later read).
-    tmp.as_file()
-        .sync_all()
-        .with_context(|| format!("failed to sync temporary log: {}", path.display()))?;
-    tmp.persist(&path)
-        .with_context(|| format!("failed to write log: {}", path.display()))?;
-
-    Ok(())
+    write_day_locked(log_dir, date, &day_log)
 }
 
 pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result<()> {
@@ -520,6 +533,32 @@ mod tests {
             "exercise_calories = -50\n",
         )?;
 
+        assert!(load_day(dir.path(), date).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_day_log_unknown_field_rejected() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "exercise_calories = 0\nbogus = 1\n",
+        )?;
+        assert!(load_day(dir.path(), date).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_unknown_field_rejected() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\nbogus = 1\n",
+        )?;
         assert!(load_day(dir.path(), date).is_err());
 
         Ok(())

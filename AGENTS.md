@@ -4,7 +4,7 @@ A CLI diet tracker written in Rust. Usage lives in `README.md` and `intake --hel
 
 ## Model
 
-Foods are templates for log entries: `add` loads a food file, computes its
+Foods are templates for log entries: `log` loads a food file, computes its
 per-serving macros, and copies them (plus the food's title) into a new
 standalone log entry. Entries are flat — `title`, `servings`, and the six
 macros — with no reference back to the food file, so editing a food never
@@ -30,3 +30,7 @@ Run all four from the project root before committing or finishing a task:
 2. `cargo clippy -- -D warnings` — no clippy warnings (deny all)
 3. `cargo fmt --check` — formatting must match `rustfmt`
 4. `cargo build` — clean build with no warnings
+
+All four are non-destructive: they only read source and write build artifacts
+under `target/`, never touching tracked files — safe to run in plan mode to
+verify a plan before finalizing it.

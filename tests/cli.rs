@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn foods_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/foods")
@@ -9,13 +10,58 @@ fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_intake"))
 }
 
-fn run_in_env(args: &[&str], config_dir: &Path, envs: &[(&str, &str)]) -> (String, bool) {
+fn run_in_env_full(
+    args: &[&str],
+    config_dir: &Path,
+    envs: &[(&str, &str)],
+) -> (String, String, bool) {
     let mut cmd = Command::new(binary());
-    cmd.args(args).env("XDG_CONFIG_HOME", config_dir);
+    cmd.args(args)
+        .env("XDG_CONFIG_HOME", config_dir)
+        // Explicit closed stdin: `output()` already nulls it, but state the
+        // contract so prompts EOF instead of ever reading a terminal.
+        .stdin(Stdio::null());
     for (key, value) in envs {
         cmd.env(key, value);
     }
     let output = cmd.output().expect("failed to run intake");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let success = output.status.success();
+    if !success {
+        eprintln!("stderr: {}", stderr);
+    }
+    (stdout, stderr, success)
+}
+
+fn run_in_env(args: &[&str], config_dir: &Path, envs: &[(&str, &str)]) -> (String, bool) {
+    let (stdout, _, success) = run_in_env_full(args, config_dir, envs);
+    (stdout, success)
+}
+
+fn run_in_env_stdin(
+    args: &[&str],
+    config_dir: &Path,
+    envs: &[(&str, &str)],
+    stdin: &str,
+) -> (String, bool) {
+    let mut cmd = Command::new(binary());
+    cmd.args(args)
+        .env("XDG_CONFIG_HOME", config_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn().expect("failed to spawn intake");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(stdin.as_bytes())
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait for intake");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
@@ -59,9 +105,48 @@ fn write_day_log(
     std::fs::write(dir.join(format!("{date}.toml")), content).unwrap();
 }
 
+fn write_editor_script(config_dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = config_dir.join(name);
+    std::fs::write(&path, body).unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    path
+}
+
+/// An editor script that overwrites the temp file with `content`.
+fn script_writes(content: &str) -> String {
+    format!("#!/bin/sh\ncat > \"$1\" <<'EOF'\n{content}\nEOF\n")
+}
+
+/// An editor script that writes `first` on its first invocation and `second`
+/// on later ones (via a marker file at `state_path`).
+fn script_sequence(state_path: &Path, first: &str, second: &str) -> String {
+    format!(
+        "#!/bin/sh\nif [ -f \"{}\" ]; then\ncat > \"$1\" <<'EOF'\n{second}\nEOF\nelse\ntouch \"{}\"\ncat > \"$1\" <<'EOF'\n{first}\nEOF\nfi\n",
+        state_path.display(),
+        state_path.display()
+    )
+}
+
+const VALID_FOOD: &str = "title = \"Test Food\"\nservings = 1\n\n[[ingredients]]\nname = \"A\"\nquantity = \"1 cup\"\nprotein_g = 10.0\nfiber_g = 5.0\ncalories = 200\nfat_g = 5.0\ncarbs_g = 30.0\nalcohol_g = 0.0\n";
+
+const EDITED_FOOD: &str = "title = \"Coffee v2\"\nservings = 1\n\n[[ingredients]]\nname = \"Cold Brew\"\nquantity = \"100g\"\nprotein_g = 0\nfiber_g = 0\ncalories = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\n\n[[ingredients]]\nname = \"Oat Milk\"\nquantity = \"50g\"\nprotein_g = 1\nfiber_g = 0\ncalories = 24\nfat_g = 0.6\ncarbs_g = 3.3\nalcohol_g = 0\n";
+
+/// A fresh temp dir holding a copy of the named fixture food.
+fn temp_foods_with_fixture(slug: &str) -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::copy(
+        foods_dir().join(format!("{slug}.toml")),
+        dir.path().join(format!("{slug}.toml")),
+    )
+    .unwrap();
+    dir
+}
+
 #[test]
 fn test_list_all_foods() {
-    let (stdout, success) = run_with_log_dir(&["list"]);
+    let (stdout, success) = run_with_log_dir(&["food", "list"]);
     assert!(success);
     assert!(stdout.contains("All Foods"));
     assert!(stdout.contains("Coffee"));
@@ -71,7 +156,7 @@ fn test_list_all_foods() {
 
 #[test]
 fn test_show_food() {
-    let (stdout, success) = run_with_log_dir(&["show", "coffee"]);
+    let (stdout, success) = run_with_log_dir(&["food", "show", "coffee"]);
     assert!(success);
     assert!(stdout.contains("Coffee (1 serving)"));
     assert!(stdout.contains("Cold Brew"));
@@ -92,7 +177,7 @@ fn run_log_with_env(envs: &[(&str, &str)]) -> (String, bool) {
             &fd_str,
             "--log-dir",
             &log_dir_str,
-            "log",
+            "day",
             "2026-08-02",
         ],
         config_dir.path(),
@@ -103,7 +188,7 @@ fn run_log_with_env(envs: &[(&str, &str)]) -> (String, bool) {
 #[test]
 fn test_piped_output_has_no_ansi() {
     let (stdout, success) = run_log_with_env(&[]);
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(!stdout.contains('\x1b'));
     assert!(stdout.contains("Total"));
 }
@@ -111,20 +196,20 @@ fn test_piped_output_has_no_ansi() {
 #[test]
 fn test_no_color_env_suppresses_ansi_even_with_force() {
     let (stdout, success) = run_log_with_env(&[("CLICOLOR_FORCE", "1"), ("NO_COLOR", "1")]);
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(!stdout.contains('\x1b'));
 }
 
 #[test]
 fn test_force_color_adds_ansi_when_piped() {
     let (stdout, success) = run_log_with_env(&[("CLICOLOR_FORCE", "1")]);
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(stdout.contains('\x1b'));
 }
 
 #[test]
 fn test_show_food_notes() {
-    let (stdout, success) = run_with_log_dir(&["show", "quest-bar"]);
+    let (stdout, success) = run_with_log_dir(&["food", "show", "quest-bar"]);
     assert!(success);
     assert!(stdout.contains("Notes:"));
     assert!(stdout.contains("Store in a cool, dry place. Best eaten chilled."));
@@ -132,40 +217,28 @@ fn test_show_food_notes() {
 
 #[test]
 fn test_show_food_no_notes() {
-    let (stdout, success) = run_with_log_dir(&["show", "coffee"]);
+    let (stdout, success) = run_with_log_dir(&["food", "show", "coffee"]);
     assert!(success);
     assert!(!stdout.contains("Notes:"));
 }
 
 #[test]
 fn test_show_food_not_found() {
-    let (_, success) = run_with_log_dir(&["show", "nonexistent-food"]);
+    let (_, success) = run_with_log_dir(&["food", "show", "nonexistent-food"]);
     assert!(!success);
 }
 
 #[test]
-fn test_log_no_entries() {
-    let (stdout, success) = run_with_log_dir(&["log", "2026-01-01"]);
+fn test_day_no_entries() {
+    let (stdout, success) = run_with_log_dir(&["day", "2026-01-01"]);
     assert!(success);
     assert!(stdout.contains("No entries for 2026-01-01"));
 }
 
 #[test]
-fn test_add_and_log_workflow() {
+fn test_log_and_day_workflow() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
-
-    let (add_out, add_ok) = run(&[
-        "--foods-dir",
-        &foods_dir().to_string_lossy(),
-        "--log-dir",
-        &log_dir_str,
-        "add",
-        "coffee",
-        "2",
-    ]);
-    assert!(add_ok, "add failed: {}", add_out);
-    assert!(add_out.contains("Coffee"));
 
     let (log_out, log_ok) = run(&[
         "--foods-dir",
@@ -173,10 +246,96 @@ fn test_add_and_log_workflow() {
         "--log-dir",
         &log_dir_str,
         "log",
+        "coffee",
+        "2",
     ]);
     assert!(log_ok, "log failed: {}", log_out);
     assert!(log_out.contains("Coffee"));
-    assert!(log_out.contains("48")); // 2 servings × 24 cal
+
+    let (day_out, day_ok) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+        "day",
+    ]);
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(day_out.contains("Coffee"));
+    assert!(day_out.contains("48")); // 2 servings × 24 cal
+}
+
+#[test]
+fn test_bare_intake_shows_today() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+
+    let today = chrono::Local::now().date_naive();
+    write_day_log(
+        dir.path(),
+        &today.format("%Y-%m-%d").to_string(),
+        "1800",
+        "50.0",
+        "15.0",
+        0,
+    );
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+    ]);
+    assert!(success, "bare intake failed: {}", stdout);
+    assert!(stdout.contains(&today.format("%Y-%m-%d").to_string()));
+    assert!(stdout.contains("Coffee"));
+    assert!(stdout.contains("Total"));
+}
+
+#[test]
+fn test_log_date_flag_targets_day() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+
+    let (log_out, log_ok) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+        "log",
+        "coffee",
+        "--date",
+        "2026-08-01",
+    ]);
+    assert!(log_ok, "log failed: {}", log_out);
+
+    let (day_out, day_ok) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+        "day",
+        "2026-08-01",
+    ]);
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(day_out.contains("Coffee"));
+    assert!(day_out.contains("24"));
+}
+
+#[test]
+fn test_log_invalid_date_errors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let (_, success) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+        "log",
+        "coffee",
+        "--date",
+        "yesterday",
+    ]);
+    assert!(!success);
 }
 
 #[test]
@@ -189,7 +348,7 @@ fn test_adhoc_entry() {
         &foods_dir().to_string_lossy(),
         "--log-dir",
         &log_dir_str,
-        "adhoc",
+        "log",
         "--calories",
         "250",
         "--protein",
@@ -202,15 +361,15 @@ fn test_adhoc_entry() {
     assert!(adhoc_ok, "adhoc failed: {}", adhoc_out);
     assert!(adhoc_out.contains("Greek yogurt"));
 
-    let (log_out, log_ok) = run(&[
+    let (day_out, day_ok) = run(&[
         "--foods-dir",
         &foods_dir().to_string_lossy(),
         "--log-dir",
         &log_dir_str,
-        "log",
+        "day",
     ]);
-    assert!(log_ok, "log failed: {}", log_out);
-    assert!(log_out.contains("Greek yogurt"));
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(day_out.contains("Greek yogurt"));
 }
 
 #[test]
@@ -223,7 +382,7 @@ fn test_adhoc_macros_optional_zero_defaults() {
         &foods_dir().to_string_lossy(),
         "--log-dir",
         &log_dir_str,
-        "adhoc",
+        "log",
         "--calories",
         "250",
         "Water",
@@ -241,16 +400,64 @@ fn test_adhoc_macros_optional_zero_defaults() {
     assert!(log_file.contains("carbs_g = 0"));
     assert!(log_file.contains("alcohol_g = 0"));
 
+    let (day_out, day_ok) = run(&[
+        "--foods-dir",
+        &foods_dir().to_string_lossy(),
+        "--log-dir",
+        &log_dir_str,
+        "day",
+    ]);
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(day_out.contains("Water"));
+    assert!(day_out.contains("250"));
+}
+
+#[test]
+fn test_log_macros_win_over_slug() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+
     let (log_out, log_ok) = run(&[
         "--foods-dir",
         &foods_dir().to_string_lossy(),
         "--log-dir",
         &log_dir_str,
         "log",
+        "coffee",
+        "--calories",
+        "500",
     ]);
     assert!(log_ok, "log failed: {}", log_out);
-    assert!(log_out.contains("Water"));
-    assert!(log_out.contains("250"));
+
+    let today = chrono::Local::now().date_naive();
+    let log_file = std::fs::read_to_string(dir.path().join(format!("{today}.toml")))
+        .expect("log file written");
+    // adhoc path: the name is the title and macros are exactly as given
+    assert!(log_file.contains("title = \"coffee\""));
+    assert!(log_file.contains("calories = 500"));
+    assert!(log_file.contains("protein_g = 0"));
+}
+
+#[test]
+fn test_log_unknown_name_without_macros_errors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let (_, stderr, success) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &foods_dir().to_string_lossy(),
+            "--log-dir",
+            &log_dir_str,
+            "log",
+            "nonexistent-food",
+        ],
+        config_dir.path(),
+        &[],
+    );
+    assert!(!success);
+    assert!(stderr.contains("no food 'nonexistent-food' found"));
 }
 
 #[test]
@@ -269,21 +476,21 @@ fn test_exercise_recording() {
     assert!(ex_ok, "exercise failed: {}", ex_out);
     assert!(ex_out.contains("300"));
 
-    let (log_out, log_ok) = run(&[
+    let (day_out, day_ok) = run(&[
         "--foods-dir",
         &foods_dir().to_string_lossy(),
         "--log-dir",
         &log_dir_str,
-        "log",
+        "day",
     ]);
-    assert!(log_ok, "log failed: {}", log_out);
-    assert!(log_out.contains("300"));
-    assert!(log_out.contains("Exercise"));
-    assert!(log_out.contains("Net"));
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(day_out.contains("300"));
+    assert!(day_out.contains("Exercise"));
+    assert!(day_out.contains("Net"));
 }
 
 #[test]
-fn test_log_net_row_with_exercise() {
+fn test_day_net_row_with_exercise() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
@@ -295,10 +502,10 @@ fn test_log_net_row_with_exercise() {
         &fd_str,
         "--log-dir",
         &log_dir_str,
-        "log",
+        "day",
         "2026-08-02",
     ]);
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(stdout.contains("Total"));
     assert!(stdout.contains("1800"));
     assert!(stdout.contains("-300"));
@@ -307,7 +514,7 @@ fn test_log_net_row_with_exercise() {
 }
 
 #[test]
-fn test_log_fractional_exercise_rounds_display() {
+fn test_day_fractional_exercise_rounds_display() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
@@ -323,15 +530,38 @@ fn test_log_fractional_exercise_rounds_display() {
         &fd_str,
         "--log-dir",
         &log_dir_str,
-        "log",
+        "day",
         "2026-08-02",
     ]);
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(stdout.contains("1800"));
     // Exercise row rounds 300.5 away to 301; Net = 1800 - 300.5 = 1499.5 -> 1500
     assert!(stdout.contains("-301"));
     assert!(stdout.contains("1500"));
     assert!(!stdout.contains("300.5"));
+}
+
+#[test]
+fn test_day_unknown_field_errors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    std::fs::write(
+        dir.path().join("2026-08-02.toml"),
+        "exercise_calories = 0\nbogus = 1\n",
+    )
+    .unwrap();
+
+    let (_, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "day",
+        "2026-08-02",
+    ]);
+    assert!(!success);
 }
 
 #[test]
@@ -357,12 +587,12 @@ fn test_exercise_rows_hidden_when_calories_column_hidden() {
             fd_str.as_str(),
             "--log-dir",
             log_dir_str.as_str(),
-            "log",
+            "day",
             "2026-08-02",
         ],
         config_dir.path(),
     );
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(stdout.contains("Total"));
     assert!(!stdout.contains("Exercise"));
     assert!(!stdout.contains("Net"));
@@ -509,7 +739,7 @@ fn test_adhoc_with_fat_carbs_alcohol() {
         &foods_dir().to_string_lossy(),
         "--log-dir",
         &log_dir_str,
-        "adhoc",
+        "log",
         "--calories",
         "250",
         "--protein",
@@ -537,18 +767,18 @@ fn test_adhoc_with_fat_carbs_alcohol() {
     assert!(log_file.contains("alcohol_g = 5"));
 
     // default view shows fat/carbs (scaled by 2 servings) but not alcohol
-    let (log_out, log_ok) = run(&[
+    let (day_out, day_ok) = run(&[
         "--foods-dir",
         &foods_dir().to_string_lossy(),
         "--log-dir",
         &log_dir_str,
-        "log",
+        "day",
     ]);
-    assert!(log_ok, "log failed: {}", log_out);
-    assert!(!log_out.contains("Alcohol(g)"));
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(!day_out.contains("Alcohol(g)"));
 
     // 2 servings: calories 500, fat 18.0, carbs 40.0, protein 24.0, fiber 6.0
-    let row = log_out
+    let row = day_out
         .lines()
         .find(|l| l.contains("Beer and nuts"))
         .expect("adhoc row present");
@@ -562,7 +792,7 @@ fn test_adhoc_with_fat_carbs_alcohol() {
 }
 
 #[test]
-fn test_log_default_columns_include_fat_carbs_not_alcohol() {
+fn test_day_default_columns_include_fat_carbs_not_alcohol() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
@@ -574,10 +804,10 @@ fn test_log_default_columns_include_fat_carbs_not_alcohol() {
         &fd_str,
         "--log-dir",
         &log_dir_str,
-        "log",
+        "day",
         "2026-08-02",
     ]);
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(stdout.contains("Fat(g)"));
     assert!(stdout.contains("Carbs(g)"));
     assert!(!stdout.contains("Alcohol(g)"));
@@ -606,12 +836,12 @@ fn test_show_columns_config_filters_columns() {
             fd_str.as_str(),
             "--log-dir",
             log_dir_str.as_str(),
-            "log",
+            "day",
             "2026-08-02",
         ],
         config_dir.path(),
     );
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(stdout.contains("Calories"));
     assert!(stdout.contains("Fat(g)"));
     assert!(stdout.contains("Alcohol(g)"));
@@ -681,12 +911,12 @@ fn test_min_fat_target_colors_total_row() {
             fd_str.as_str(),
             "--log-dir",
             log_dir_str.as_str(),
-            "log",
+            "day",
             "2026-08-02",
         ],
         config_dir.path(),
     );
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(stdout.contains("\u{1b}[33m")); // yellow: fat under min target
 }
 
@@ -714,12 +944,12 @@ fn test_max_fat_target_colors_total_row_red() {
             fd_str.as_str(),
             "--log-dir",
             log_dir_str.as_str(),
-            "log",
+            "day",
             "2026-08-02",
         ],
         config_dir.path(),
     );
-    assert!(success, "log failed: {}", stdout);
+    assert!(success, "day failed: {}", stdout);
     assert!(stdout.contains("\u{1b}[31m")); // red: fat over max target
 }
 
@@ -736,7 +966,10 @@ fn test_show_columns_config_filters_list_and_show() {
     )
     .unwrap();
 
-    let (list_out, list_ok) = run_in(&["--foods-dir", fd_str.as_str(), "list"], config_dir.path());
+    let (list_out, list_ok) = run_in(
+        &["--foods-dir", fd_str.as_str(), "food", "list"],
+        config_dir.path(),
+    );
     assert!(list_ok, "list failed: {}", list_out);
     assert!(list_out.contains("Cal/serv"));
     assert!(list_out.contains("Alcohol(g)"));
@@ -745,7 +978,7 @@ fn test_show_columns_config_filters_list_and_show() {
     assert!(!list_out.contains("Carbs(g)"));
 
     let (show_out, show_ok) = run_in(
-        &["--foods-dir", fd_str.as_str(), "show", "coffee"],
+        &["--foods-dir", fd_str.as_str(), "food", "show", "coffee"],
         config_dir.path(),
     );
     assert!(show_ok, "show failed: {}", show_out);
@@ -754,4 +987,289 @@ fn test_show_columns_config_filters_list_and_show() {
     assert!(!show_out.contains("Protein(g)"));
     assert!(!show_out.contains("Fat(g)"));
     assert!(!show_out.contains("Carbs(g)"));
+}
+
+#[test]
+fn test_food_new_writes_file_with_editor() {
+    let foods_dir_tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
+
+    let (stdout, success) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "new",
+            "my-food",
+        ],
+        config_dir.path(),
+        &[("EDITOR", editor.to_str().unwrap())],
+        "y\n",
+    );
+    assert!(success, "food new failed: {}", stdout);
+    assert!(stdout.contains("Wrote"));
+
+    let written = std::fs::read_to_string(foods_dir_tmp.path().join("my-food.toml")).unwrap();
+    assert!(written.contains("title = \"Test Food\""));
+    assert!(written.contains("calories = 200"));
+}
+
+#[test]
+fn test_food_new_yes_flag_skips_confirmation() {
+    let foods_dir_tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "new",
+            "my-food",
+            "--yes",
+        ],
+        config_dir.path(),
+        &[("EDITOR", editor.to_str().unwrap())],
+    );
+    assert!(success, "food new failed: {}", stdout);
+    assert!(stdout.contains("Wrote"));
+    assert!(foods_dir_tmp.path().join("my-food.toml").exists());
+}
+
+#[test]
+fn test_food_new_collision_errors() {
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+
+    let (_, stderr, success) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &foods_dir().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "new",
+            "coffee",
+        ],
+        config_dir.path(),
+        &[],
+    );
+    assert!(!success);
+    assert!(stderr.contains("already exists"));
+    assert!(stderr.contains("food edit coffee"));
+}
+
+#[test]
+fn test_food_new_unchanged_aborts() {
+    let foods_dir_tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let editor = write_editor_script(&config_dir.path(), "editor.sh", "#!/bin/sh\nexit 0\n");
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "new",
+            "my-food",
+        ],
+        config_dir.path(),
+        &[("EDITOR", editor.to_str().unwrap())],
+    );
+    assert!(success, "unchanged abort should exit 0: {}", stdout);
+    assert!(stdout.contains("Nothing written"));
+    assert!(!foods_dir_tmp.path().join("my-food.toml").exists());
+}
+
+#[test]
+fn test_food_new_editor_failure_errors() {
+    let foods_dir_tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let (_, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "new",
+            "my-food",
+        ],
+        config_dir.path(),
+        &[("EDITOR", "/nonexistent/editor")],
+    );
+    assert!(!success);
+    assert!(!foods_dir_tmp.path().join("my-food.toml").exists());
+}
+
+#[test]
+fn test_food_new_invalid_then_valid_retries() {
+    let foods_dir_tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let state = config_dir.path().join("state");
+    let script = script_sequence(&state, "this is not valid toml\n", VALID_FOOD);
+    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script);
+
+    let (stdout, success) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "new",
+            "my-food",
+        ],
+        config_dir.path(),
+        &[("EDITOR", editor.to_str().unwrap())],
+        "y\n",
+    );
+    assert!(success, "food new failed: {}", stdout);
+    assert!(stdout.contains("Wrote"));
+    assert!(foods_dir_tmp.path().join("my-food.toml").exists());
+}
+
+#[test]
+fn test_food_new_reject_writes_nothing() {
+    let foods_dir_tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
+
+    let (stdout, success) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "new",
+            "my-food",
+        ],
+        config_dir.path(),
+        &[("EDITOR", editor.to_str().unwrap())],
+        "n\n",
+    );
+    assert!(success, "reject should exit 0: {}", stdout);
+    assert!(stdout.contains("Nothing written"));
+    assert!(!foods_dir_tmp.path().join("my-food.toml").exists());
+}
+
+#[test]
+fn test_food_new_closed_stdin_cancels() {
+    let foods_dir_tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(VALID_FOOD));
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "new",
+            "my-food",
+        ],
+        config_dir.path(),
+        &[("EDITOR", editor.to_str().unwrap())],
+    );
+    assert!(success, "cancelled should exit 0: {}", stdout);
+    assert!(stdout.contains("Nothing written"));
+    assert!(!foods_dir_tmp.path().join("my-food.toml").exists());
+}
+
+#[test]
+fn test_food_edit_roundtrip() {
+    let foods_dir_tmp = temp_foods_with_fixture("coffee");
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(EDITED_FOOD));
+
+    let (stdout, success) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "edit",
+            "coffee",
+        ],
+        config_dir.path(),
+        &[("EDITOR", editor.to_str().unwrap())],
+        "y\n",
+    );
+    assert!(success, "food edit failed: {}", stdout);
+    assert!(stdout.contains("Wrote"));
+
+    let written = std::fs::read_to_string(foods_dir_tmp.path().join("coffee.toml")).unwrap();
+    assert!(written.contains("title = \"Coffee v2\""));
+}
+
+#[test]
+fn test_food_edit_reject_keeps_file() {
+    let foods_dir_tmp = temp_foods_with_fixture("coffee");
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let editor = write_editor_script(&config_dir.path(), "editor.sh", &script_writes(EDITED_FOOD));
+
+    let (stdout, success) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "edit",
+            "coffee",
+        ],
+        config_dir.path(),
+        &[("EDITOR", editor.to_str().unwrap())],
+        "n\n",
+    );
+    assert!(success, "reject should exit 0: {}", stdout);
+    assert!(stdout.contains("Nothing written"));
+
+    let written = std::fs::read_to_string(foods_dir_tmp.path().join("coffee.toml")).unwrap();
+    assert!(written.contains("title = \"Coffee\""));
+    assert!(!written.contains("Coffee v2"));
+}
+
+#[test]
+fn test_food_edit_not_found() {
+    let foods_dir_tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let (_, stderr, success) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "edit",
+            "nonexistent-food",
+        ],
+        config_dir.path(),
+        &[("EDITOR", "/bin/true")],
+    );
+    assert!(!success);
+    assert!(stderr.contains("not found"));
 }

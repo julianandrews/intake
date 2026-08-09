@@ -3,11 +3,12 @@ use crate::config::{Column, Config};
 use crate::display;
 use crate::display::{ColumnValue, Table};
 use crate::{food, log};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Local;
 use rust_decimal::Decimal;
 use std::io::Write;
 use std::path::Path;
+use std::str::FromStr;
 
 pub(crate) fn cmd_exercise(
     writer: &mut impl Write,
@@ -24,45 +25,70 @@ pub(crate) fn cmd_exercise(
     Ok(())
 }
 
-pub(crate) fn cmd_adhoc(
-    writer: &mut impl Write,
-    log_dir: &Path,
-    name: &str,
-    servings: Servings,
-    macros: &Macros,
-) -> Result<()> {
-    let entry = log::LogEntry {
-        title: name.to_string(),
-        servings,
-        calories: macros.calories,
-        protein_g: macros.protein_g,
-        fiber_g: macros.fiber_g,
-        fat_g: macros.fat_g,
-        carbs_g: macros.carbs_g,
-        alcohol_g: macros.alcohol_g,
-    };
-
-    let date = Local::now().date_naive();
-    log::append_entry(log_dir, date, &entry)?;
-
-    writeln!(
-        writer,
-        "Added {} serving(s) of {} to {}",
-        servings, name, date
-    )?;
-    Ok(())
+/// The user's `log` request: the food-or-adhoc decision is made before the
+/// command runs (macro-flag presence wins), so `adhoc` selects the path and
+/// `macros` supplies the ad-hoc values.
+pub(crate) struct LogRequest<'a> {
+    pub name: &'a str,
+    pub servings: Servings,
+    pub macros: &'a Macros,
+    pub adhoc: bool,
 }
 
-pub(crate) fn cmd_add(
+/// Log an entry for `date`: the food path when no macro flag was given (the
+/// name must resolve to a food slug, macros computed from its file), the
+/// ad-hoc path when any macro flag was given (name is the title, macros as
+/// given, zeros for the rest).
+pub(crate) fn cmd_log(
     writer: &mut impl Write,
     foods_dir: &Path,
     log_dir: &Path,
-    slug: &food::Slug,
-    servings: Servings,
+    request: LogRequest<'_>,
+    date: chrono::NaiveDate,
     config: &Config,
 ) -> Result<()> {
-    let food = food::load_food(&slug.file_path(foods_dir))
-        .with_context(|| format!("food '{}' not found", slug))?;
+    let LogRequest {
+        name,
+        servings,
+        macros,
+        adhoc,
+    } = request;
+    if adhoc {
+        let entry = log::LogEntry {
+            title: name.to_string(),
+            servings,
+            calories: macros.calories,
+            protein_g: macros.protein_g,
+            fiber_g: macros.fiber_g,
+            fat_g: macros.fat_g,
+            carbs_g: macros.carbs_g,
+            alcohol_g: macros.alcohol_g,
+        };
+
+        log::append_entry(log_dir, date, &entry)?;
+
+        writeln!(
+            writer,
+            "Added {} serving(s) of {} to {}",
+            servings, name, date
+        )?;
+        return Ok(());
+    }
+
+    let not_found = || {
+        anyhow!(
+            "no food '{}' found — log an ad-hoc entry by adding macro flags (e.g. `--calories 250`)",
+            name
+        )
+    };
+    let slug = food::Slug::from_str(name).map_err(|_| not_found())?;
+    let path = slug.file_path(foods_dir);
+    if !path.exists() {
+        return Err(not_found());
+    }
+    // Parse errors from an existing file keep their own message, which names
+    // the file — only genuinely missing foods get the "add macro flags" hint.
+    let food = food::load_food(&path)?;
 
     let ps = food.per_serving()?;
 
@@ -77,7 +103,6 @@ pub(crate) fn cmd_add(
         alcohol_g: ps.alcohol_g,
     };
 
-    let date = Local::now().date_naive();
     log::append_entry(log_dir, date, &entry)?;
 
     writeln!(
@@ -86,12 +111,12 @@ pub(crate) fn cmd_add(
         servings, food.title, date
     )?;
     writeln!(writer)?;
-    cmd_log(writer, log_dir, date, config)?;
+    cmd_day(writer, log_dir, date, config)?;
 
     Ok(())
 }
 
-pub(crate) fn cmd_log(
+pub(crate) fn cmd_day(
     writer: &mut impl Write,
     log_dir: &Path,
     date: chrono::NaiveDate,

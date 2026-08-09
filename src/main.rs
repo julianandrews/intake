@@ -3,7 +3,9 @@ mod cli;
 mod commands;
 mod completion;
 mod config;
+mod confirm;
 mod display;
+mod editor;
 mod food;
 mod log;
 

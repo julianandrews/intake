@@ -1,9 +1,10 @@
 use crate::amount::{calories_sum, grams_sum, Calories, Grams, Macros};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -45,7 +46,8 @@ impl fmt::Display for Slug {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Ingredient {
     pub name: String,
     pub quantity: Option<String>,
@@ -57,12 +59,13 @@ pub struct Ingredient {
     pub alcohol_g: Grams,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Food {
     pub title: String,
     pub servings: NonZeroU32,
     pub ingredients: Vec<Ingredient>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
 }
 
@@ -151,6 +154,61 @@ pub fn load_food(path: &Path) -> Result<Food> {
         .with_context(|| format!("failed to parse TOML in: {}", path.display()))?;
 
     Ok(food)
+}
+
+/// Overwrite a food file for `slug` in `foods_dir`, atomically.
+pub fn write_food(foods_dir: &Path, slug: &Slug, food: &Food) -> Result<()> {
+    write_food_impl(foods_dir, slug, food, true)
+}
+
+/// Create a food file for `slug` in `foods_dir`, atomically.
+///
+/// Fails instead of overwriting if the file exists, so a concurrent `food new`
+/// for the same slug cannot clobber an existing file.
+pub fn create_food(foods_dir: &Path, slug: &Slug, food: &Food) -> Result<()> {
+    let path = slug.file_path(foods_dir);
+    match write_food_impl(foods_dir, slug, food, false) {
+        Ok(()) => Ok(()),
+        Err(_) if path.exists() => {
+            bail!(
+                "food '{}' already exists — use `food edit {}` to modify it",
+                slug,
+                slug
+            )
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn write_food_impl(foods_dir: &Path, slug: &Slug, food: &Food, clobber: bool) -> Result<()> {
+    let path = slug.file_path(foods_dir);
+
+    fs::create_dir_all(foods_dir)
+        .with_context(|| format!("failed to create foods directory: {}", foods_dir.display()))?;
+
+    let content = toml::to_string(food).context("failed to serialize food")?;
+    let mut tmp = tempfile::NamedTempFile::new_in(foods_dir).with_context(|| {
+        format!(
+            "failed to create temporary food in: {}",
+            foods_dir.display()
+        )
+    })?;
+    tmp.write_all(content.as_bytes())
+        .with_context(|| format!("failed to write temporary food: {}", path.display()))?;
+    tmp.as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync temporary food: {}", path.display()))?;
+
+    let persist_result = if clobber {
+        tmp.persist(&path)
+    } else {
+        tmp.persist_noclobber(&path)
+    };
+    persist_result
+        .map(|_| ())
+        .with_context(|| format!("failed to write food: {}", path.display()))?;
+
+    Ok(())
 }
 
 pub fn find_all_foods(foods_dir: &Path) -> Result<Vec<Food>> {
@@ -306,5 +364,66 @@ mod tests {
                 .file_path(Path::new("foods")),
             PathBuf::from("foods/quest-bar.toml")
         );
+    }
+
+    #[test]
+    fn test_food_serialize_roundtrip() {
+        let food = food_with_ingredient(2, ingredient("10.0", "5.0", 100, "4.0", "30.0", "2.0"));
+        let serialized = toml::to_string(&food).unwrap();
+        let deserialized: Food = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.title, food.title);
+        assert_eq!(deserialized.servings, food.servings);
+        assert_eq!(
+            deserialized.ingredients[0].calories,
+            food.ingredients[0].calories
+        );
+        assert_eq!(
+            deserialized.ingredients[0].protein_g,
+            food.ingredients[0].protein_g
+        );
+    }
+
+    #[test]
+    fn test_food_serialize_skips_empty_notes() {
+        let food = food_with_ingredient(1, ingredient("0.0", "0.0", 5, "0.0", "0.0", "0.0"));
+        let serialized = toml::to_string(&food).unwrap();
+        assert!(!serialized.contains("notes"));
+    }
+
+    #[test]
+    fn test_food_serialize_keeps_notes_when_present() {
+        let mut food = food_with_ingredient(1, ingredient("0.0", "0.0", 5, "0.0", "0.0", "0.0"));
+        food.notes = "Best eaten warm".to_string();
+        let serialized = toml::to_string(&food).unwrap();
+        let deserialized: Food = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.notes, "Best eaten warm");
+    }
+
+    #[test]
+    fn test_food_unknown_field_rejected() {
+        let result: Result<Food, _> = toml::from_str(
+            "title = \"X\"\nservings = 1\nbogus = 1\n\n[[ingredients]]\nname = \"A\"\ncalories = 10\nprotein_g = 1\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\n",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ingredient_unknown_field_rejected() {
+        let result: Result<Food, _> = toml::from_str(
+            "title = \"X\"\nservings = 1\n\n[[ingredients]]\nname = \"A\"\nbogus = 1\ncalories = 10\nprotein_g = 1\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\n",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_food_roundtrip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let food = food_with_ingredient(2, ingredient("10.0", "5.0", 100, "4.0", "30.0", "2.0"));
+        let slug = Slug::from_str("test-food").unwrap();
+        write_food(dir.path(), &slug, &food).unwrap();
+        let loaded = load_food(&slug.file_path(dir.path())).unwrap();
+        assert_eq!(loaded.title, food.title);
+        assert_eq!(loaded.ingredients.len(), 1);
+        assert_eq!(loaded.ingredients[0].calories, food.ingredients[0].calories);
     }
 }

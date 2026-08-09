@@ -1,10 +1,15 @@
+use crate::amount::{Calories, Grams};
 use crate::config::{Column, Config};
+use crate::confirm;
 use crate::display;
 use crate::display::{colorize, food_cell, Align, ColumnValue, Table};
+use crate::editor;
 use crate::food;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::io::Write;
+use std::num::NonZeroU32;
 use std::path::Path;
+use std::str::FromStr;
 
 fn render_food(food: &food::Food, columns: &[Column]) -> Result<String> {
     let serving_label = if food.servings.get() == 1 {
@@ -101,6 +106,161 @@ pub(crate) fn cmd_list(writer: &mut impl Write, foods_dir: &Path, config: &Confi
 
     write!(writer, "{}", table.format())?;
     Ok(())
+}
+
+fn comment_lines(s: &str) -> String {
+    s.lines()
+        .map(|line| format!("# {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn canned_example_food() -> food::Food {
+    food::Food {
+        title: "My Food".to_string(),
+        servings: NonZeroU32::new(4).unwrap(),
+        notes: String::new(),
+        ingredients: vec![food::Ingredient {
+            name: "Chicken".to_string(),
+            quantity: Some("200g".to_string()),
+            protein_g: Grams::from_str("46.0").unwrap(),
+            fiber_g: Grams::from_str("0.0").unwrap(),
+            calories: Calories::from_str("330").unwrap(),
+            fat_g: Grams::from_str("6.0").unwrap(),
+            carbs_g: Grams::from_str("0.0").unwrap(),
+            alcohol_g: Grams::from_str("0.0").unwrap(),
+        }],
+    }
+}
+
+/// The `food new` editor prefill: a serialized canned example with guidance
+/// comments, including the `# slug:` line the file will be saved as.
+fn new_food_skeleton(slug: &food::Slug) -> Result<String> {
+    let toml = toml::to_string(&canned_example_food()).context("failed to serialize food")?;
+    Ok(format!(
+        "# Create a new food: edit the values below, save, and exit.\n\
+         # Leave the file unchanged to abort.\n\
+         # slug: {slug}\n\
+         # The title may differ from the slug; the slug is the filename.\n\n{toml}"
+    ))
+}
+
+fn write_nothing(writer: &mut impl Write) -> Result<()> {
+    writeln!(writer, "Nothing written")?;
+    Ok(())
+}
+
+/// Create `<slug>.toml` in the editor: slug + collision check first, then an
+/// edit-validate-confirm loop, then the atomic write.
+pub(crate) fn cmd_new_food(
+    writer: &mut impl Write,
+    foods_dir: &Path,
+    slug: &food::Slug,
+    yes: bool,
+    config: &Config,
+) -> Result<()> {
+    let path = slug.file_path(foods_dir);
+    if path.exists() {
+        bail!(
+            "food '{}' already exists — use `food edit {}` to modify it",
+            slug,
+            slug
+        );
+    }
+
+    let columns = config.columns()?;
+    let mut prefill = new_food_skeleton(slug)?;
+
+    loop {
+        let Some(content) = editor::capture_via_editor(&prefill, ".toml")? else {
+            return write_nothing(writer);
+        };
+
+        let food: food::Food = match toml::from_str(&content) {
+            Ok(food) => food,
+            Err(e) => {
+                prefill = format!(
+                    "# The food couldn't be saved:\n{}\n\n# slug: {slug}\n\n{}\n",
+                    comment_lines(&e.to_string()),
+                    content
+                );
+                continue;
+            }
+        };
+
+        if !yes {
+            write!(writer, "{}", render_food(&food, &columns)?)?;
+            match confirm::confirm_yes_no(&format!("Write {}?", path.display()))? {
+                Some(true) => {}
+                Some(false) => return write_nothing(writer),
+                None => {
+                    eprintln!(
+                        "no confirmation received — nothing written; use `--yes` to skip confirmation"
+                    );
+                    return write_nothing(writer);
+                }
+            }
+        }
+
+        food::create_food(foods_dir, slug, &food)?;
+        writeln!(writer, "Wrote {}", path.display())?;
+        writeln!(writer)?;
+        write!(writer, "{}", render_food(&food, &columns)?)?;
+        return Ok(());
+    }
+}
+
+/// Edit an existing food file in the editor, then confirm and overwrite.
+pub(crate) fn cmd_edit_food(
+    writer: &mut impl Write,
+    foods_dir: &Path,
+    slug: &food::Slug,
+    yes: bool,
+    config: &Config,
+) -> Result<()> {
+    let path = slug.file_path(foods_dir);
+    let original = food::load_food(&path).with_context(|| format!("food '{}' not found", slug))?;
+
+    let columns = config.columns()?;
+    let mut prefill = toml::to_string(&original).context("failed to serialize food")?;
+
+    loop {
+        let Some(content) = editor::capture_via_editor(&prefill, ".toml")? else {
+            return write_nothing(writer);
+        };
+
+        let food: food::Food = match toml::from_str(&content) {
+            Ok(food) => food,
+            Err(e) => {
+                prefill = format!(
+                    "# The food couldn't be saved:\n{}\n\n{}\n",
+                    comment_lines(&e.to_string()),
+                    content
+                );
+                continue;
+            }
+        };
+
+        if !yes {
+            write!(writer, "{}", render_food(&food, &columns)?)?;
+            match confirm::confirm_yes_no(&format!("Overwrite {}?", path.display()))? {
+                Some(true) => {}
+                Some(false) => return write_nothing(writer),
+                None => {
+                    eprintln!(
+                        "no confirmation received — nothing written; use `--yes` to skip confirmation"
+                    );
+                    return write_nothing(writer);
+                }
+            }
+        }
+
+        food::write_food(foods_dir, slug, &food)?;
+        writeln!(writer, "Wrote {}", path.display())?;
+        writeln!(writer)?;
+        write!(writer, "{}", render_food(&food, &columns)?)?;
+        return Ok(());
+    }
 }
 
 #[cfg(test)]
@@ -275,5 +435,28 @@ mod tests {
     fn test_render_food_hides_notes_when_whitespace() {
         let md = render_food(&test_food("   "), DEFAULT_COLUMNS).unwrap();
         assert!(!md.contains("Notes:"));
+    }
+
+    #[test]
+    fn test_new_food_skeleton_is_valid_toml() {
+        let slug = food::Slug::from_str("my-food").unwrap();
+        let skeleton = new_food_skeleton(&slug).unwrap();
+        assert!(skeleton.contains("# slug: my-food"));
+        let food: food::Food = toml::from_str(&skeleton).unwrap();
+        assert_eq!(food.title, "My Food");
+        assert_eq!(food.ingredients.len(), 1);
+    }
+
+    #[test]
+    fn test_new_food_skeleton_has_no_notes_field() {
+        let slug = food::Slug::from_str("my-food").unwrap();
+        let skeleton = new_food_skeleton(&slug).unwrap();
+        assert!(!skeleton.contains("notes"));
+    }
+
+    #[test]
+    fn test_comment_lines_prefixes_every_line() {
+        assert_eq!(comment_lines("a\nb\n"), "# a\n# b");
+        assert_eq!(comment_lines("single"), "# single");
     }
 }
