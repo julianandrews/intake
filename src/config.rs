@@ -90,10 +90,14 @@ impl Config {
         let mut config = Self::load()?;
 
         if let Ok(val) = std::env::var("INTAKE_FOODS_DIR") {
-            config.foods_dir = Some(PathBuf::from(val));
+            if !val.is_empty() {
+                config.foods_dir = Some(PathBuf::from(val));
+            }
         }
         if let Ok(val) = std::env::var("INTAKE_LOG_DIR") {
-            config.log_dir = Some(PathBuf::from(val));
+            if !val.is_empty() {
+                config.log_dir = Some(PathBuf::from(val));
+            }
         }
 
         if let Some(dir) = foods_dir {
@@ -323,5 +327,27 @@ mod tests {
     #[test]
     fn test_unknown_column_rejected() {
         assert!(toml::from_str::<Config>("show_columns = [\"bogus\"]\n").is_err());
+    }
+
+    #[test]
+    fn test_resolve_ignores_empty_env_vars() {
+        let original_foods = std::env::var("INTAKE_FOODS_DIR").ok();
+        let original_log = std::env::var("INTAKE_LOG_DIR").ok();
+
+        std::env::set_var("INTAKE_FOODS_DIR", "");
+        std::env::set_var("INTAKE_LOG_DIR", "");
+        let config = Config::resolve(None, None).unwrap();
+
+        match original_foods {
+            Some(v) => std::env::set_var("INTAKE_FOODS_DIR", v),
+            None => std::env::remove_var("INTAKE_FOODS_DIR"),
+        }
+        match original_log {
+            Some(v) => std::env::set_var("INTAKE_LOG_DIR", v),
+            None => std::env::remove_var("INTAKE_LOG_DIR"),
+        }
+
+        assert_eq!(config.foods_dir, None);
+        assert_eq!(config.log_dir, None);
     }
 }
