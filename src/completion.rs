@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap_complete::{CompletionCandidate, Shell};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 fn completion_config() -> Option<&'static Config> {
@@ -86,7 +86,7 @@ pub(crate) fn cmd_completions(
     if install {
         let path = completion_path(&shell)?;
         fs::create_dir_all(path.parent().context("completion path has no parent")?)?;
-        let completer = Path::new("intake");
+        let completer = std::env::current_exe().context("failed to resolve current executable")?;
         let output = std::process::Command::new(completer)
             .env("COMPLETE", shell.to_string())
             .output()
@@ -104,7 +104,7 @@ pub(crate) fn cmd_completions(
         )?;
     } else {
         let mut cmd = command;
-        clap_complete::generate(shell, &mut cmd, "intake", &mut std::io::stdout());
+        clap_complete::generate(shell, &mut cmd, "intake", &mut *writer);
     }
     Ok(())
 }
