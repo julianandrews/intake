@@ -129,6 +129,7 @@ fn toml_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
             files.push(path);
         }
     }
+    files.sort();
     Ok(files)
 }
 
