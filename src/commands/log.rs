@@ -36,7 +36,7 @@ pub(crate) struct LogRequest<'a> {
 }
 
 /// Log an entry for `date`: the food path when no macro flag was given (the
-/// name must resolve to a food slug, macros computed from its file), the
+/// name must resolve to a food name, macros computed from its file), the
 /// ad-hoc path when any macro flag was given (name is the title, macros as
 /// given, zeros for the rest).
 pub(crate) fn cmd_log(
@@ -81,8 +81,8 @@ pub(crate) fn cmd_log(
             name
         )
     };
-    let slug = food::Slug::from_str(name).map_err(|_| not_found())?;
-    let path = slug.file_path(foods_dir);
+    let food_name = food::FoodName::from_str(name).map_err(|_| not_found())?;
+    let path = food_name.file_path(foods_dir);
     if !path.exists() {
         return Err(not_found());
     }

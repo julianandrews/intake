@@ -6,41 +6,46 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, MAIN_SEPARATOR};
 use std::str::FromStr;
 
-/// A food slug: the filename (minus `.toml`) used to look up a food.
+/// A food name: the filename (minus `.toml`) used to look up a food.
 ///
-/// Validated on construction, so invalid slugs fail at parse time instead
+/// Validated on construction, so invalid names fail at parse time instead
 /// of during a filesystem lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Slug(String);
+pub struct FoodName(String);
 
-impl Slug {
+impl FoodName {
     /// The path of the food's TOML file inside `foods_dir`.
     pub fn file_path(&self, foods_dir: &Path) -> PathBuf {
         foods_dir.join(format!("{}.toml", self.0))
     }
 }
 
-impl FromStr for Slug {
+impl FromStr for FoodName {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
-            return Err("food slug must not be empty".to_string());
+            return Err("food name must not be empty".to_string());
         }
-        if s.contains('/') || s.contains('\\') {
-            return Err(format!("food slug '{s}' must not contain path separators"));
+        if s.ends_with(MAIN_SEPARATOR) {
+            return Err(format!(
+                "food name '{s}' must not end with a path separator"
+            ));
         }
-        if s == "." || s == ".." {
-            return Err(format!("food slug '{s}' is not a valid slug"));
+        let mut components = Path::new(s).components();
+        match (components.next(), components.next()) {
+            (Some(Component::Normal(name)), None) => {
+                Ok(FoodName(name.to_string_lossy().into_owned()))
+            }
+            _ => Err(format!("food name '{s}' is not a valid filename")),
         }
-        Ok(Slug(s.to_string()))
     }
 }
 
-impl fmt::Display for Slug {
+impl fmt::Display for FoodName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -136,14 +141,14 @@ fn toml_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-pub fn list_food_slugs(foods_dir: &Path) -> Result<Vec<String>> {
-    let mut slugs = Vec::new();
+pub fn list_food_names(foods_dir: &Path) -> Result<Vec<String>> {
+    let mut names = Vec::new();
     for path in toml_files_in(foods_dir)? {
-        if let Some(slug) = path.file_stem().and_then(|s| s.to_str()) {
-            slugs.push(slug.to_string());
+        if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+            names.push(name.to_string());
         }
     }
-    Ok(slugs)
+    Ok(names)
 }
 
 pub fn load_food(path: &Path) -> Result<Food> {
@@ -156,32 +161,32 @@ pub fn load_food(path: &Path) -> Result<Food> {
     Ok(food)
 }
 
-/// Overwrite a food file for `slug` in `foods_dir`, atomically.
-pub fn write_food(foods_dir: &Path, slug: &Slug, food: &Food) -> Result<()> {
-    write_food_impl(foods_dir, slug, food, true)
+/// Overwrite a food file for `name` in `foods_dir`, atomically.
+pub fn write_food(foods_dir: &Path, name: &FoodName, food: &Food) -> Result<()> {
+    write_food_impl(foods_dir, name, food, true)
 }
 
-/// Create a food file for `slug` in `foods_dir`, atomically.
+/// Create a food file for `name` in `foods_dir`, atomically.
 ///
 /// Fails instead of overwriting if the file exists, so a concurrent `food new`
-/// for the same slug cannot clobber an existing file.
-pub fn create_food(foods_dir: &Path, slug: &Slug, food: &Food) -> Result<()> {
-    let path = slug.file_path(foods_dir);
-    match write_food_impl(foods_dir, slug, food, false) {
+/// for the same name cannot clobber an existing file.
+pub fn create_food(foods_dir: &Path, name: &FoodName, food: &Food) -> Result<()> {
+    let path = name.file_path(foods_dir);
+    match write_food_impl(foods_dir, name, food, false) {
         Ok(()) => Ok(()),
         Err(_) if path.exists() => {
             bail!(
                 "food '{}' already exists — use `food edit {}` to modify it",
-                slug,
-                slug
+                name,
+                name
             )
         }
         Err(e) => Err(e),
     }
 }
 
-fn write_food_impl(foods_dir: &Path, slug: &Slug, food: &Food, clobber: bool) -> Result<()> {
-    let path = slug.file_path(foods_dir);
+fn write_food_impl(foods_dir: &Path, name: &FoodName, food: &Food, clobber: bool) -> Result<()> {
+    let path = name.file_path(foods_dir);
 
     fs::create_dir_all(foods_dir)
         .with_context(|| format!("failed to create foods directory: {}", foods_dir.display()))?;
@@ -316,50 +321,60 @@ mod tests {
         assert!(result.is_err());
     }
 
-    fn slug_from_path(path: &Path) -> Option<String> {
+    fn name_from_path(path: &Path) -> Option<String> {
         path.file_stem()
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
     }
 
     #[test]
-    fn test_slug_from_path() {
+    fn test_name_from_path() {
         assert_eq!(
-            slug_from_path(Path::new("foods/coffee.toml")),
+            name_from_path(Path::new("foods/coffee.toml")),
             Some("coffee".to_string())
         );
         assert_eq!(
-            slug_from_path(Path::new("coffee.toml")),
+            name_from_path(Path::new("coffee.toml")),
             Some("coffee".to_string())
         );
-        assert_eq!(slug_from_path(Path::new("")), None);
+        assert_eq!(name_from_path(Path::new("")), None);
     }
 
     #[test]
-    fn test_slug_from_path_no_extension() {
-        assert_eq!(slug_from_path(Path::new("foo")), Some("foo".to_string()));
+    fn test_name_from_path_no_extension() {
+        assert_eq!(name_from_path(Path::new("foo")), Some("foo".to_string()));
     }
 
     #[test]
-    fn test_slug_parses_valid_names() {
+    fn test_food_name_parses_valid_names() {
         for s in ["coffee", "quest-bar", "spicy-potato-wedges", "x"] {
-            assert_eq!(Slug::from_str(s).unwrap().to_string(), s);
+            assert_eq!(FoodName::from_str(s).unwrap().to_string(), s);
         }
     }
 
     #[test]
-    fn test_slug_rejects_empty_and_traversal() {
-        assert!(Slug::from_str("").is_err());
-        assert!(Slug::from_str("a/b").is_err());
-        assert!(Slug::from_str("a\\b").is_err());
-        assert!(Slug::from_str(".").is_err());
-        assert!(Slug::from_str("..").is_err());
+    fn test_food_name_rejects_empty_and_traversal() {
+        assert!(FoodName::from_str("").is_err());
+        assert!(FoodName::from_str("a/b").is_err());
+        assert!(FoodName::from_str(".").is_err());
+        assert!(FoodName::from_str("..").is_err());
     }
 
     #[test]
-    fn test_slug_file_path() {
+    fn test_food_name_rejects_trailing_separator() {
+        assert!(FoodName::from_str("coffee/").is_err());
+        assert!(FoodName::from_str("coffee//").is_err());
+    }
+
+    #[test]
+    fn test_food_name_accepts_backslash() {
+        assert!(FoodName::from_str("a\\b").is_ok());
+    }
+
+    #[test]
+    fn test_food_name_file_path() {
         assert_eq!(
-            Slug::from_str("quest-bar")
+            FoodName::from_str("quest-bar")
                 .unwrap()
                 .file_path(Path::new("foods")),
             PathBuf::from("foods/quest-bar.toml")
@@ -419,9 +434,9 @@ mod tests {
     fn test_write_food_roundtrip() {
         let dir = tempfile::TempDir::new().unwrap();
         let food = food_with_ingredient(2, ingredient("10.0", "5.0", 100, "4.0", "30.0", "2.0"));
-        let slug = Slug::from_str("test-food").unwrap();
-        write_food(dir.path(), &slug, &food).unwrap();
-        let loaded = load_food(&slug.file_path(dir.path())).unwrap();
+        let name = FoodName::from_str("test-food").unwrap();
+        write_food(dir.path(), &name, &food).unwrap();
+        let loaded = load_food(&name.file_path(dir.path())).unwrap();
         assert_eq!(loaded.title, food.title);
         assert_eq!(loaded.ingredients.len(), 1);
         assert_eq!(loaded.ingredients[0].calories, food.ingredients[0].calories);

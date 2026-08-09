@@ -70,11 +70,11 @@ fn render_food(food: &food::Food, columns: &[Column]) -> Result<String> {
 pub(crate) fn cmd_show_food(
     writer: &mut impl Write,
     foods_dir: &Path,
-    slug: &food::Slug,
+    name: &food::FoodName,
     config: &Config,
 ) -> Result<()> {
-    let food = food::load_food(&slug.file_path(foods_dir))
-        .with_context(|| format!("food '{}' not found", slug))?;
+    let food = food::load_food(&name.file_path(foods_dir))
+        .with_context(|| format!("food '{}' not found", name))?;
     write!(writer, "{}", render_food(&food, &config.columns()?)?)?;
     Ok(())
 }
@@ -134,14 +134,14 @@ fn canned_example_food() -> food::Food {
 }
 
 /// The `food new` editor prefill: a serialized canned example with guidance
-/// comments, including the `# slug:` line the file will be saved as.
-fn new_food_skeleton(slug: &food::Slug) -> Result<String> {
+/// comments, including the `# name:` line the file will be saved as.
+fn new_food_skeleton(name: &food::FoodName) -> Result<String> {
     let toml = toml::to_string(&canned_example_food()).context("failed to serialize food")?;
     Ok(format!(
         "# Create a new food: edit the values below, save, and exit.\n\
          # Leave the file unchanged to abort.\n\
-         # slug: {slug}\n\
-         # The title may differ from the slug; the slug is the filename.\n\n{toml}"
+         # name: {name}\n\
+         # The title may differ from the name; the name is the filename.\n\n{toml}"
     ))
 }
 
@@ -150,26 +150,26 @@ fn write_nothing(writer: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-/// Create `<slug>.toml` in the editor: slug + collision check first, then an
+/// Create `<name>.toml` in the editor: name + collision check first, then an
 /// edit-validate-confirm loop, then the atomic write.
 pub(crate) fn cmd_new_food(
     writer: &mut impl Write,
     foods_dir: &Path,
-    slug: &food::Slug,
+    name: &food::FoodName,
     yes: bool,
     config: &Config,
 ) -> Result<()> {
-    let path = slug.file_path(foods_dir);
+    let path = name.file_path(foods_dir);
     if path.exists() {
         bail!(
             "food '{}' already exists — use `food edit {}` to modify it",
-            slug,
-            slug
+            name,
+            name
         );
     }
 
     let columns = config.columns()?;
-    let mut prefill = new_food_skeleton(slug)?;
+    let mut prefill = new_food_skeleton(name)?;
 
     loop {
         let Some(content) = editor::capture_via_editor(&prefill, ".toml")? else {
@@ -180,7 +180,7 @@ pub(crate) fn cmd_new_food(
             Ok(food) => food,
             Err(e) => {
                 prefill = format!(
-                    "# The food couldn't be saved:\n{}\n\n# slug: {slug}\n\n{}\n",
+                    "# The food couldn't be saved:\n{}\n\n# name: {name}\n\n{}\n",
                     comment_lines(&e.to_string()),
                     content
                 );
@@ -202,7 +202,7 @@ pub(crate) fn cmd_new_food(
             }
         }
 
-        food::create_food(foods_dir, slug, &food)?;
+        food::create_food(foods_dir, name, &food)?;
         writeln!(writer, "Wrote {}", path.display())?;
         writeln!(writer)?;
         write!(writer, "{}", render_food(&food, &columns)?)?;
@@ -214,12 +214,12 @@ pub(crate) fn cmd_new_food(
 pub(crate) fn cmd_edit_food(
     writer: &mut impl Write,
     foods_dir: &Path,
-    slug: &food::Slug,
+    name: &food::FoodName,
     yes: bool,
     config: &Config,
 ) -> Result<()> {
-    let path = slug.file_path(foods_dir);
-    let original = food::load_food(&path).with_context(|| format!("food '{}' not found", slug))?;
+    let path = name.file_path(foods_dir);
+    let original = food::load_food(&path).with_context(|| format!("food '{}' not found", name))?;
 
     let columns = config.columns()?;
     let mut prefill = toml::to_string(&original).context("failed to serialize food")?;
@@ -255,7 +255,7 @@ pub(crate) fn cmd_edit_food(
             }
         }
 
-        food::write_food(foods_dir, slug, &food)?;
+        food::write_food(foods_dir, name, &food)?;
         writeln!(writer, "Wrote {}", path.display())?;
         writeln!(writer)?;
         write!(writer, "{}", render_food(&food, &columns)?)?;
@@ -439,9 +439,9 @@ mod tests {
 
     #[test]
     fn test_new_food_skeleton_is_valid_toml() {
-        let slug = food::Slug::from_str("my-food").unwrap();
-        let skeleton = new_food_skeleton(&slug).unwrap();
-        assert!(skeleton.contains("# slug: my-food"));
+        let name = food::FoodName::from_str("my-food").unwrap();
+        let skeleton = new_food_skeleton(&name).unwrap();
+        assert!(skeleton.contains("# name: my-food"));
         let food: food::Food = toml::from_str(&skeleton).unwrap();
         assert_eq!(food.title, "My Food");
         assert_eq!(food.ingredients.len(), 1);
@@ -449,8 +449,8 @@ mod tests {
 
     #[test]
     fn test_new_food_skeleton_has_no_notes_field() {
-        let slug = food::Slug::from_str("my-food").unwrap();
-        let skeleton = new_food_skeleton(&slug).unwrap();
+        let name = food::FoodName::from_str("my-food").unwrap();
+        let skeleton = new_food_skeleton(&name).unwrap();
         assert!(!skeleton.contains("notes"));
     }
 

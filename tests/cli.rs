@@ -134,11 +134,11 @@ const VALID_FOOD: &str = "title = \"Test Food\"\nservings = 1\n\n[[ingredients]]
 const EDITED_FOOD: &str = "title = \"Coffee v2\"\nservings = 1\n\n[[ingredients]]\nname = \"Cold Brew\"\nquantity = \"100g\"\nprotein_g = 0\nfiber_g = 0\ncalories = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\n\n[[ingredients]]\nname = \"Oat Milk\"\nquantity = \"50g\"\nprotein_g = 1\nfiber_g = 0\ncalories = 24\nfat_g = 0.6\ncarbs_g = 3.3\nalcohol_g = 0\n";
 
 /// A fresh temp dir holding a copy of the named fixture food.
-fn temp_foods_with_fixture(slug: &str) -> tempfile::TempDir {
+fn temp_foods_with_fixture(name: &str) -> tempfile::TempDir {
     let dir = tempfile::TempDir::new().unwrap();
     std::fs::copy(
-        foods_dir().join(format!("{slug}.toml")),
-        dir.path().join(format!("{slug}.toml")),
+        foods_dir().join(format!("{name}.toml")),
+        dir.path().join(format!("{name}.toml")),
     )
     .unwrap();
     dir
@@ -413,7 +413,7 @@ fn test_adhoc_macros_optional_zero_defaults() {
 }
 
 #[test]
-fn test_log_macros_win_over_slug() {
+fn test_log_macros_win_over_food_name() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
 

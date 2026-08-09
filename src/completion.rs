@@ -29,8 +29,8 @@ pub(crate) fn complete_foods() -> Vec<CompletionCandidate> {
     if !dir.is_dir() {
         return Vec::new();
     }
-    match food::list_food_slugs(&dir) {
-        Ok(slugs) => slugs.into_iter().map(CompletionCandidate::new).collect(),
+    match food::list_food_names(&dir) {
+        Ok(names) => names.into_iter().map(CompletionCandidate::new).collect(),
         Err(e) => {
             eprintln!("warning: failed to list foods for completion: {e}");
             Vec::new()

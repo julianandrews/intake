@@ -1,6 +1,6 @@
 use crate::amount::{Calories, Grams, Servings};
 use crate::completion::{complete_foods, complete_log_dates};
-use crate::food::Slug;
+use crate::food::FoodName;
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, Parser, Subcommand};
 use clap_complete::engine::ArgValueCandidates;
@@ -48,7 +48,7 @@ pub(crate) struct LogDateArgs {
 pub(crate) enum Commands {
     /// Log a food, or an ad-hoc entry when macro flags are given
     Log {
-        /// Food slug (filename without .toml), or the item's name for an ad-hoc entry
+        /// Food name (filename without .toml), or the item's name for an ad-hoc entry
         #[arg(value_parser = non_blank_name, add = ArgValueCandidates::new(complete_foods))]
         name: String,
         /// Number of servings (default: 1)
@@ -118,23 +118,23 @@ pub(crate) enum FoodCommands {
     List,
     /// Show a food with ingredients and per-serving values
     Show {
-        /// Food slug (filename without .toml)
+        /// Food name (filename without .toml)
         #[arg(add = ArgValueCandidates::new(complete_foods))]
-        food: Slug,
+        food: FoodName,
     },
     /// Create a new food in the editor
     New {
-        /// Food slug (filename without .toml)
-        slug: Slug,
+        /// Food name (filename without .toml)
+        name: FoodName,
         /// Skip the confirmation prompt
         #[arg(long)]
         yes: bool,
     },
     /// Edit an existing food in the editor
     Edit {
-        /// Food slug (filename without .toml)
+        /// Food name (filename without .toml)
         #[arg(add = ArgValueCandidates::new(complete_foods))]
-        slug: Slug,
+        name: FoodName,
         /// Skip the confirmation prompt
         #[arg(long)]
         yes: bool,
@@ -271,13 +271,13 @@ mod tests {
     }
 
     #[test]
-    fn test_food_new_parses_slug_and_yes() {
+    fn test_food_new_parses_name_and_yes() {
         let cli = Cli::try_parse_from(["intake", "food", "new", "my-food"]).unwrap();
         match cli.command {
             Some(Commands::Food {
-                command: FoodCommands::New { slug, yes },
+                command: FoodCommands::New { name, yes },
             }) => {
-                assert_eq!(slug.to_string(), "my-food");
+                assert_eq!(name.to_string(), "my-food");
                 assert!(!yes);
             }
             _ => panic!("expected Food New command"),
@@ -293,13 +293,13 @@ mod tests {
     }
 
     #[test]
-    fn test_food_edit_parses_slug_and_yes() {
+    fn test_food_edit_parses_name_and_yes() {
         let cli = Cli::try_parse_from(["intake", "food", "edit", "coffee", "--yes"]).unwrap();
         match cli.command {
             Some(Commands::Food {
-                command: FoodCommands::Edit { slug, yes },
+                command: FoodCommands::Edit { name, yes },
             }) => {
-                assert_eq!(slug.to_string(), "coffee");
+                assert_eq!(name.to_string(), "coffee");
                 assert!(yes);
             }
             _ => panic!("expected Food Edit command"),
@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_slug_rejected_at_parse() {
+    fn test_invalid_name_rejected_at_parse() {
         assert!(Cli::try_parse_from(["intake", "food", "new", ""]).is_err());
         assert!(Cli::try_parse_from(["intake", "food", "new", "a/b"]).is_err());
         assert!(Cli::try_parse_from(["intake", "food", "new", ".."]).is_err());

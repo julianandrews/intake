@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn test_log_entry_serializes_title_without_slug() -> Result<()> {
+    fn test_log_entry_serializes_title_without_food_reference() -> Result<()> {
         let dir = tempfile::TempDir::new()?;
 
         let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();

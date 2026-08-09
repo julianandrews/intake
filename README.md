@@ -22,22 +22,22 @@ Or for zsh: `intake completions zsh --install`
 
 ```
 intake                                  Show today's log
-intake log <slug> [servings] [--date D]     Log a food (macros from its file)
+intake log <name> [servings] [--date D]     Log a food (macros from its file)
 intake log "<name>" [servings] --calories N --protein N --fiber N --fat N --carbs N --alcohol N
                                           Log an ad-hoc entry with inline macros
 intake day [date] [-d N]                Show a day's totals (default: today)
 intake summary [date] [-d N]            Multi-day summary of macros and deficit (default: last 7 days)
 intake exercise <calories>              Record exercise calories for today
 intake food list                        List all foods with per-serving values
-intake food show <slug>                 Show food details with ingredients
-intake food new <slug>                  Create a food in your editor
-intake food edit <slug>                 Edit a food in your editor
+intake food show <name>                 Show food details with ingredients
+intake food new <name>                  Create a food in your editor
+intake food edit <name>                 Edit a food in your editor
 intake completions <shell>              Generate or install completion script
 ```
 
 Flags like `--foods-dir` and `--log-dir` are available on every command.
 `intake day --days-ago N` (or `-d N`) shows the log from N days ago, e.g.
-`intake day -d 1` for yesterday. `intake log <slug> --date D` logs to day D
+`intake day -d 1` for yesterday. `intake log <name> --date D` logs to day D
 instead of today. `intake summary` shows one row per logged day (unlogged
 days in the window are skipped) with period totals and per-day averages; the
 Deficit column appears when `maintenance_calories` is configured.
@@ -72,11 +72,11 @@ variables, or `--foods-dir` / `--log-dir` CLI flags (CLI wins).
 
 ## Adding Foods
 
-Drop a `.toml` file in your foods directory, or run `intake food new <slug>`
+Drop a `.toml` file in your foods directory, or run `intake food new <name>`
 to create one in your editor (it pre-fills a template with guidance
 comments; `$VISUAL`, `$EDITOR`, or `nano` is used, and `--yes` skips the
-confirmation prompt). `intake food edit <slug>` edits an existing food the
-same way. The filename (minus `.toml`) becomes the food slug used with
+confirmation prompt). `intake food edit <name>` edits an existing food the
+same way. The filename (minus `.toml`) becomes the food name used with
 `intake log`. The editor value is split on whitespace, so `code --wait`
 works but quoted arguments are not supported.
 
@@ -99,7 +99,7 @@ All macro fields (`protein_g`, `fiber_g`, `calories`, `fat_g`, `carbs_g`,
 `alcohol_g`) are required — a food with unrecorded macros fails loudly
 instead of silently counting as zero.
 
-`intake food show <slug>` reports parse errors, while `intake food list`
+`intake food show <name>` reports parse errors, while `intake food list`
 skips food files that fail to parse, printing a warning to stderr for each
 one.
 
@@ -116,10 +116,10 @@ intake log --calories 250 --protein 12 --fiber 3 --fat 9 --carbs 20 "Greek yogur
 
 All macro flags (`--calories`, `--protein`, `--fiber`, `--fat`, `--carbs`,
 `--alcohol`) are optional and default to 0. Without macro flags the name
-must be an existing food slug; anything else errors instead of logging a
+must be an existing food name; anything else errors instead of logging a
 silently-zero entry — for a zero-calorie item (e.g. water), pass `--calories 0`.
 
-The name is stored verbatim as the entry's title — no food file or slug is
+The name is stored verbatim as the entry's title — no food file or name is
 created.
 
 ## Log Files

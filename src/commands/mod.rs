@@ -78,11 +78,11 @@ pub(crate) fn run(command: Option<Commands>, config: &Config) -> Result<()> {
             FoodCommands::Show { food } => {
                 food::cmd_show_food(&mut stdout, &foods_dir, &food, config)?;
             }
-            FoodCommands::New { slug, yes } => {
-                food::cmd_new_food(&mut stdout, &foods_dir, &slug, yes, config)?;
+            FoodCommands::New { name, yes } => {
+                food::cmd_new_food(&mut stdout, &foods_dir, &name, yes, config)?;
             }
-            FoodCommands::Edit { slug, yes } => {
-                food::cmd_edit_food(&mut stdout, &foods_dir, &slug, yes, config)?;
+            FoodCommands::Edit { name, yes } => {
+                food::cmd_edit_food(&mut stdout, &foods_dir, &name, yes, config)?;
             }
         },
         Some(Commands::Completions { shell, install }) => {
