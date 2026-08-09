@@ -103,8 +103,8 @@ The lib takes text in and returns the validated `T`; prompt capture
 - proposal rendering via the existing `display::Table` code
 - the `DayLogOps` schema with `apply_ops`, the batched `food_lookup` tool,
   and per-command tool registration (see "Tools")
-- slug validation + parse-time collision checks (shared by both `food new`
-  paths; see "Slug argument")
+- name validation + parse-time collision checks (shared by both `food new`
+  paths; see "Name argument")
 - the actual writes: food files, `log::write_day`
 
 ## The resolve loop (pipeline ownership)
@@ -180,28 +180,28 @@ writing is always `log` / `food` / `exercise`, and AI is a transparent prefix
 
 ```
 intake                          # today's log
-intake log <slug> [servings] [--date D]     # log a food (slug completion)
+intake log <name> [servings] [--date D]     # log a food (name completion)
 intake log "<name>" [servings] --calories N --protein N --fiber N --fat N --carbs N --alcohol N
                                 # adhoc entry with inline macros
 intake day [date] [-d N]        # view a day (days ago)
 intake summary [date] [-d N]    # multi-day summary (window)
 intake exercise <calories>      # record exercise for today
 intake food list                # all foods with per-serving values
-intake food show <slug>         # a food's ingredients and per-serving values
-intake food new <slug>          # plain: editor + validation + confirm, no AI
-intake food edit <slug>         # plain: editor + validation + confirm, no AI
+intake food show <name>         # a food's ingredients and per-serving values
+intake food new <name>          # plain: editor + validation + confirm, no AI
+intake food edit <name>         # plain: editor + validation + confirm, no AI
 intake completions <shell>      # shell completion script
 
 intake ai log [prompt...] [--date D]   # AI day editing (ops-based)
-intake ai food new <slug> [prompt...]  # AI recipe generation
-intake ai food edit <slug> [prompt...] # AI recipe editing (slug completion)
+intake ai food new <name> [prompt...]  # AI recipe generation
+intake ai food edit <name> [prompt...] # AI recipe editing (name completion)
 ```
 
 `log` disambiguation: any macro flag present selects the adhoc path,
-decisively — the name is a free-form title and is never slug-resolved
+decisively — the name is a free-form title and is never name-resolved
 (`log turkey-chili 2 --calories 500` logs an adhoc entry titled
 "turkey-chili" with 500 cal and zeros for the rest). With no macro flags,
-the name must resolve to an existing slug → the food path, macros computed
+the name must resolve to an existing food name → the food path, macros computed
 from the file; a non-resolving name with no
 macros → a clear error pointing at `ai log`. Nothing is ever logged with
 silent zero macros.
@@ -223,22 +223,22 @@ The AI commands, in full:
 | Command | Input | Output | Write |
 |---|---|---|---|
 | `ai log` | numbered day rows + totals line + 7-day history + user prompt | `DayLogOps` — see "`ai log` ops"; macros for food-derived rows never come from the model | validated and applied by intake, whole-day rewrite via new `log::write_day` |
-| `ai food new <slug>` | user prompt + slug positional | `Food` TOML | new `<slug>.toml` in foods dir; an existing slug errors at parse time (see "Slug argument") — never a model retry |
-| `ai food edit <slug>` | current food TOML + user prompt | updated `Food` | overwrite food file |
+| `ai food new <name>` | user prompt + name positional | `Food` TOML | new `<name>.toml` in foods dir; an existing name errors at parse time (see "Name argument") — never a model retry |
+| `ai food edit <name>` | current food TOML + user prompt | updated `Food` | overwrite food file |
 
-### Slug argument
+### Name argument
 
-`food new` and `ai food new` take the slug as a required CLI positional —
+`food new` and `ai food new` take the name as a required CLI positional —
 the filename the food will be written to, matching `log` / `show` / `edit`.
-The slug is validated for filesystem safety only: non-empty, no path
+The name is validated for filesystem safety only: non-empty, no path
 separators (`/` or `\`), and not `.` / `..` — anything else is accepted, so
-filenames with uppercase or spaces work. An existing slug
+filenames with uppercase or spaces work. An existing name
 errors immediately at parse time: "food 'X' already exists — use
 `food edit X` / `ai food edit X` to modify it". The AI returns plain `Food`
-TOML — no slug field, the filename is the slug — and intake writes it to
-`<slug>.toml`; the title inside may differ from the slug (e.g.
-`tjs-lunch.toml` with title "TJs Lunch"). Slugs exist only as food
-filenames: log entries store display titles, never slugs.
+TOML — no name field, the filename is the name — and intake writes it to
+`<name>.toml`; the title inside may differ from the name (e.g.
+`tjs-lunch.toml` with title "TJs Lunch"). Names exist only as food
+filenames: log entries store display titles, never names.
 
 Shared flags (all `ai` commands, plus `--yes` on plain `food new`/`food edit`):
 
@@ -261,7 +261,7 @@ by intake, never written by the model:
 ```toml
 [[ops]]
 kind = "add-food"            # no macro fields — intake computes them via food.per_serving()
-slug = "turkey-chili"
+name = "turkey-chili"
 servings = 1.5
 
 [[ops]]
@@ -282,9 +282,9 @@ row = 3                      # index into the numbered list shown in the prompt
 [[ops]]
 kind = "replace"             # remove + re-add in place; keeps ordering
 row = 2
-slug = "oatmeal"             # food variant: slug + servings only
+name = "oatmeal"             # food variant: name + servings only
 servings = 2
-# adhoc variant: title + all six macros instead of slug
+# adhoc variant: title + all six macros instead of name
 ```
 
 Semantics:
@@ -297,8 +297,8 @@ Semantics:
   Ops on the same row conflict (validation error), so application order
   between removes and replaces never matters.
 - Validation errors feed the retry loop just like parse failures: unknown
-  `slug` (must exist in the foods dir — `food_lookup` results are the model's
-  only source of slugs), `row` out of range, duplicate or conflicting ops on
+  `name` (must exist in the foods dir — `food_lookup` results are the model's
+  only source of names), `row` out of range, duplicate or conflicting ops on
   the same row, `add-adhoc` with missing or invalid macros.
 - `add-adhoc` macro fields are the same exact-decimal types as food files
   (`Calories`/`Grams`): whole and fractional values are both valid, and
@@ -313,6 +313,11 @@ Semantics:
   raw output. Overflow never panics and never leaks out of the closure
   as an `Io` error — it is the model's fault, so it must be fixable
   through the retry loop.
+- An applied day with no entries and no `exercise_calories` deletes the day
+  file instead of writing one — the same convention as `remove_entry`, with
+  the same directory sync — so `day` reports "No entries" rather than an
+  empty table. The row diff already shows every row removed, so the proposal
+  still states what will happen.
 - `exercise_calories` is preserved by construction — `apply_ops` copies it
   through and no op can touch it (an explicit `exercise` op is future work).
 - The `ai log` parse closure is: deserialize `DayLogOps` → validate →
@@ -329,7 +334,7 @@ forgiving because a wrong suggestion is harmless — the model chooses, and
 the user confirms.
 
 The model's task shrinks to *choosing*: if a result matches the user's
-intent, emit `add-food` (slug + servings; macros computed by intake, exact
+intent, emit `add-food` (name + servings; macros computed by intake, exact
 by construction); if the user wants a modified version or no food exists,
 emit `add-adhoc` with its own macros, preserved untouched. No automatic
 conversion, no `from food:` marker — intent lives in the op kind, and the
@@ -351,7 +356,7 @@ controls human display, not model context):
   the same width-independent format used for the `ai log` row diff. Entry
   lines (including the history window) are the only food-adjacent data
   embedded in prompts.
-- **Catalog line** — `slug | title | cal/serv, protein, fiber, fat, carbs, alcohol`,
+- **Catalog line** — `name | title | cal/serv, protein, fiber, fat, carbs, alcohol`,
   per-serving values via `food.per_serving()`. The result format of
   `food_lookup`; never embedded in prompts — the model sees foods only when
   it asks.
@@ -364,8 +369,8 @@ Per command:
 | Command | Prompt context |
 |---|---|
 | `ai log` | numbered entry lines for the day being edited, a totals line (which includes `exercise: N`), and the 7 days before the edited day as dated entry lines — hardcoded window, configurability is future work |
-| `ai food new <slug>` | none beyond the schema + 2 full sample foods from the user's own foods dir (naming, serving, and ingredient conventions — see "Sample foods") |
-| `ai food edit <slug>` | the target food's full TOML + the same 2 sample foods |
+| `ai food new <name>` | none beyond the schema + 2 full sample foods from the user's own foods dir (naming, serving, and ingredient conventions — see "Sample foods") |
+| `ai food edit <name>` | the target food's full TOML + the same 2 sample foods |
 
 Details:
 
@@ -382,7 +387,7 @@ Details:
   TOMLs from the user's own foods dir so new recipes fit the user's
   conventions (titles, serving sizes, ingredient granularity, quantity
   style like "400g" vs "1 tbsp"). Selection is deterministic: first two by
-  slug order, preferring foods with ≥2 ingredients; an empty dir falls back
+  name order, preferring foods with ≥2 ingredients; an empty dir falls back
   to the template's canned examples. Catalog lines via `food_lookup` are the
   wrong shape for this — they lack ingredient structure — so the tool stays
   `ai log`-only.
@@ -421,16 +426,16 @@ pub trait Tool {
   per entry. Matching per query:
   1. Normalize both sides: lowercase, strip non-alphanumerics
      (Unicode-aware, e.g. `char::is_alphanumeric`).
-  2. Exact matches on slug or title first, then containment (query inside
-     slug/title or vice versa). Top ~5 per query, exact matches first,
+  2. Exact matches on name or title first, then containment (query inside
+     name/title or vice versa). Top ~5 per query, exact matches first,
      deduplicated.
   3. Results render as catalog lines (see "Context windows"), with a total
      output cap. An empty foods dir or no matches returns an explicit empty
      result.
 
 Registration per command: `ai log` → `food_lookup` + `web_search`;
-`ai food new <slug>` / `ai food edit <slug>` → `web_search` only — the
-slug comes from the CLI (see "Slug argument"), so there is no name
+`ai food new <name>` / `ai food edit <name>` → `web_search` only — the
+name comes from the CLI (see "Name argument"), so there is no naming
 collision for the model to manage; `web_search` covers ingredient
 nutrition.
 
@@ -459,7 +464,7 @@ unconditionally, and proceeds to the parse step (see `llm.rs`).
    tools after budget exhaustion. On exhaustion,
    print the last error and the model's raw output so the user can fix it
    manually. Errors appended to the conversation follow a fixed shape: quote
-   the offending op, state the rule, and give the fix (valid slugs capped at
+   the offending op, state the rule, and give the fix (valid names capped at
    ~10, or the valid row range).
 6. Show the proposed change: for `ai log` a row-level diff of the applied
    day log vs. the original (one normalized
@@ -478,8 +483,13 @@ unconditionally, and proceeds to the parse step (see `llm.rs`).
    codes"). Before writing, intake
    **reloads the target** (day log or food file); if it differs from the
    snapshot the context was built from, abort with "changed since this
-   proposal was generated — re-run" instead of overwriting. For `ai food
-   new` the collision check already ran at parse time (see "Slug
+   proposal was generated — re-run" instead of overwriting. For `ai log` the
+   reload, the comparison, and the write run inside the same log-directory
+   lock (`lock_log_dir`) as the existing read-modify-write paths
+   (`append_entry`, `set_exercise_calories`, `remove_entry`), so the recheck
+   cannot race a concurrent `log` / `rm` between check and write — mirroring
+   `remove_entry`'s expected-entry equality. For `ai food
+   new` the collision check already ran at parse time (see "Name
    argument"); the write-time recheck aborts if the file appeared
    mid-flow. After a
    successful write, reprint the affected table (day log for `ai log`, food
@@ -528,14 +538,15 @@ change it.
 
 All day-log writes are full-file rewrites (`append_entry`,
 `set_exercise_calories`, and the new `log::write_day`), so a rewrite can
-only preserve the fields the binary knows. `DayLog` and `LogEntry`
-therefore carry `#[serde(deny_unknown_fields)]`: a day file containing a
-field this binary doesn't know fails loudly at load instead of being
-silently dropped on write. Adding a log-field in the future is thus a
-breaking schema change for older binaries — intentional, since an old
-binary must never silently delete data it cannot read; the upgrade path is
-a migration at the point the field lands. `Food` / `Ingredient` get the
-same treatment for the `ai food edit` overwrite path.
+only preserve the fields the binary knows. `DayLog` and `LogEntry` — like
+`Food` and `Ingredient` — already carry `#[serde(deny_unknown_fields)]`,
+and that is what makes the whole-day rewrites and the `ai food edit`
+overwrite safe: a day or food file containing a field this binary doesn't
+know fails loudly at load instead of being silently dropped on write.
+Adding a log-field in the future is thus a breaking schema change for older
+binaries — intentional, since an old binary must never silently delete
+data it cannot read; the upgrade path is a migration at the point the
+field lands.
 
 `similar` is an intake-crate dependency: proposal rendering is intake's job
 (the lib's `present` callback), so the lib stays generic.
@@ -568,7 +579,7 @@ like `rm -f`. The same rule applies to the plain y/n confirm path
 [ai]
 api_key = "..."          # or INTAKE_AI_API_KEY / --api-key
 model = "gpt-4o-mini"    # or INTAKE_AI_MODEL / --model
-base_url = "..."         # optional; default api.openai.com
+base_url = "..."         # optional; default https://api.openai.com/v1
 max_retries = 3
 max_tool_calls = 8           # tool executions per resolve attempt; exhaustion → one "answer now" round
 timeout_secs = 60            # per LLM API call
@@ -580,8 +591,10 @@ food_edit_prompt = "..."
 ```
 
 - `Config` gets `#[serde(default)] ai: AiConfig` so existing configs and tests
-  are unaffected; the `[ai]` table deserializes into `intake_ai::AiSettings`
-  (via the wrapper) — no mapping layer. The wrapper field is
+  are unaffected; the `[ai]` table deserializes directly into the intake-side
+  `AiConfig` wrapper, which flattens `intake_ai::AiSettings` (no field-by-field
+  mapping) and adds the intake-owned prompt-override keys (`log_prompt`,
+  `food_new_prompt`, `food_edit_prompt`). The wrapper field is
   `#[cfg(feature = "ai")]`-gated (see Feature gating).
 - Resolution order matches `Config::resolve`: config file → env var → CLI flag.
   The merge happens in `ai_cmd`: it combines the `[ai]` config values, the
@@ -700,10 +713,10 @@ Per-command content:
   computed by intake), `add-adhoc` with your own macros (all six) for
   one-offs and modified versions of foods; `row` indices are 1-based and
   refer to the numbered list exactly as shown — they never shift.
-- `food_new.md` (`ai food new <slug>`): the `Food` schema; the slug is
-  supplied on the command line and the title may differ from it (see "Slug
+- `food_new.md` (`ai food new <name>`): the `Food` schema; the name is
+  supplied on the command line and the title may differ from it (see "Name
   argument"); `notes` is optional.
-- `food_edit.md` (`ai food edit <slug>`): the target food's TOML is the
+- `food_edit.md` (`ai food edit <name>`): the target food's TOML is the
   context; preserve all untouched fields; the 2 sample foods for
   consistency; before/after is shown at confirm.
 
@@ -754,14 +767,14 @@ Per-command content:
   `apply_ops` (add-food / add-adhoc / remove / replace; row out of
   range; duplicate and conflicting ops; additions append, replacements keep
   position; overflow — huge `servings` returns a retryable `Err(String)`,
-  never a panic or `Io`); `food_lookup` matching (normalized exact match on slug and
+  never a panic or `Io`); `food_lookup` matching (normalized exact match on name and
   title; containment fallback; top-N ordering; batch mode — multiple
   queries in one call; empty result for unknown foods and for an empty
   foods dir); context assembly (totals line, history window anchored to the
   edited day, truncation cap, empty day, sample foods embedded for
   `ai food new`/`edit` with empty-dir canned fallback); stale-write abort (target changed
   between context build and write); empty ops proposal (empty diff, no
-  write); slug argument — parse-time collision error for `ai food new`,
+  write); name argument — parse-time collision error for `ai food new`,
   suggesting `food edit`;
   write-time recheck for `ai food new`;
   row diff (one macro
