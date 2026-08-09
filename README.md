@@ -32,6 +32,7 @@ intake food list                        List all foods with per-serving values
 intake food show <name>                 Show food details with ingredients
 intake food new <name>                  Create a food in your editor
 intake food edit <name>                 Edit a food in your editor
+intake food rm <name>                   Delete a food (existing log entries are unaffected)
 intake completions <shell>              Generate or install completion script
 ```
 
@@ -102,6 +103,10 @@ instead of silently counting as zero.
 `intake food show <name>` reports parse errors, while `intake food list`
 skips food files that fail to parse, printing a warning to stderr for each
 one.
+
+`intake food rm <name>` deletes a food file (with a confirmation prompt;
+`--yes` skips it). Existing log entries are standalone copies of a food's
+values, so removing a food never changes or breaks earlier logs.
 
 See `tests/fixtures/foods/` in the repo for examples.
 

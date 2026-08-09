@@ -145,8 +145,8 @@ fn new_food_skeleton(name: &food::FoodName) -> Result<String> {
     ))
 }
 
-fn write_nothing(writer: &mut impl Write) -> Result<()> {
-    writeln!(writer, "Nothing written")?;
+fn write_nothing(writer: &mut impl Write, message: &str) -> Result<()> {
+    writeln!(writer, "{message}")?;
     Ok(())
 }
 
@@ -173,7 +173,7 @@ pub(crate) fn cmd_new_food(
 
     loop {
         let Some(content) = editor::capture_via_editor(&prefill, ".toml")? else {
-            return write_nothing(writer);
+            return write_nothing(writer, "Nothing written");
         };
 
         let food: food::Food = match toml::from_str(&content) {
@@ -192,12 +192,12 @@ pub(crate) fn cmd_new_food(
             write!(writer, "{}", render_food(&food, &columns)?)?;
             match confirm::confirm_yes_no(&format!("Write {}?", path.display()))? {
                 Some(true) => {}
-                Some(false) => return write_nothing(writer),
+                Some(false) => return write_nothing(writer, "Nothing written"),
                 None => {
                     eprintln!(
                         "no confirmation received — nothing written; use `--yes` to skip confirmation"
                     );
-                    return write_nothing(writer);
+                    return write_nothing(writer, "Nothing written");
                 }
             }
         }
@@ -226,7 +226,7 @@ pub(crate) fn cmd_edit_food(
 
     loop {
         let Some(content) = editor::capture_via_editor(&prefill, ".toml")? else {
-            return write_nothing(writer);
+            return write_nothing(writer, "Nothing written");
         };
 
         let food: food::Food = match toml::from_str(&content) {
@@ -245,12 +245,12 @@ pub(crate) fn cmd_edit_food(
             write!(writer, "{}", render_food(&food, &columns)?)?;
             match confirm::confirm_yes_no(&format!("Overwrite {}?", path.display()))? {
                 Some(true) => {}
-                Some(false) => return write_nothing(writer),
+                Some(false) => return write_nothing(writer, "Nothing written"),
                 None => {
                     eprintln!(
                         "no confirmation received — nothing written; use `--yes` to skip confirmation"
                     );
-                    return write_nothing(writer);
+                    return write_nothing(writer, "Nothing written");
                 }
             }
         }
@@ -261,6 +261,36 @@ pub(crate) fn cmd_edit_food(
         write!(writer, "{}", render_food(&food, &columns)?)?;
         return Ok(());
     }
+}
+
+/// Delete a food file after confirmation, unless `--yes`.
+///
+/// Log entries are standalone copies, so this never changes existing logs.
+pub(crate) fn cmd_rm_food(
+    writer: &mut impl Write,
+    foods_dir: &Path,
+    name: &food::FoodName,
+    yes: bool,
+) -> Result<()> {
+    let path = name.file_path(foods_dir);
+
+    if !yes && path.exists() {
+        match confirm::confirm_yes_no(&format!("Remove {}?", path.display()))? {
+            Some(true) => {}
+            Some(false) => return write_nothing(writer, "Nothing removed"),
+            None => {
+                eprintln!(
+                    "no confirmation received — nothing removed; use `--yes` to skip confirmation"
+                );
+                return write_nothing(writer, "Nothing removed");
+            }
+        }
+    }
+
+    food::remove_food(foods_dir, name)?;
+    writeln!(writer, "Removed {}", path.display())?;
+    writeln!(writer, "Existing log entries are unaffected")?;
+    Ok(())
 }
 
 #[cfg(test)]

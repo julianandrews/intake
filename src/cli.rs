@@ -139,6 +139,15 @@ pub(crate) enum FoodCommands {
         #[arg(long)]
         yes: bool,
     },
+    /// Delete a food file (existing log entries are unaffected)
+    Rm {
+        /// Food name (filename without .toml)
+        #[arg(add = ArgValueCandidates::new(complete_foods))]
+        name: FoodName,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[cfg(test)]
@@ -303,6 +312,28 @@ mod tests {
                 assert!(yes);
             }
             _ => panic!("expected Food Edit command"),
+        }
+    }
+
+    #[test]
+    fn test_food_rm_parses_name_and_yes() {
+        let cli = Cli::try_parse_from(["intake", "food", "rm", "coffee"]).unwrap();
+        match cli.command {
+            Some(Commands::Food {
+                command: FoodCommands::Rm { name, yes },
+            }) => {
+                assert_eq!(name.to_string(), "coffee");
+                assert!(!yes);
+            }
+            _ => panic!("expected Food Rm command"),
+        }
+
+        let cli = Cli::try_parse_from(["intake", "food", "rm", "coffee", "--yes"]).unwrap();
+        match cli.command {
+            Some(Commands::Food {
+                command: FoodCommands::Rm { yes, .. },
+            }) => assert!(yes),
+            _ => panic!("expected Food Rm command"),
         }
     }
 

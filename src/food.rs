@@ -216,6 +216,19 @@ fn write_food_impl(foods_dir: &Path, name: &FoodName, food: &Food, clobber: bool
     Ok(())
 }
 
+/// Delete the food file for `name` in `foods_dir`.
+///
+/// Log entries are flat copies of a food's values, so removing the file never
+/// affects existing log entries.
+pub fn remove_food(foods_dir: &Path, name: &FoodName) -> Result<()> {
+    let path = name.file_path(foods_dir);
+    if !path.exists() {
+        bail!("food '{}' not found", name);
+    }
+    fs::remove_file(&path).with_context(|| format!("failed to remove food: {}", path.display()))?;
+    Ok(())
+}
+
 pub fn find_all_foods(foods_dir: &Path) -> Result<Vec<Food>> {
     let mut foods = Vec::new();
     for path in toml_files_in(foods_dir)? {
@@ -440,5 +453,26 @@ mod tests {
         assert_eq!(loaded.title, food.title);
         assert_eq!(loaded.ingredients.len(), 1);
         assert_eq!(loaded.ingredients[0].calories, food.ingredients[0].calories);
+    }
+
+    #[test]
+    fn test_remove_food_deletes_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let food = food_with_ingredient(1, ingredient("0.0", "0.0", 5, "0.0", "0.0", "0.0"));
+        let name = FoodName::from_str("test-food").unwrap();
+        write_food(dir.path(), &name, &food).unwrap();
+        assert!(name.file_path(dir.path()).exists());
+
+        remove_food(dir.path(), &name).unwrap();
+        assert!(!name.file_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn test_remove_food_not_found_errors() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let name = FoodName::from_str("ghost-food").unwrap();
+        let err = remove_food(dir.path(), &name).unwrap_err();
+        assert!(err.to_string().contains("ghost-food"));
+        assert!(err.to_string().contains("not found"));
     }
 }

@@ -1326,3 +1326,169 @@ fn test_food_edit_not_found() {
     assert!(!success);
     assert!(stderr.contains("not found"));
 }
+
+#[test]
+fn test_food_rm_removes_file_with_confirmation() {
+    let foods_dir_tmp = temp_foods_with_fixture("coffee");
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let (stdout, success) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "rm",
+            "coffee",
+        ],
+        config_dir.path(),
+        &[],
+        "y\n",
+    );
+    assert!(success, "food rm failed: {}", stdout);
+    assert!(stdout.contains("Removed"));
+    assert!(!foods_dir_tmp.path().join("coffee.toml").exists());
+}
+
+#[test]
+fn test_food_rm_yes_flag_skips_confirmation() {
+    let foods_dir_tmp = temp_foods_with_fixture("coffee");
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "rm",
+            "coffee",
+            "--yes",
+        ],
+        config_dir.path(),
+        &[],
+    );
+    assert!(success, "food rm failed: {}", stdout);
+    assert!(stdout.contains("Removed"));
+    assert!(!foods_dir_tmp.path().join("coffee.toml").exists());
+}
+
+#[test]
+fn test_food_rm_reject_keeps_file() {
+    let foods_dir_tmp = temp_foods_with_fixture("coffee");
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let (stdout, success) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "rm",
+            "coffee",
+        ],
+        config_dir.path(),
+        &[],
+        "n\n",
+    );
+    assert!(success, "reject should exit 0: {}", stdout);
+    assert!(stdout.contains("Nothing removed"));
+    assert!(foods_dir_tmp.path().join("coffee.toml").exists());
+}
+
+#[test]
+fn test_food_rm_closed_stdin_cancels() {
+    let foods_dir_tmp = temp_foods_with_fixture("coffee");
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "rm",
+            "coffee",
+        ],
+        config_dir.path(),
+        &[],
+    );
+    assert!(success, "cancelled should exit 0: {}", stdout);
+    assert!(stdout.contains("Nothing removed"));
+    assert!(foods_dir_tmp.path().join("coffee.toml").exists());
+}
+
+#[test]
+fn test_food_rm_not_found() {
+    let foods_dir_tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let (_, stderr, success) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &foods_dir_tmp.path().to_string_lossy(),
+            "--log-dir",
+            &log_dir.path().to_string_lossy(),
+            "food",
+            "rm",
+            "nonexistent-food",
+            "--yes",
+        ],
+        config_dir.path(),
+        &[],
+    );
+    assert!(!success);
+    assert!(stderr.contains("not found"));
+}
+
+#[test]
+fn test_food_rm_leaves_log_entries_intact() {
+    let foods_dir_tmp = temp_foods_with_fixture("coffee");
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+
+    let fd = foods_dir_tmp.path().to_string_lossy().to_string();
+    let ld = log_dir.path().to_string_lossy().to_string();
+
+    let (log_out, log_ok) = run_in_env(
+        &["--foods-dir", &fd, "--log-dir", &ld, "log", "coffee"],
+        config_dir.path(),
+        &[],
+    );
+    assert!(log_ok, "log failed: {}", log_out);
+
+    let (rm_out, rm_ok) = run_in_env(
+        &[
+            "--foods-dir",
+            &fd,
+            "--log-dir",
+            &ld,
+            "food",
+            "rm",
+            "coffee",
+            "--yes",
+        ],
+        config_dir.path(),
+        &[],
+    );
+    assert!(rm_ok, "food rm failed: {}", rm_out);
+    assert!(!foods_dir_tmp.path().join("coffee.toml").exists());
+
+    let (day_out, day_ok) = run_in_env(
+        &["--foods-dir", &fd, "--log-dir", &ld, "day"],
+        config_dir.path(),
+        &[],
+    );
+    assert!(day_ok, "day failed: {}", day_out);
+    assert!(day_out.contains("Coffee"));
+    assert!(day_out.contains("24")); // 1 serving × 24 cal, from the removed food
+}

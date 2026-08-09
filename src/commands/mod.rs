@@ -84,6 +84,9 @@ pub(crate) fn run(command: Option<Commands>, config: &Config) -> Result<()> {
             FoodCommands::Edit { name, yes } => {
                 food::cmd_edit_food(&mut stdout, &foods_dir, &name, yes, config)?;
             }
+            FoodCommands::Rm { name, yes } => {
+                food::cmd_rm_food(&mut stdout, &foods_dir, &name, yes)?;
+            }
         },
         Some(Commands::Completions { shell, install }) => {
             completion::cmd_completions(&mut stdout, shell, install, Cli::command())?;
