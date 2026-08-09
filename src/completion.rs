@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::{food, log};
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use clap_complete::{CompletionCandidate, Shell};
 use std::fs;
 use std::io::Write;
@@ -25,6 +26,9 @@ pub(crate) fn complete_foods() -> Vec<CompletionCandidate> {
         None => return Vec::new(),
     };
     let dir = config.foods_dir();
+    if !dir.is_dir() {
+        return Vec::new();
+    }
     match food::list_food_slugs(&dir) {
         Ok(slugs) => slugs.into_iter().map(CompletionCandidate::new).collect(),
         Err(e) => {
@@ -40,8 +44,15 @@ pub(crate) fn complete_log_dates() -> Vec<CompletionCandidate> {
         None => return Vec::new(),
     };
     let dir = config.log_dir();
+    if !dir.is_dir() {
+        return Vec::new();
+    }
     match log::list_log_dates(&dir) {
-        Ok(dates) => dates.into_iter().map(CompletionCandidate::new).collect(),
+        Ok(dates) => dates
+            .into_iter()
+            .filter(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok())
+            .map(CompletionCandidate::new)
+            .collect(),
         Err(e) => {
             eprintln!("warning: failed to list log dates for completion: {e}");
             Vec::new()
@@ -92,7 +103,8 @@ pub(crate) fn cmd_completions(
             .output()
             .context("failed to generate completion script")?;
         if !output.status.success() {
-            anyhow::bail!("completion generation failed");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("completion generation failed: {stderr}");
         }
         fs::write(&path, &output.stdout)
             .with_context(|| format!("failed to write {}", path.display()))?;
