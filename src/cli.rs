@@ -1,6 +1,8 @@
 use crate::amount::{Calories, Grams, Servings};
 use crate::completion::{complete_foods, complete_log_dates};
+use crate::food::Slug;
 use clap::builder::styling::{AnsiColor, Effects, Styles};
+use clap::builder::NonEmptyStringValueParser;
 use clap::{Parser, Subcommand};
 use clap_complete::engine::ArgValueCandidates;
 use clap_complete::Shell;
@@ -33,7 +35,7 @@ pub(crate) enum Commands {
     Add {
         /// Food slug (filename without .toml)
         #[arg(add = ArgValueCandidates::new(complete_foods))]
-        food: String,
+        food: Slug,
         /// Number of servings (default: 1)
         #[arg(default_value = "1")]
         servings: Servings,
@@ -50,7 +52,7 @@ pub(crate) enum Commands {
     Show {
         /// Food slug (filename without .toml)
         #[arg(add = ArgValueCandidates::new(complete_foods))]
-        food: String,
+        food: Slug,
     },
     /// List all foods with per-serving values
     List,
@@ -79,6 +81,7 @@ pub(crate) enum Commands {
     /// Add an ad-hoc entry with custom macros (no food file needed)
     Adhoc {
         /// Name of the item
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         name: String,
         /// Number of servings (default: 1)
         servings: Option<Servings>,
@@ -134,5 +137,14 @@ mod tests {
             }
             _ => panic!("expected Summary command"),
         }
+    }
+
+    #[test]
+    fn test_invalid_slug_rejected_at_parse() {
+        assert!(Cli::try_parse_from(["intake", "add", ""]).is_err());
+        assert!(Cli::try_parse_from(["intake", "add", "a/b"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "add", ".."]).is_err());
+        assert!(Cli::try_parse_from(["intake", "show", "."]).is_err());
+        assert!(Cli::try_parse_from(["intake", "add", "coffee"]).is_ok());
     }
 }

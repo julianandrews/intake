@@ -66,11 +66,11 @@ fn render_food(food: &food::Food, columns: &[Column]) -> Result<String> {
 pub(crate) fn cmd_show_food(
     writer: &mut impl Write,
     foods_dir: &Path,
-    slug: &str,
+    slug: &food::Slug,
     config: &Config,
 ) -> Result<()> {
-    let food_path = foods_dir.join(format!("{}.toml", slug));
-    let food = food::load_food(&food_path).with_context(|| format!("food '{}' not found", slug))?;
+    let food = food::load_food(&slug.file_path(foods_dir))
+        .with_context(|| format!("food '{}' not found", slug))?;
     write!(writer, "{}", render_food(&food, &config.columns()?)?)?;
     Ok(())
 }

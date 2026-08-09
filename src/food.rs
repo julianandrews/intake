@@ -2,9 +2,48 @@ use crate::amount::{calories_sum, grams_sum, Calories, Grams, Macros};
 use anyhow::{anyhow, Context, Result};
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use std::fmt;
 use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+/// A food slug: the filename (minus `.toml`) used to look up a food.
+///
+/// Validated on construction, so invalid slugs fail at parse time instead
+/// of during a filesystem lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slug(String);
+
+impl Slug {
+    /// The path of the food's TOML file inside `foods_dir`.
+    pub fn file_path(&self, foods_dir: &Path) -> PathBuf {
+        foods_dir.join(format!("{}.toml", self.0))
+    }
+}
+
+impl FromStr for Slug {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err("food slug must not be empty".to_string());
+        }
+        if s.contains('/') || s.contains('\\') {
+            return Err(format!("food slug '{s}' must not contain path separators"));
+        }
+        if s == "." || s == ".." {
+            return Err(format!("food slug '{s}' is not a valid slug"));
+        }
+        Ok(Slug(s.to_string()))
+    }
+}
+
+impl fmt::Display for Slug {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Ingredient {
@@ -237,5 +276,31 @@ mod tests {
     #[test]
     fn test_slug_from_path_no_extension() {
         assert_eq!(slug_from_path(Path::new("foo")), Some("foo".to_string()));
+    }
+
+    #[test]
+    fn test_slug_parses_valid_names() {
+        for s in ["coffee", "quest-bar", "spicy-potato-wedges", "x"] {
+            assert_eq!(Slug::from_str(s).unwrap().to_string(), s);
+        }
+    }
+
+    #[test]
+    fn test_slug_rejects_empty_and_traversal() {
+        assert!(Slug::from_str("").is_err());
+        assert!(Slug::from_str("a/b").is_err());
+        assert!(Slug::from_str("a\\b").is_err());
+        assert!(Slug::from_str(".").is_err());
+        assert!(Slug::from_str("..").is_err());
+    }
+
+    #[test]
+    fn test_slug_file_path() {
+        assert_eq!(
+            Slug::from_str("quest-bar")
+                .unwrap()
+                .file_path(Path::new("foods")),
+            PathBuf::from("foods/quest-bar.toml")
+        );
     }
 }
