@@ -9,7 +9,8 @@ existing log days and foods. All commands share one
 pipeline: capture a user prompt (via a `[prompt...]` positional, `--prompt`,
 or `$EDITOR`), send it to an LLM
 along with a base prompt, let the model use function-calling tools
-(`web_search` for nutrition data, `food_lookup` for the user's own foods)
+(`usda_search`/`usda_get` for nutrition data, `food_lookup` for the user's
+own foods)
 to look up data, retry until the model returns valid TOML, show the
 proposed change, and write it only after a three-way confirmation.
 
@@ -21,9 +22,11 @@ currently owned by intake; it will be renamed as part of the eventual split-off.
 
 The system is intentionally provider-neutral: it speaks the OpenAI-compatible
 `/v1/chat/completions` API (works with OpenAI, Groq, Mistral, OpenRouter,
-Ollama, vLLM, etc.). Web search is a plain function-calling tool executed
-in-process — no MCP, no external server packages, no closed ecosystem. Search
-uses DuckDuckGo (no API key).
+Ollama, vLLM, etc.). Nutrition lookup is a plain function-calling tool
+executed in-process — no MCP, no external server packages, no closed
+ecosystem. v1 nutrition data comes from the USDA FoodData Central API (free
+API key, structured per-100g JSON, shipped as `usda_search` + `usda_get`); a
+generic web search and page fetch is future work (see Open questions).
 
 ## Workspace structure
 
@@ -37,27 +40,27 @@ under `crates/`.
 or TOML:
 
 - `settings.rs` — `AiSettings` (api_key, model, base_url, max_retries,
-  max_tool_calls, timeout_secs, search_timeout_secs, verbose — bool,
-  default false; see "Verbose mode"), deriving `Deserialize`
+  max_tool_calls, timeout_secs, usda_api_key, usda_timeout_secs, verbose —
+  bool, default false; see "Verbose mode"), deriving `Deserialize`
   so consumers map their config onto it directly.
-- `search.rs` — the `web_search` tool. Given a query, fetches results from
-  DuckDuckGo (no API key; result
-  extraction from the HTML result page via `ureq`) and returns plain text
-  (title, URL, snippet per result)
-  for the model to read. Exposed behind a small `Tool`
-  trait so the agent loop is generic.
-  Snippet sufficiency for nutrition queries is validated in
-  practice — see Open questions for a food-data API refinement.
+- `usda.rs` — the USDA FoodData Central-backed nutrition tools:
+  `usda_search` (batched queries → candidate foods with per-100g macros)
+  and `usda_get` (fdc_id + amount_g → exact macros, scaled code-side with
+  the same exact-decimal checked math as the rest of intake). Both hit
+  `api.nal.usda.gov/fdc/v1` via `ureq` (blocking + rustls); no HTML
+  scraping — the API returns structured JSON. Exposed behind a small
+  `Tool` trait so the agent loop is generic.
 - `llm.rs` — `LlmBackend` trait; real impl does
   `POST {base_url}/chat/completions` via `ureq` (blocking + rustls); tests use
   a scripted fake backend (no network). Responses are read for
   `reasoning_content` / `reasoning` fields when the provider emits them
   (DeepSeek, OpenRouter, etc.). Agent loop: the caller registers the
-  tools it wants available (the lib ships `web_search`); registered tools
+  tools it wants available (the lib ships the `usda_search`/`usda_get`
+  pair); registered tools
   become function definitions; a response is final iff `tool_calls` is
   absent — while it is non-empty, all `tool_calls` in the response are
   executed in-process (each execution, successful or failed, counts against
-  `max_tool_calls`, default 8) and the results fed back, one message per
+  `max_tool_calls`, default 20) and the results fed back, one message per
   call id. When the budget is exhausted, no further tool executes: a single
   "tool call budget exhausted (max N) — produce your final answer with the
   data you have" message is appended, the *next* model response is taken
@@ -83,10 +86,10 @@ The lib takes text in and returns the validated `T`; prompt capture
 
 **Stays in `intake`** (the root package) — everything intake-specific:
 
-- clap surface: the tree (bare, `log`, `day`, `summary`, `exercise`,
-  `food` group, `completions`) plus the `ai` tree and shared flags; the
-  shared `--date` arg (one `Args` definition, flattened into `log` and
-  `ai log`); `day` and `summary` own their date args (`[date]` + `-d`)
+- clap surface: the existing command tree plus the `ai` tree and shared
+  flags; the shared `--date` arg (one `Args` definition, flattened into
+  `log` and `ai log`); `day` and `summary` own their date args (`[date]` +
+  `-d`)
 - prompt capture: `$VISUAL` → `$EDITOR` → `nano` on a temp file with `#`
   guidance comments; unchanged file aborts; clear error when no editor spawns
 - a non-gated `[y]es` / `[n]o` confirm helper (+ `--yes`) used by the plain
@@ -164,38 +167,34 @@ Consequences:
 - `present` is skipped for `ConfirmAlways` (nothing renders under `--yes`);
   the post-write reprint is the only display in that mode.
 - Worst-case cost per resolve round: `max_retries × (max_tool_calls + 2)`
-  ≈ 30 LLM calls with defaults (3 × 10) — the +2 is the budget-exhausted
+  ≈ 66 LLM calls with defaults (3 × 22) — the +2 is the budget-exhausted
   round and the final answer — plus user-driven feedback rounds —
-  bounded per round; the user is the overall bound. This counts calls,
-  not tokens: each call re-sends the whole conversation, so token volume
-  grows with the number of rounds (worst case ~O(rounds²), in practice
-  low tens of thousands of tokens per attempt, since per-round growth is
-  bounded by the tool output caps and the fixed retry-error shape).
+  bounded per round; the user is the overall bound. Each feedback round
+  restarts the full per-round budget, so the worst case is
+  `≈66 × (1 + feedback rounds)` calls (e.g. ~200 for two feedback rounds).
+  This counts calls, not tokens: each call re-sends the whole conversation,
+  so token volume grows with the number of rounds (worst case ~O(rounds²),
+  in practice low tens of thousands of tokens per attempt, since per-round
+  growth is bounded by the tool output caps and the fixed retry-error
+  shape).
 
 ## Commands
 
-The surface is one coherent tree: reading is bare / `day` / `summary`,
-writing is always `log` / `food` / `exercise`, and AI is a transparent prefix
-(`ai`) on the write verbs — every write verb also has a plain, non-AI form:
+The AI surface is a transparent prefix on the two write verbs it serves —
+`log` and `food new` / `food edit` — both of which keep their plain,
+non-AI forms:
 
 ```
-intake                          # today's log
-intake log <name> [servings] [--date D]     # log a food (name completion)
-intake log "<name>" [servings] --calories N --protein N --fiber N --fat N --carbs N --alcohol N
-                                # adhoc entry with inline macros
-intake day [date] [-d N]        # view a day (days ago)
-intake summary [date] [-d N]    # multi-day summary (window)
-intake exercise <calories>      # record exercise for today
-intake food list                # all foods with per-serving values
-intake food show <name>         # a food's ingredients and per-serving values
-intake food new <name>          # plain: editor + validation + confirm, no AI
-intake food edit <name>         # plain: editor + validation + confirm, no AI
-intake completions <shell>      # shell completion script
-
 intake ai log [prompt...] [--date D]   # AI day editing (ops-based)
 intake ai food new <name> [prompt...]  # AI recipe generation
 intake ai food edit <name> [prompt...] # AI recipe editing (name completion)
 ```
+
+`ai` with no subcommand is a usage error: clap requires a subcommand, so
+bare `intake ai` exits 2 with the `ai log` / `ai food new` / `ai food edit`
+usage listed. There is deliberately no `ai rm` or `ai exercise`: food
+removal gains nothing over the plain `food rm`, and log removal is already
+an `ai log` op (see "`ai log` ops").
 
 `log` disambiguation: any macro flag present selects the adhoc path,
 decisively — the name is a free-form title and is never name-resolved
@@ -222,7 +221,7 @@ The AI commands, in full:
 
 | Command | Input | Output | Write |
 |---|---|---|---|
-| `ai log` | numbered day rows + totals line + 7-day history + user prompt | `DayLogOps` — see "`ai log` ops"; macros for food-derived rows never come from the model | validated and applied by intake, whole-day rewrite via new `log::write_day` |
+| `ai log` | numbered day rows + totals line + history digest + user prompt | `DayLogOps` — see "`ai log` ops"; macros for food-derived rows never come from the model | validated and applied by intake, whole-day rewrite via new `log::write_day` |
 | `ai food new <name>` | user prompt + name positional | `Food` TOML | new `<name>.toml` in foods dir; an existing name errors at parse time (see "Name argument") — never a model retry |
 | `ai food edit <name>` | current food TOML + user prompt | updated `Food` | overwrite food file |
 
@@ -230,9 +229,10 @@ The AI commands, in full:
 
 `food new` and `ai food new` take the name as a required CLI positional —
 the filename the food will be written to, matching `log` / `show` / `edit`.
-The name is validated for filesystem safety only: non-empty, no path
-separators (`/` or `\`), and not `.` / `..` — anything else is accepted, so
-filenames with uppercase or spaces work. An existing name
+The name is validated exactly like every other food-name input in intake:
+the existing `FoodName` parse (`FromStr` in `food.rs`), which accepts any
+single normal filename component — uppercase, spaces, and so on work — and
+rejects everything else (empty, path separators, `.` / `..`). An existing name
 errors immediately at parse time: "food 'X' already exists — use
 `food edit X` / `ai food edit X` to modify it". The AI returns plain `Food`
 TOML — no name field, the filename is the name — and intake writes it to
@@ -295,7 +295,9 @@ Semantics:
   `replace` rewrites its target row's content, keeping the row's original
   position even if other rows were removed; `add-*` ops append at the end.
   Ops on the same row conflict (validation error), so application order
-  between removes and replaces never matters.
+  between removes and replaces never matters. Entries cannot be inserted
+  mid-list or reordered; the row diff shows the resulting order, and
+  reordering is deferred.
 - Validation errors feed the retry loop just like parse failures: unknown
   `name` (must exist in the foods dir — `food_lookup` results are the model's
   only source of names), `row` out of range, duplicate or conflicting ops on
@@ -336,7 +338,10 @@ the user confirms.
 The model's task shrinks to *choosing*: if a result matches the user's
 intent, emit `add-food` (name + servings; macros computed by intake, exact
 by construction); if the user wants a modified version or no food exists,
-emit `add-adhoc` with its own macros, preserved untouched. No automatic
+emit `add-adhoc` with its own macros, preserved untouched — sourced from a
+`usda_get` result when one exists, from the user's own past logs (the
+history digest, scaled to the portion) when it doesn't, and estimated only
+when neither applies (restaurant meals, non-US items). No automatic
 conversion, no `from food:` marker — intent lives in the op kind, and the
 row diff shows the outcome.
 
@@ -355,7 +360,8 @@ controls human display, not model context):
 - **Entry line** — `title | servings | cal, protein, fiber, fat, carbs, alcohol`,
   the same width-independent format used for the `ai log` row diff. Entry
   lines (including the history window) are the only food-adjacent data
-  embedded in prompts.
+  embedded in prompts. The history digest appends an occurrence count:
+  `… ×N`.
 - **Catalog line** — `name | title | cal/serv, protein, fiber, fat, carbs, alcohol`,
   per-serving values via `food.per_serving()`. The result format of
   `food_lookup`; never embedded in prompts — the model sees foods only when
@@ -368,33 +374,50 @@ Per command:
 
 | Command | Prompt context |
 |---|---|
-| `ai log` | numbered entry lines for the day being edited, a totals line (which includes `exercise: N`), and the 7 days before the edited day as dated entry lines — hardcoded window, configurability is future work |
-| `ai food new <name>` | none beyond the schema + 2 full sample foods from the user's own foods dir (naming, serving, and ingredient conventions — see "Sample foods") |
-| `ai food edit <name>` | the target food's full TOML + the same 2 sample foods |
+| `ai log` | numbered entry lines for the day being edited, a totals line (which includes `exercise: N`), and a history digest of the `history_days` days before the edited day — distinct entry lines with occurrence counts, count-sorted |
+| `ai food new <name>` | none beyond the schema + 3 full sample foods from the user's own foods dir (naming, serving, and ingredient conventions — see "Sample foods") |
+| `ai food edit <name>` | the target food's full TOML + the same 3 sample foods |
 
 Details:
 
-- The history window **anchors to the edited day** (the 7 days before
-  `--date`; the edited day itself is the numbered context) and is truncated
-  to a cap (first 40 entry lines, oldest dropped) so long streaks cannot
-  bloat the prompt. The numbered edit-target rows are never truncated —
+- The history window **anchors to the edited day** (`history_days` days
+  before `--date`, default 14, set via `[ai] history_days`; the edited day
+  itself is the numbered context). The raw window is capped before dedup
+  (first 200 entry lines, oldest dropped) so long streaks cannot bloat the
+  prompt, then collapsed into distinct entry lines with `×N` occurrence
+  counts, sorted by count (ties: most recent first). An empty window omits
+  the digest section. The numbered edit-target rows are never truncated —
   they are the reference the ops point at.
 - The totals line lets the model answer prompts like "log dinner to hit my
   protein target".
 - A day with no log file is valid context: the numbered list is empty and
   the write creates the file.
-- **Sample foods**: `ai food new` and `ai food edit` embed two full `Food`
+- **Sample foods**: `ai food new` and `ai food edit` embed three full `Food`
   TOMLs from the user's own foods dir so new recipes fit the user's
   conventions (titles, serving sizes, ingredient granularity, quantity
-  style like "400g" vs "1 tbsp"). Selection is deterministic: first two by
-  name order, preferring foods with ≥2 ingredients; an empty dir falls back
-  to the template's canned examples. Catalog lines via `food_lookup` are the
+  style like "400g" vs "1 tbsp"). Selection is deterministic and
+  diversity-first, so the samples cover the catalog's range rather than its
+  first entries: prefer one complex recipe (≥3 ingredients), one food with
+  `notes`, and one simple food — each slot filled in name order, with
+  fallback across slots when one is empty (a smaller catalog yields fewer
+  samples, never duplicates). An empty dir falls back to the template's
+  canned examples. Catalog lines via `food_lookup` are the
   wrong shape for this — they lack ingredient structure — so the tool stays
   `ai log`-only.
 
-The history window teaches the model the user's logging patterns — title
+The history digest teaches the model the user's logging patterns — title
 conventions like "Cherries - 155g", portion sizes, which macros are usually
-non-zero — for the adhoc entries it appends mid-edit.
+non-zero — for the adhoc entries it appends mid-edit. Because re-used
+entries are explicit (counts), reuse-heavy edits can be answered from the
+digest alone, skipping `food_lookup` and USDA round-trips entirely. The
+digest is also the first fallback source for macros when no tool result
+exists: an entry matching the user's request is copied and scaled to the
+requested portion by the model — preferable to estimation, since it
+reflects the user's own logging. This model-side scaling is the one
+deliberate exception to the "the model never does scaling arithmetic" rule:
+digest-sourced macros are accepted as estimate-grade (like any
+`usda_get`-less `add-adhoc`), and the proposal diff shows every value
+before confirmation.
 
 ## Tools
 
@@ -416,10 +439,28 @@ pub trait Tool {
 }
 ```
 
-- **`web_search`** (ships with the lib): a single `query` string; returns
-  up to five results as `title | URL | snippet` lines, per-snippet cap
-  (~200 chars) and total output cap (~2k chars). DuckDuckGo backend, no
-  API key; a fetch failure returns a short error string.
+- **`usda_search`** (ships with the lib): batched — `queries: [string]`;
+  per query, hits USDA `/foods/search` and returns up to five candidates as
+  `FDC id | name | portion size (when FDC reports one — branded foods) |
+  per-100g macros` lines (all six macros;
+  the name carries the variant — "Rice, white, cooked" vs raw — so
+  raw/cooked ambiguity is explicit, not buried in a snippet). Per-query
+  and total output caps (~2k chars). A fetch failure or rate limit (429)
+  returns a short error string, counting against the budget like any
+  failure.
+- **`usda_get`** (ships with the lib): batched — `requests: [{fdc_id,
+  amount_g}]`; computes exact macros for the requested amount from the
+  per-100g values code-side (exact-decimal, checked — an absurd `amount_g`
+  is an error string, never a panic). Returns `name | amount | all six
+  macros` — the numbers the model copies verbatim into `add-adhoc` ops
+  with `servings = 1` (entry macros are per-serving, and the returned
+  values already match the requested portion, so any other servings factor
+  would double-scale). The model never does scaling arithmetic. v1 validation
+  does not enforce the pairing code-side — an `add-adhoc` copying verbatim
+  tool macros with `servings ≠ 1` double-scales silently — but the proposal
+  diff shows every value, and a future check (rejecting an `add-adhoc` whose
+  macros exactly match a prior `usda_get` result unless `servings = 1`) is
+  cheap.
 - **`food_lookup`** (intake-side, registered by `ai log` only):
   batched — takes `queries: [string]` (one or more titles) and returns
   per-query matches, so a multi-entry edit costs 1-2 calls instead of one
@@ -433,17 +474,30 @@ pub trait Tool {
      output cap. An empty foods dir or no matches returns an explicit empty
      result.
 
-Registration per command: `ai log` → `food_lookup` + `web_search`;
-`ai food new <name>` / `ai food edit <name>` → `web_search` only — the
-name comes from the CLI (see "Name argument"), so there is no naming
-collision for the model to manage; `web_search` covers ingredient
-nutrition.
+Registration per command: `ai log` → `food_lookup` + `usda_search` +
+`usda_get`; `ai food new <name>` / `ai food edit <name>` → `usda_search` +
+`usda_get` — the name comes from the CLI (see "Name argument"), so there
+is no naming collision for the model to manage; the USDA tools cover
+ingredient nutrition.
 
-Budget math: batched lookups keep a 10-entry edit at 1-2 tool calls;
-`max_tool_calls` (default 8) covers the typical session with room for
-occasional `web_search` calls. Exhaustion is not an error to the user: the
-loop sends one budget-exhausted message, takes the model's next response
-unconditionally, and proceeds to the parse step (see `llm.rs`).
+Why USDA-only v1: a general web search's ~200-char snippets cannot carry
+all six macros plus serving context, and extraction + scaling would land
+on the model (see Open questions for the deferred generic-search design).
+The USDA API returns structured per-100g JSON with explicit variant names,
+so the model only chooses; arithmetic is code-side. Cost: a free API key
+(fdc.nal.usda.gov) and gaps for restaurant meals, branded items absent
+from FDC, and non-US foods — the `web_search` + `fetch_url` follow-up
+covers those.
+
+Budget math: batching keeps a 10-entry edit at 2-3 tool calls (one
+`usda_search` batch, one `usda_get` batch, occasional re-search) — and the
+history digest lets reuse-heavy edits land at zero tool calls;
+`max_tool_calls` (default 20) is a loose ceiling rather than a tight fit —
+revisit when the `web_search` + `fetch_url` follow-up lands (see Open
+questions).
+Exhaustion is not an error to the user: the loop sends one
+budget-exhausted message, takes the model's next response unconditionally,
+and proceeds to the parse step (see `llm.rs`).
 
 ## Shared flow (all three commands)
 
@@ -454,7 +508,7 @@ unconditionally, and proceeds to the parse step (see `llm.rs`).
 2. Build messages: base prompt (command-specific template, config-overridable)
    → `Resolver` constructor; user prompt → `resolve`.
 3. Agent loop: model may call the registered tools (see "Tools");
-   results fed back; at most `max_tool_calls` (default 8) executions, then
+   results fed back; at most `max_tool_calls` (default 20) executions, then
    one budget-exhausted message and the next response is taken
    unconditionally.
 4. Strip ```toml code fences, parse into the target struct
@@ -488,7 +542,12 @@ unconditionally, and proceeds to the parse step (see `llm.rs`).
    lock (`lock_log_dir`) as the existing read-modify-write paths
    (`append_entry`, `set_exercise_calories`, `remove_entry`), so the recheck
    cannot race a concurrent `log` / `rm` between check and write — mirroring
-   `remove_entry`'s expected-entry equality. For `ai food
+   `remove_entry`'s expected-entry equality. Foods have no directory lock
+   (unlike logs), so the `ai food edit` reload-compare-write is not atomic
+   against a concurrent `food edit` landing between the check and the
+   write; the window is small and the failure mode is a clobbered concurrent
+   edit, which v1 accepts — the check still catches the common case of a
+   change made while the proposal was being generated. For `ai food
    new` the collision check already ran at parse time (see "Name
    argument"); the write-time recheck aborts if the file appeared
    mid-flow. After a
@@ -512,7 +571,7 @@ When `verbose` is set (via `[ai] verbose` or `--verbose`), each LLM round in
 the loop prints a short trace to **stderr** — reasoning content when the
 provider emits it (e.g. DeepSeek's `reasoning_content`, OpenRouter's
 `reasoning`), the model's raw text output before parsing, tool calls
-(`[tool] web_search "query"`), and parse errors per retry. Nothing goes to
+(`[tool] usda_search [...]`), and parse errors per retry. Nothing goes to
 stdout — proposal tables and the confirm dialog are unaffected. Behavior is
 identical with the flag off; the flag only adds visibility.
 
@@ -581,35 +640,43 @@ api_key = "..."          # or INTAKE_AI_API_KEY / --api-key
 model = "gpt-4o-mini"    # or INTAKE_AI_MODEL / --model
 base_url = "..."         # optional; default https://api.openai.com/v1
 max_retries = 3
-max_tool_calls = 8           # tool executions per resolve attempt; exhaustion → one "answer now" round
-timeout_secs = 60            # per LLM API call
-search_timeout_secs = 15     # per web_search backend fetch
+max_tool_calls = 20      # tool executions per resolve attempt; exhaustion → one "answer now" round
+timeout_secs = 60        # per LLM API call
+usda_api_key = "..."     # or INTAKE_AI_USDA_API_KEY
+usda_timeout_secs = 15   # per USDA backend fetch
 verbose = false          # or --verbose; per-round LLM trace on stderr
+history_days = 14        # ai log history window, days before the edited day
 log_prompt = "..."       # optional overrides of default templates
 food_new_prompt = "..."
 food_edit_prompt = "..."
 ```
 
-- `Config` gets `#[serde(default)] ai: AiConfig` so existing configs and tests
-  are unaffected; the `[ai]` table deserializes directly into the intake-side
-  `AiConfig` wrapper, which flattens `intake_ai::AiSettings` (no field-by-field
-  mapping) and adds the intake-owned prompt-override keys (`log_prompt`,
-  `food_new_prompt`, `food_edit_prompt`). The wrapper field is
-  `#[cfg(feature = "ai")]`-gated (see Feature gating).
+- `Config` gets a `#[cfg(feature = "ai")]`-gated `ai: Option<AiConfig>` field
+  (see Feature gating), so existing configs and tests are unaffected; the
+  `[ai]` table deserializes directly into the intake-side `AiConfig` wrapper,
+  which flattens `intake_ai::AiSettings` (no field-by-field mapping) and adds
+  the intake-owned keys (`log_prompt`, `food_new_prompt`, `food_edit_prompt`,
+  `history_days`).
 - Resolution order matches `Config::resolve`: config file → env var → CLI flag.
   The merge happens in `ai_cmd`: it combines the `[ai]` config values, the
    `INTAKE_AI_*` env vars, and the shared `ai` flags into the final
    `AiSettings` before constructing a `Resolver` and calling `resolve`.
-- The API key is never logged or printed.
+   `usda_api_key` resolves config → env only — no CLI flag.
+- The API keys (LLM and USDA) are never logged or printed.
 - Timeouts: `timeout_secs` (default 60) bounds each LLM API call;
-  `search_timeout_secs` (default 15) bounds each `web_search` fetch.
-  Transient transport failures (HTTP 429/5xx) retry up to twice with
-  backoff; timeouts and other errors abort with a clear error — no further
-  automatic retry (`max_retries` covers only validation failures, not
-  transport failures).
+  `usda_timeout_secs` (default 15) bounds each `usda_search`/`usda_get`
+  fetch.
+  Transient transport failures on the LLM endpoint (HTTP 429/5xx) retry up
+  to twice with backoff; timeouts and other errors abort with a clear
+  error — no further automatic retry (`max_retries` covers only validation
+  failures, not transport failures). USDA fetches never auto-retry: any
+  failure, including 429, returns a short error string to the model and
+  counts against the tool budget — the model's own retry of a
+  `usda_search`/`usda_get` call is the throttle, doubling as natural
+  rate-limit backoff.
   The editor prompt capture and confirmation prompt are user-paced and
   untimed.
-- Known limitation: web search requires a model/provider that supports
+- Known limitation: USDA lookup requires a model/provider that supports
   function/tool calling. If the endpoint rejects `tools`, error clearly and
   suggest a different model.
 
@@ -617,19 +684,22 @@ food_edit_prompt = "..."
 
 Running an `ai` command sends data to the configured LLM provider: the
 user's prompt; the command's context (`ai log`: the edited day's entries,
-the 7-day history window, totals and targets; `ai food edit`: the target
-food's TOML; `ai food new`: the two sample foods); the queries the model
-makes via `web_search`; and the generated proposal. `food_lookup` queries
-are also visible to the provider (they are part of the conversation),
-though the results never leave the machine. `web_search` additionally
-sends its query from intake's process straight to DuckDuckGo — the
-provider is not involved in that hop. Nothing is sent unless an `ai`
+the history digest (the `history_days` window, count-deduplicated), totals
+and targets; `ai food edit`: the target food's TOML; `ai food new`: the
+three sample foods); the queries the model makes via
+`usda_search`/`usda_get`; and the generated proposal.
+`food_lookup` queries are also visible to the provider (they are part of
+the conversation), though the results never leave the machine.
+`usda_search`/`usda_get` additionally send their queries from intake's
+process straight to `api.nal.usda.gov` — the provider is not involved in
+that hop. Nothing is sent unless an `ai`
 command is run, and nothing is stored beyond intake's existing local
 files: the conversation lives in memory only, for the duration of the
 resolve.
 
-The API key travels only in the `Authorization` header to the configured
-`base_url`; it is never logged or printed. The design is
+The API keys travel only where they must: the LLM key in the
+`Authorization` header to the configured `base_url`, the USDA key to
+`api.nal.usda.gov`; neither is ever logged or printed. The design is
 provider-neutral, so users who want the data to never leave their
 machine can point `base_url` at a local endpoint (Ollama, vLLM, etc.) —
 the same flow then runs fully offline.
@@ -660,17 +730,18 @@ ai = ["dep:intake-ai"]
   the binary only when the `ai` feature is on; no-feature builds embed nothing.
   The plain `food new`/`food edit` editor prefill is a non-gated schema
   skeleton (serialized canned example), not these files.
-  main.rs has exactly three cfg sites (module decl, the
-  `Ai` subcommand variant, the match arm); config.rs has two (the
+  The cfg sites are: `#[cfg(feature = "ai")] mod ai_cmd;` in main.rs; the
+  `Ai` variant on the `Commands` enum in cli.rs; its match arm in
+  `commands/mod.rs`; and two in config.rs (the
   `ai: Option<AiConfig>` field and the gated `AiConfig` wrapper holding
-  `intake_ai::AiSettings`).
-- Without the feature, the CLI is the full surface minus the `ai` tree; the only
-  `[ai]`-specific behavior is a one-line stderr
-  warning when config.toml contains an `[ai]` table ("config contains `[ai]`
-  but this binary was built
-  without the `ai` feature; AI commands are unavailable"). Detected by a small
-  `#[cfg(not(feature = "ai"))]` block in `Config::load` that parses the raw
-  content for the `ai` key — warned-and-ignored, not silently ignored.
+  `intake_ai::AiSettings`) — five in total, no cfg attributes inside
+  `ai_cmd`.
+- Without the feature, the CLI is the full surface minus the `ai` tree. No
+  cross-feature config compatibility is provided: a config.toml containing
+  an `[ai]` table fails to parse with the standard unknown-field error
+  (`Config` denies unknown fields, and the `ai` field doesn't exist in
+  no-feature builds) — the same loud rejection any unrecognized key gets.
+  No warning special case, no raw-text preprocessing.
 - `intake-ai` is a workspace member, not itself gated: its own code and tests
   build and run regardless of intake's feature selection.
 
@@ -680,8 +751,9 @@ Templates are `.md` files under `src/ai/prompts/` (`log.md`,
 `food_new.md`, `food_edit.md`), embedded at compile time via `include_str!`
 (built into the binary). The `[ai]` config keys (`log_prompt`,
 `food_new_prompt`, `food_edit_prompt`) override only the **static text** —
-the context block is always injected by code on top, so an override cannot
-omit the data the model needs. These files are for the model only: the
+the context block is always injected by code, appended after the static
+text, so an override cannot omit the data the model needs. These files are
+for the model only: the
 plain `food new` / `food edit` commands prefill the editor from a non-gated
 schema skeleton (a serialized canned example with `#` guidance comments)
 instead, since they work without the `ai` feature.
@@ -689,53 +761,65 @@ instead, since they work without the `ai` feature.
 Every template has the same anatomy:
 
 1. **Role and task** — one or two sentences framing the command.
-2. **Context block** (code-injected, never part of the `.md`): the
-   per-command data from "Context windows".
-3. **Schema** — the exact TOML the model must emit (`Food` + `Ingredient`,
+2. **Schema** — the exact TOML the model must emit (`Food` + `Ingredient`,
    or `DayLogOps`), mirroring `AGENTS.md` / the serde structs.
-4. **Rules** — all macro fields required, no default of zero; if unsure
-   about any macro, call `web_search` to look up nutrition data (prefer
-   per-100g values, e.g. USDA, and scale by serving size); output TOML
-   only, no prose, no surrounding fenced blocks.
-5. **Examples** — 1-2 short canned examples illustrating the schema and
-   conventions. For `ai log` the history window doubles as live examples of
+3. **Rules** — all macro fields required, no default of zero; macros not
+   stated by the user must come from a tool result where one exists:
+   `usda_search` to find the right variant, `usda_get` for the requested
+   amount, then copy the numbers into the op verbatim — never scale or
+   recompute a tool result yourself. When no tool result exists, the
+   fallback order is: the user's own past logs (for `ai log`, an entry in
+   the history digest matching the request, copied and scaled to the
+   portion — preferable to estimation), then a best-effort estimate (the
+   proposal diff shows every value and the user confirms before anything
+   is written). Output TOML only, no prose, no surrounding fenced blocks.
+4. **Examples** — 1-2 short canned examples illustrating the schema and
+   conventions. For `ai log` the history digest doubles as live examples of
    the user's actual patterns; for `food_new`/`food_edit` the context
-   embeds two of the user's own foods (see "Context windows"), and the
+   embeds three of the user's own foods (see "Context windows"), and the
    canned examples serve as the fallback when the foods dir is empty.
-6. **Output format** — TOML only; fences are stripped anyway.
+5. **Context block** (code-injected, never part of the `.md`): the
+   per-command data from "Context windows", injected last so the user's
+   real examples carry the recency weight over the canned ones.
 
 Per-command content:
 
-- `log.md` (`ai log`): the ops schema (see "`ai log` ops"); the numbered
-  context rows are references only — never re-emit them; before any
-  `add-adhoc` op, include the title in a batched `food_lookup` call and
-  decide per result: `add-food` when it matches the user's intent (macros
-  computed by intake), `add-adhoc` with your own macros (all six) for
-  one-offs and modified versions of foods; `row` indices are 1-based and
-  refer to the numbered list exactly as shown — they never shift.
+- `log.md` (`ai log`):
+  - **Schema** — the `DayLogOps` shape (see "`ai log` ops").
+  - **Rows are references** — the numbered context rows are handles the ops
+    point at, never entries to re-emit; the model's output is ops only.
+  - **Lookup before adhoc** — before any `add-adhoc` op, the title must
+    appear in a batched `food_lookup` call, deciding per title: `add-food`
+    when a match fits the user's intent (macros computed by intake),
+    `add-adhoc` with all six macros for one-offs and modified versions —
+    macros verbatim from a `usda_get` result (`servings = 1`) when one
+    exists, else from the history digest scaled to the portion, else a
+    best-effort estimate.
+  - **Row semantics** — `row` indices are 1-based against the numbered list
+    exactly as shown and never shift as ops apply (see "`ai log` ops").
 - `food_new.md` (`ai food new <name>`): the `Food` schema; the name is
   supplied on the command line and the title may differ from it (see "Name
   argument"); `notes` is optional.
 - `food_edit.md` (`ai food edit <name>`): the target food's TOML is the
-  context; preserve all untouched fields; the 2 sample foods for
+  context; preserve all untouched fields; the 3 sample foods for
   consistency; before/after is shown at confirm.
 
 ## Implementation steps
 
 1. **`crates/intake-ai` + workspace** — root `Cargo.toml` → `[workspace]` with
    `resolver = "2"`, `members = [".", "crates/intake-ai"]`; the `intake`
-   package stays at the root (no moves). The new member: settings, search,
+   package stays at the root (no moves). The new member: settings, usda,
    llm, pipeline, and confirm (trait
    only) modules with unit tests. Text in, validated `T` out; no editor, no
    terminal confirmer impl. Verify all four quality gates stay green at the
    root.
 2. **AI integration** — `[features] default = ["ai"]`,
-   `ai = ["dep:intake-ai"]`; `[ai]` config wiring + no-feature warning, the
+   `ai = ["dep:intake-ai"]`; `[ai]` config wiring, the
    feature-gated `ai` tree (`ai log`, `ai food new`, `ai food edit`) with the
    Resolver + confirmation flow, the three-option terminal `Confirmer`
    (+ `ConfirmAlways`, `#[cfg(feature = "ai")]`), per-command prompt
    template files (`src/ai/prompts/*.md`), the `Tool` trait wiring
-   (`web_search` +
+   (`usda_search` + `usda_get` +
    batched `food_lookup` with per-command registration), the `DayLogOps`
    schema with `apply_ops`, `log::write_day`, and the stale-write check.
 3. **Docs** — AGENTS.md / README `[ai]` section and path touch-ups.
@@ -743,7 +827,10 @@ Per-command content:
 ## Testing
 
 - `intake-ai` unit: fence stripping; retry loop via scripted fake backend
-  (bad → good TOML in sequence); search result parsing from canned HTML;
+  (bad → good TOML in sequence); USDA result parsing from canned JSON
+  (search and get responses); per-100g → amount scaling exactness, with an
+  absurd `amount_g` returning an error string (checked math, never a
+  panic); 429/rate-limit and fetch-failure error strings; batch mode;
   tool-call execution roundtrip; multiple `tool_calls` in one response each
   count against the budget and all results feed back; tool budget
   exhaustion — scripted backend emitting tool calls past `max_tool_calls`
@@ -770,16 +857,19 @@ Per-command content:
   never a panic or `Io`); `food_lookup` matching (normalized exact match on name and
   title; containment fallback; top-N ordering; batch mode — multiple
   queries in one call; empty result for unknown foods and for an empty
-  foods dir); context assembly (totals line, history window anchored to the
-  edited day, truncation cap, empty day, sample foods embedded for
-  `ai food new`/`edit` with empty-dir canned fallback); stale-write abort (target changed
+  foods dir); context assembly (totals line, history digest anchored to the
+  edited day, dedup + occurrence counts, count sort order, pre-dedup cap,
+  empty window, sample foods embedded for
+  `ai food new`/`edit` (diversity slots: complex / notes / simple, slot
+  fallback, catalog with <3 foods, empty-dir canned fallback); stale-write abort (target changed
   between context build and write); empty ops proposal (empty diff, no
   write); name argument — parse-time collision error for `ai food new`,
   suggesting `food edit`;
   write-time recheck for `ai food new`;
   row diff (one macro
   changed → exactly one `-`/`+` pair; entry added → one `+` line; unchanged →
-  empty diff); stale-`[ai]`-config warning detection (feature off);
+  empty diff); no-feature build rejects a config containing an `[ai]` table
+  with the standard unknown-field error (feature off);
   prompt-file drift guard (each prompt `.md` under `src/ai/prompts/` contains
   its key schema field names, e.g. `protein_g` / `add-adhoc` — fails if serde
   structs change without prompt updates).
@@ -794,26 +884,32 @@ Per-command content:
 ## Docs
 
 Update `AGENTS.md` and `README.md` with the `[ai]` config section, a note on
-the DuckDuckGo-backed `web_search` tool, and corrected paths for the workspace
-layout.
+the USDA FoodData Central-backed nutrition lookup (`usda_search`/`usda_get`),
+and corrected paths for the workspace layout.
 
 ## Open questions / future work
 
 - Keyed search backends (Brave, Tavily) and self-hosted SearXNG.
-- A caller-registered `nutrition_search` tool backed by the USDA FoodData
-  Central API (free key; structured JSON with per-100g nutrients) — higher
-  fidelity than web-search snippets for the nutrition use case. v1 uses
-  simple DuckDuckGo `web_search` only; revisit if snippets prove
-  insufficient. Distinct from the local `food_lookup` tool (which searches
-  the user's own foods dir).
+- Generic `web_search` + `fetch_url` as the fallback for USDA gaps
+  (restaurant meals, branded oddities, non-US foods): search returning
+  candidate URLs, plus a full-page fetch tool (capped HTML→text) so the
+  model reads real nutrition tables rather than ~200-char snippets.
+  Deferred from v1: snippets cannot carry all six macros plus serving
+  context, the model must extract from arbitrary page layouts, and
+  raw/cooked + serving ambiguity resolves only on the page, not in the
+  snippet. 2-3 calls per item (vs 1-2 batched with USDA), so
+  `max_tool_calls`/batching needs rework when it lands. A macro agent
+  (`estimate_macros`, below) is the natural pairing for this backend.
 - A specialized macro agent exposed to the main agent as a tool
   (`estimate_macros`): a nested `resolve` (one new template file + a `Tool`
   impl running a sub-loop) that takes a food description + portion and
   returns exact per-serving macros — fixes the arithmetic-scaling and
   macro-completeness error classes and isolates the main agent's tool
-  budget. Details not scoped: caching, output contract/confidence, nested
-  budget accounting, and whether it rides on `web_search` from day one or
-  lands with `nutrition_search`.
+  budget. `usda_get` already makes scaling code-side for USDA-sourced
+  data, so the agent's value is concentrated in the `web_search` era
+  (extraction from arbitrary pages). Details not scoped: caching, output
+  contract/confidence, nested budget accounting, and whether it rides on
+  `web_search` from day one.
 - Templating the template: variables/placeholders inside the prompt `.md`
   files (context blocks are currently injected by code only, so overrides
   cannot reach them).
@@ -822,18 +918,18 @@ layout.
 - If `ai log` proves slower or less reliable than expected for simple appends,
   an add-only mode (no remove/replace ops, no day context or diff) is a thin
   variant.
-- Making the `ai log` history window configurable (`[ai] history_days`); v1
-  hardcodes 7 days.
 - A `log_lookup` tool as the sibling of `food_lookup` (given a date or range,
-  return the day logs as entry lines) — would later expand or replace the
-  hardcoded history window, letting the model pull older logs on demand.
+  return the day logs as entry lines) — would later extend the configurable
+  history digest, letting the model pull older logs on demand; returning full
+  macro values would also let intake scale them code-side, closing the one
+  model-side scaling exception in "Context windows".
 - Optionally, search tools for each domain on top of lookup: a `food_search`
   (fuzzy/full-text search across food titles, ingredients, and notes) and a
   `log_search` (search past log entries by title or macros, e.g. "when did I
   last log oatmeal") — useful once catalogs and histories outgrow what a
   lookup-by-name or fixed window can cover. `food_search` would serve the
   recipe builders (`ai food new`/`edit`) once their catalogs outgrow the
-  two embedded sample foods.
+  few embedded sample foods.
 - An optional `exercise_calories` op in `ai log` (v1: preserved structurally
   by `apply_ops`, unchangeable).
 - Renaming `intake-ai` (e.g. `resolve-ai`, `llm-resolve`) and publishing it to
