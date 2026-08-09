@@ -4,6 +4,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -99,7 +100,13 @@ where
     mutate(&mut day_log);
 
     let content = toml::to_string(&day_log).context("failed to serialize log")?;
-    fs::write(&path, &content)
+    fs::create_dir_all(log_dir)
+        .with_context(|| format!("failed to create log directory: {}", log_dir.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(log_dir)
+        .with_context(|| format!("failed to create temporary log in: {}", log_dir.display()))?;
+    tmp.write_all(content.as_bytes())
+        .with_context(|| format!("failed to write temporary log: {}", path.display()))?;
+    tmp.persist(&path)
         .with_context(|| format!("failed to write log: {}", path.display()))?;
 
     Ok(())
