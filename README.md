@@ -87,8 +87,7 @@ All macro fields (`protein_g`, `fiber_g`, `calories`, `fat_g`, `carbs_g`,
 `alcohol_g`) are required — a food with unrecorded macros fails loudly
 instead of silently counting as zero.
 
-See `foods/` in the repo for examples. The `content_hash` is computed
-automatically at load time — do not include it.
+See `tests/fixtures/foods/` in the repo for examples.
 
 ## Adhoc Entries
 
@@ -101,4 +100,5 @@ intake adhoc --calories 250 --protein 12 --fiber 3 --fat 9 --carbs 20 "Greek yog
 All macro flags (`--calories`, `--protein`, `--fiber`, `--fat`, `--carbs`,
 `--alcohol`) are optional and default to 0.
 
-The slug is auto-derived from the name (lowercased, spaces → hyphens).
+The name is stored verbatim as the entry's title — no food file or slug is
+created.
