@@ -22,7 +22,7 @@ const CLAP_STYLES: Styles = Styles::styled()
     .placeholder(AnsiColor::Green.on_default());
 
 #[derive(Parser)]
-#[command(name = "intake", color = clap::ColorChoice::Always, styles = CLAP_STYLES)]
+#[command(name = "intake", color = clap::ColorChoice::Auto, styles = CLAP_STYLES)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Commands,

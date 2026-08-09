@@ -4,6 +4,8 @@ use crate::food::Ingredient;
 use anyhow::{anyhow, Result};
 use chrono::{NaiveTime, Timelike};
 use std::fmt::Write;
+use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
 use unicode_width::UnicodeWidthChar;
 
 pub use rust_decimal::Decimal;
@@ -18,6 +20,54 @@ pub const ANSI_DIM: &str = "\x1b[2m";
 pub const ANSI_GREEN: &str = "\x1b[32m";
 pub const ANSI_YELLOW: &str = "\x1b[33m";
 pub const ANSI_RED: &str = "\x1b[31m";
+
+static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Whether ANSI color should be used for stdout, mirroring the rules clap
+/// applies through anstream (`ColorChoice::Auto`) so tables and clap's own
+/// help/error output always agree: `NO_COLOR` (non-empty) disables,
+/// `CLICOLOR_FORCE` (non-empty) enables, `CLICOLOR=0` disables; otherwise
+/// color only when stdout is a terminal that supports color (TERM neither
+/// unset nor "dumb"), with `CLICOLOR` (non-"0") or `CI` forcing color on a
+/// terminal.
+pub fn color_enabled() -> bool {
+    let clicolor = anstyle_query::clicolor();
+    let clicolor_enabled = clicolor.unwrap_or(false);
+    let clicolor_disabled = !clicolor.unwrap_or(true);
+    if anstyle_query::no_color() {
+        false
+    } else if anstyle_query::clicolor_force() {
+        true
+    } else if clicolor_disabled {
+        false
+    } else {
+        std::io::stdout().is_terminal()
+            && (anstyle_query::term_supports_color() || clicolor_enabled || anstyle_query::is_ci())
+    }
+}
+
+/// Evaluate [`color_enabled`] once and store the result; called from `main`
+/// before any output. Defaults to on so unit tests and code that does not
+/// call `init_color` keep the previous behavior.
+pub(crate) fn init_color() {
+    COLOR_ENABLED.store(color_enabled(), Ordering::Relaxed);
+}
+
+fn colors_on() -> bool {
+    COLOR_ENABLED.load(Ordering::Relaxed)
+}
+
+fn colorize_with(colors: bool, text: &str, ansi: &str) -> String {
+    if colors {
+        format!("{ansi}{text}{ANSI_RESET}")
+    } else {
+        text.to_string()
+    }
+}
+
+pub(crate) fn colorize(text: &str, ansi: &str) -> String {
+    colorize_with(colors_on(), text, ansi)
+}
 
 #[derive(Debug, Clone)]
 pub enum Align {
@@ -170,6 +220,10 @@ impl Table {
     }
 
     pub fn format(&self) -> String {
+        self.format_with(colors_on())
+    }
+
+    fn format_with(&self, colors: bool) -> String {
         let widths = self.col_widths();
         let n = widths.len();
         let sep_total = if n <= 1 { 0 } else { 1 + 2 * (n - 2) };
@@ -178,23 +232,36 @@ impl Table {
         let mut out = String::new();
 
         if let Some(title) = &self.title {
-            writeln!(out, "{ANSI_BOLD_CYAN}{title}{ANSI_RESET}").unwrap();
+            writeln!(out, "{}", colorize_with(colors, title, ANSI_BOLD_CYAN)).unwrap();
         }
-
-        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
 
         writeln!(
             out,
-            "  {ANSI_BOLD_YELLOW}{}{ANSI_RESET}",
-            format_cells(&self.headers, &widths, &self.align)
+            "{}",
+            colorize_with(colors, &"-".repeat(sep_width), ANSI_CYAN)
+        )
+        .unwrap();
+
+        writeln!(
+            out,
+            "  {}",
+            colorize_with(
+                colors,
+                &format_cells(&self.headers, &widths, &self.align),
+                ANSI_BOLD_YELLOW
+            )
         )
         .unwrap();
 
         let dash_cells: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
         writeln!(
             out,
-            "  {ANSI_CYAN}{}{ANSI_RESET}",
-            format_cells(&dash_cells, &widths, &self.align)
+            "  {}",
+            colorize_with(
+                colors,
+                &format_cells(&dash_cells, &widths, &self.align),
+                ANSI_CYAN
+            )
         )
         .unwrap();
 
@@ -202,7 +269,12 @@ impl Table {
             writeln!(out, "  {}", format_cells(row, &widths, &self.align)).unwrap();
         }
 
-        writeln!(out, "{ANSI_CYAN}{}{ANSI_RESET}", "-".repeat(sep_width)).unwrap();
+        writeln!(
+            out,
+            "{}",
+            colorize_with(colors, &"-".repeat(sep_width), ANSI_CYAN)
+        )
+        .unwrap();
 
         let mut colored_idx = 0;
         for footer in &self.footers {
@@ -215,8 +287,12 @@ impl Table {
                     };
                     writeln!(
                         out,
-                        "  {ansi}{}{ANSI_RESET}",
-                        format_cells(&footer.cells, &widths, &self.align)
+                        "  {}",
+                        colorize_with(
+                            colors,
+                            &format_cells(&footer.cells, &widths, &self.align),
+                            ansi
+                        )
                     )
                     .unwrap();
                     colored_idx += 1;
@@ -242,6 +318,9 @@ fn day_proportion(now: &NaiveTime) -> Option<Decimal> {
 }
 
 pub fn wrap_color(value: &str, color: Option<&str>) -> String {
+    if !colors_on() {
+        return value.to_string();
+    }
     match color {
         Some(color) => format!("{color}{value}{ANSI_RESET}"),
         None => value.to_string(),
@@ -361,7 +440,8 @@ pub fn render_day_summary(
             let pad = " ".repeat(label_width - visible_width(&label));
             writeln!(
                 out,
-                "{ANSI_BOLD_MAGENTA}{label}{ANSI_RESET}{pad}  {value:>value_width$}"
+                "{}{pad}  {value:>value_width$}",
+                colorize(&label, ANSI_BOLD_MAGENTA)
             )
             .unwrap();
         }
@@ -446,6 +526,58 @@ mod tests {
     #[test]
     fn test_visible_width_no_ansi() {
         assert_eq!(visible_width("hello"), 5);
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' && chars.peek() == Some(&'[') {
+                for n in chars.by_ref() {
+                    if n == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_format_plain_matches_colored_without_codes() {
+        let mut table = Table::new(&["Item", "Servings", "Calories", "Protein(g)"]);
+        table.set_title("Oatmeal (2 servings)");
+        table.add_row(vec![
+            "Oats".to_string(),
+            "2".to_string(),
+            "200".to_string(),
+            "10.0g".to_string(),
+        ]);
+        table.add_row(vec![
+            "Milk".to_string(),
+            "1".to_string(),
+            "120".to_string(),
+            "8.0g".to_string(),
+        ]);
+        table.add_footer(vec![
+            "Total".to_string(),
+            "3".to_string(),
+            "320".to_string(),
+            "18.0g".to_string(),
+        ]);
+
+        let colored = table.format_with(true);
+        let plain = table.format_with(false);
+
+        assert!(colored.contains('\x1b'));
+        assert!(!plain.contains('\x1b'));
+        // Identical layout: the only difference between the two modes is the
+        // ANSI codes themselves, so stripping them must reproduce the plain
+        // output exactly (column widths computed via visible_width).
+        assert_eq!(plain, strip_ansi(&colored));
+        assert_eq!(plain.lines().count(), colored.lines().count());
     }
 
     fn targets() -> DayTargets {

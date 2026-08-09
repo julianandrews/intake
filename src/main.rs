@@ -23,6 +23,7 @@ fn main() -> Result<()> {
         foods_dir,
         log_dir,
     } = Cli::parse();
+    display::init_color();
     let config = Config::resolve(foods_dir, log_dir)?;
     commands::run(command, &config)
 }

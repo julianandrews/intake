@@ -9,12 +9,13 @@ fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_intake"))
 }
 
-fn run_in(args: &[&str], config_dir: &Path) -> (String, bool) {
-    let output = Command::new(binary())
-        .args(args)
-        .env("XDG_CONFIG_HOME", config_dir)
-        .output()
-        .expect("failed to run intake");
+fn run_in_env(args: &[&str], config_dir: &Path, envs: &[(&str, &str)]) -> (String, bool) {
+    let mut cmd = Command::new(binary());
+    cmd.args(args).env("XDG_CONFIG_HOME", config_dir);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let output = cmd.output().expect("failed to run intake");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
@@ -22,6 +23,11 @@ fn run_in(args: &[&str], config_dir: &Path) -> (String, bool) {
         eprintln!("stderr: {}", stderr);
     }
     (stdout, success)
+}
+
+fn run_in(args: &[&str], config_dir: &Path) -> (String, bool) {
+    // Tests pipe stdout, so force colors to keep ANSI behavior deterministic.
+    run_in_env(args, config_dir, &[("CLICOLOR_FORCE", "1")])
 }
 
 fn run(args: &[&str]) -> (String, bool) {
@@ -70,6 +76,50 @@ fn test_show_food() {
     assert!(stdout.contains("Coffee (1 serving)"));
     assert!(stdout.contains("Cold Brew"));
     assert!(stdout.contains("Oat Milk"));
+}
+
+fn run_log_with_env(envs: &[(&str, &str)]) -> (String, bool) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    run_in_env(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "log",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+        envs,
+    )
+}
+
+#[test]
+fn test_piped_output_has_no_ansi() {
+    let (stdout, success) = run_log_with_env(&[]);
+    assert!(success, "log failed: {}", stdout);
+    assert!(!stdout.contains('\x1b'));
+    assert!(stdout.contains("Total"));
+}
+
+#[test]
+fn test_no_color_env_suppresses_ansi_even_with_force() {
+    let (stdout, success) = run_log_with_env(&[("CLICOLOR_FORCE", "1"), ("NO_COLOR", "1")]);
+    assert!(success, "log failed: {}", stdout);
+    assert!(!stdout.contains('\x1b'));
+}
+
+#[test]
+fn test_force_color_adds_ansi_when_piped() {
+    let (stdout, success) = run_log_with_env(&[("CLICOLOR_FORCE", "1")]);
+    assert!(success, "log failed: {}", stdout);
+    assert!(stdout.contains('\x1b'));
 }
 
 #[test]

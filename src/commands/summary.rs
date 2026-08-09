@@ -119,11 +119,9 @@ pub(crate) fn cmd_summary(
         }
         if any_exercise {
             if row.exercise_calories > Calories::ZERO {
-                cells.push(format!(
-                    "{}{}{}",
-                    display::ANSI_BOLD_RED,
-                    display::log_cell(Column::Calories, row.exercise_calories.to_decimal()),
-                    display::ANSI_RESET
+                cells.push(display::wrap_color(
+                    &display::log_cell(Column::Calories, row.exercise_calories.to_decimal()),
+                    Some(display::ANSI_BOLD_RED),
                 ));
             } else {
                 cells.push("0".to_string());

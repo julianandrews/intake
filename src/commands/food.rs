@@ -1,8 +1,6 @@
 use crate::config::{Column, Config};
 use crate::display;
-use crate::display::{
-    food_cell, Align, ColumnValue, Table, ANSI_BOLD_YELLOW, ANSI_DIM, ANSI_RESET,
-};
+use crate::display::{colorize, food_cell, Align, ColumnValue, Table};
 use crate::food;
 use anyhow::{Context, Result};
 use std::io::Write;
@@ -54,10 +52,11 @@ fn render_food(food: &food::Food, columns: &[Column]) -> Result<String> {
 
     let mut out = table.format();
     if !food.notes.trim().is_empty() {
-        out.push_str(&format!(
-            "\n{ANSI_BOLD_YELLOW}Notes:{ANSI_RESET}\n{ANSI_DIM}{}{ANSI_RESET}\n",
-            food.notes
-        ));
+        out.push('\n');
+        out.push_str(&colorize("Notes:", display::ANSI_BOLD_YELLOW));
+        out.push('\n');
+        out.push_str(&colorize(&food.notes, display::ANSI_DIM));
+        out.push('\n');
     }
 
     Ok(out)
