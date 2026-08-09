@@ -1,9 +1,10 @@
 //! Exact decimal quantities: macro masses in grams and serving counts.
 //!
 //! Values are rounded to [`SCALE`] decimal places (0.001 g) at construction,
-//! division, and serialization, and written to log files as bare decimal
-//! literals (integers when integral, floats otherwise) — no quotes, and
-//! exact round-trip for values below ≈2.2×10^12 at full 0.001 precision
+//! division, and serialization, always half away from zero (matching
+//! `f64::round` and the display boundary), and written to log files as bare
+//! decimal literals (integers when integral, floats otherwise) — no quotes,
+//! and exact round-trip for values below ≈2.2×10^12 at full 0.001 precision
 //! (~15 significant digits), which covers any realistic diet quantity.
 //! Values that cannot round-trip exactly through the `f64` representation —
 //! and integral values too large for a TOML integer — are rejected at
@@ -36,8 +37,9 @@ macro_rules! decimal_type {
         pub struct $t(Decimal);
 
         impl $t {
-            /// Build from an exact decimal, rounding to storage precision.
-            /// Errors if the value (or its rounded form) is out of range.
+            /// Build from an exact decimal, rounding to storage precision
+            /// (half away from zero). Errors if the value (or its rounded
+            /// form) is out of range.
             pub fn from_decimal(value: Decimal) -> Result<Self, String> {
                 let value = if value.is_zero() {
                     Decimal::ZERO
@@ -47,7 +49,7 @@ macro_rules! decimal_type {
                 if !$valid_decimal(value) {
                     return Err(format!("{value} is not a valid {}", stringify!($t)));
                 }
-                let rounded = value.round_dp(SCALE);
+                let rounded = round_away(value, SCALE);
                 if !$valid_decimal(rounded) {
                     return Err(format!(
                         "{value} rounds to {rounded}, not a valid {}",
@@ -87,9 +89,9 @@ macro_rules! decimal_type {
                 $t(round_away(self.0, places))
             }
 
-            /// Round to storage precision.
+            /// Round to storage precision (half away from zero).
             pub fn rounded(self) -> Self {
-                $t(self.0.round_dp(SCALE))
+                $t(round_away(self.0, SCALE))
             }
 
             /// Add, returning `None` on overflow instead of panicking.
@@ -103,10 +105,10 @@ macro_rules! decimal_type {
                 self.0.checked_mul(rhs).map($t)
             }
 
-            /// Divide by a decimal, rounding to storage precision. Returns
-            /// `None` for a zero divisor or on overflow.
+            /// Divide by a decimal, rounding to storage precision (half away
+            /// from zero). Returns `None` for a zero divisor or on overflow.
             pub fn checked_div(self, rhs: Decimal) -> Option<Self> {
-                self.0.checked_div(rhs).map(|q| $t(q.round_dp(SCALE)))
+                self.0.checked_div(rhs).map(|q| $t(round_away(q, SCALE)))
             }
         }
 
@@ -162,7 +164,7 @@ macro_rules! decimal_type {
 
         impl Serialize for $t {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                let value = self.0.round_dp(SCALE).normalize();
+                let value = round_away(self.0, SCALE).normalize();
                 if value.fract().is_zero() {
                     if let Some(i) = value.to_i64() {
                         return serializer.serialize_i64(i);
@@ -172,7 +174,7 @@ macro_rules! decimal_type {
                     )));
                 }
                 let f = value.to_f64().expect("decimal always fits f64");
-                if Decimal::from_f64(f).map(|d| d.round_dp(SCALE).normalize()) != Some(value) {
+                if Decimal::from_f64(f).map(|d| round_away(d, SCALE).normalize()) != Some(value) {
                     return Err(S::Error::custom(format!(
                         "{value} cannot be serialized exactly as a TOML float"
                     )));
@@ -402,6 +404,18 @@ mod tests {
         let value = Grams::from_f64(1.23456).unwrap();
         assert_eq!(value, g("1.235"));
         assert_eq!(value.to_string(), "1.235");
+    }
+
+    #[test]
+    fn test_storage_rounds_half_away_from_zero() {
+        // 0.0025 is an exact midpoint: away-from-zero rounds up, half-even down.
+        assert_eq!(Grams::from_str("0.0025").unwrap(), g("0.003"));
+        assert_eq!(Calories::from_str("1.0025").unwrap(), calories("1.003"));
+        assert_eq!(Servings::from_str("0.0025").unwrap(), servings("0.003"));
+        assert_eq!(
+            g("0.01").checked_div(Decimal::from(4u32)).unwrap(),
+            g("0.003")
+        );
     }
 
     #[test]
