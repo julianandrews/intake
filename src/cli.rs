@@ -2,11 +2,18 @@ use crate::amount::{Calories, Grams, Servings};
 use crate::completion::{complete_foods, complete_log_dates};
 use crate::food::Slug;
 use clap::builder::styling::{AnsiColor, Effects, Styles};
-use clap::builder::NonEmptyStringValueParser;
 use clap::{Parser, Subcommand};
 use clap_complete::engine::ArgValueCandidates;
 use clap_complete::Shell;
 use std::path::PathBuf;
+
+fn non_blank_name(s: &str) -> Result<String, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err("name must not be blank".to_string());
+    }
+    Ok(trimmed.to_string())
+}
 
 const CLAP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
@@ -81,7 +88,7 @@ pub(crate) enum Commands {
     /// Add an ad-hoc entry with custom macros (no food file needed)
     Adhoc {
         /// Name of the item
-        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        #[arg(value_parser = non_blank_name)]
         name: String,
         /// Number of servings (default: 1)
         servings: Option<Servings>,
@@ -146,5 +153,16 @@ mod tests {
         assert!(Cli::try_parse_from(["intake", "add", ".."]).is_err());
         assert!(Cli::try_parse_from(["intake", "show", "."]).is_err());
         assert!(Cli::try_parse_from(["intake", "add", "coffee"]).is_ok());
+    }
+
+    #[test]
+    fn test_adhoc_name_rejects_blank_and_trims() {
+        assert!(Cli::try_parse_from(["intake", "adhoc", ""]).is_err());
+        assert!(Cli::try_parse_from(["intake", "adhoc", "   "]).is_err());
+        let cli = Cli::try_parse_from(["intake", "adhoc", "  Greek yogurt  "]).unwrap();
+        match cli.command {
+            Commands::Adhoc { name, .. } => assert_eq!(name, "Greek yogurt"),
+            _ => panic!("expected Adhoc command"),
+        }
     }
 }
