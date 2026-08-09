@@ -107,6 +107,21 @@ impl Config {
             config.log_dir = Some(dir);
         }
 
+        if config
+            .foods_dir
+            .as_ref()
+            .is_some_and(|d| d.as_os_str().is_empty())
+        {
+            bail!("foods_dir must not be empty");
+        }
+        if config
+            .log_dir
+            .as_ref()
+            .is_some_and(|d| d.as_os_str().is_empty())
+        {
+            bail!("log_dir must not be empty");
+        }
+
         Ok(config)
     }
 
@@ -117,7 +132,8 @@ impl Config {
             Some(path) if path.exists() => {
                 let content = std::fs::read_to_string(&path)
                     .with_context(|| format!("failed to read config: {}", path.display()))?;
-                Ok(toml::from_str(&content)?)
+                Ok(toml::from_str(&content)
+                    .with_context(|| format!("failed to parse config: {}", path.display()))?)
             }
             _ => Ok(Config::default()),
         }
@@ -349,5 +365,12 @@ mod tests {
 
         assert_eq!(config.foods_dir, None);
         assert_eq!(config.log_dir, None);
+    }
+
+    #[test]
+    fn test_resolve_rejects_empty_cli_paths() {
+        assert!(Config::resolve(Some(PathBuf::from("")), None).is_err());
+        assert!(Config::resolve(None, Some(PathBuf::from(""))).is_err());
+        assert!(Config::resolve(Some(PathBuf::from("foods")), None).is_ok());
     }
 }
