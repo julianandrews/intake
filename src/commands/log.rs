@@ -136,7 +136,8 @@ pub(crate) fn cmd_log(
                 config.maintenance_calories,
             )?;
 
-            let now = (date == Local::now().date_naive()).then(|| Local::now().time());
+            let now = Local::now();
+            let now_time = (date == now.date_naive()).then(|| now.time());
             let targets = config.targets()?;
             let show_exercise =
                 day_log.exercise_calories > Calories::ZERO && columns.contains(&Column::Calories);
@@ -151,7 +152,7 @@ pub(crate) fn cmd_log(
                 } else {
                     total
                 };
-                let color = display::column_color(now, colored, &targets.for_column(*column));
+                let color = display::column_color(now_time, colored, &targets.for_column(*column));
                 plain_cells.push(display::log_cell(*column, total));
                 colored_cells.push(display::wrap_color(
                     &display::log_cell(*column, colored),
