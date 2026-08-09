@@ -118,6 +118,12 @@ where
         .with_context(|| format!("failed to create temporary log in: {}", log_dir.display()))?;
     tmp.write_all(content.as_bytes())
         .with_context(|| format!("failed to write temporary log: {}", path.display()))?;
+    // Sync the data before the rename so the rename only ever publishes
+    // fully-durable content: an OS crash can then never leave a zero-length
+    // day log behind (which would parse as an error on every later read).
+    tmp.as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync temporary log: {}", path.display()))?;
     tmp.persist(&path)
         .with_context(|| format!("failed to write log: {}", path.display()))?;
 
