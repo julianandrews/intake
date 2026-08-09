@@ -792,6 +792,59 @@ fn test_adhoc_with_fat_carbs_alcohol() {
 }
 
 #[test]
+fn test_day_total_row_does_not_sum_servings() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    // 2 servings of Chili (100 cal) + 1 serving of Oatmeal (50 cal)
+    std::fs::write(
+        dir.path().join("2026-08-02.toml"),
+        "exercise_calories = 0\n\n[[entries]]\nservings = 2.0\ncalories = 100.0\nprotein_g = 10.0\nfiber_g = 4.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Chili\"\n\n[[entries]]\nservings = 1.0\ncalories = 50.0\nprotein_g = 5.0\nfiber_g = 2.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Oatmeal\"\n",
+    )
+    .unwrap();
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "day",
+        "2026-08-02",
+    ]);
+    assert!(success, "day failed: {}", stdout);
+
+    // per-row servings cells remain
+    let chili = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("Chili"))
+        .expect("chili row present");
+    assert_eq!(chili.split_whitespace().nth(1), Some("2"), "row: {chili}");
+    let oatmeal = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("Oatmeal"))
+        .expect("oatmeal row present");
+    assert_eq!(
+        oatmeal.split_whitespace().nth(1),
+        Some("1"),
+        "row: {oatmeal}"
+    );
+
+    // total row: servings slot is blank, so the first macro value (calories,
+    // 2*100 + 1*50 = 250) follows "Total" directly — not the summed "3"
+    let total = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("Total"))
+        .expect("total row present");
+    let cells: Vec<&str> = total.split_whitespace().collect();
+    assert_eq!(cells[0], "Total", "row: {total}");
+    assert_eq!(
+        cells[1], "250",
+        "servings sum leaked into total row: {total}"
+    );
+}
+
+#[test]
 fn test_day_default_columns_include_fat_carbs_not_alcohol() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();

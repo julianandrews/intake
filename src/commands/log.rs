@@ -136,7 +136,6 @@ pub(crate) fn cmd_day(
             let rows = build_rows(&day_log.entries)?;
 
             let mut totals = Macros::ZERO;
-            let mut total_servings = Decimal::ZERO;
 
             for row in &rows {
                 let serv_str = display::servings_cell(row.servings.to_decimal());
@@ -150,9 +149,6 @@ pub(crate) fn cmd_day(
                 totals = totals
                     .checked_add(&row.macros)
                     .context("day macro total overflow")?;
-                total_servings = total_servings
-                    .checked_add(row.servings.to_decimal())
-                    .context("day servings total overflow")?;
             }
 
             let (net_cal, deficit) = log::day_net_and_deficit(
@@ -198,7 +194,7 @@ pub(crate) fn cmd_day(
                 }
             }
 
-            let mut total_row = vec!["Total".to_string(), display::servings_cell(total_servings)];
+            let mut total_row = vec!["Total".to_string(), String::new()];
             if show_exercise {
                 total_row.extend(plain_cells);
                 table.add_footer_custom(total_row);
