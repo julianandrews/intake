@@ -562,8 +562,8 @@ mod tests {
     #[test]
     fn test_render_day_summary() {
         let out = render_day_summary(
-            Calories::from_u32(300),
-            Some(Calories::from_u32(2400)),
+            Calories::from_str("300").unwrap(),
+            Some(Calories::from_str("2400").unwrap()),
             Some(Decimal::from(1500)),
         )
         .unwrap();
@@ -579,7 +579,7 @@ mod tests {
     fn test_render_day_summary_fractional_exercise_rounds() {
         let out = render_day_summary(
             Calories::from_str("300.5").unwrap(),
-            Some(Calories::from_u32(2400)),
+            Some(Calories::from_str("2400").unwrap()),
             Some(Decimal::from_str("1201.5").unwrap()),
         )
         .unwrap();
@@ -597,7 +597,7 @@ mod tests {
     fn test_render_day_summary_negative_deficit() {
         let out = render_day_summary(
             Calories::ZERO,
-            Some(Calories::from_u32(2400)),
+            Some(Calories::from_str("2400").unwrap()),
             Some(Decimal::from(-500)),
         )
         .unwrap();

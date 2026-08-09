@@ -189,7 +189,7 @@ mod tests {
         LogEntry {
             title: title.to_string(),
             servings: Servings::from_str(servings).unwrap(),
-            calories: Calories::from_u32(calories),
+            calories: Calories::from_str(&calories.to_string()).unwrap(),
             protein_g: Grams::from_str(protein).unwrap(),
             fiber_g: Grams::from_str(fiber).unwrap(),
             fat_g: Grams::from_str(fat).unwrap(),
@@ -214,7 +214,10 @@ mod tests {
             loaded.entries[0].servings,
             Servings::from_str("1.5").unwrap()
         );
-        assert_eq!(loaded.entries[0].calories, Calories::from_u32(200));
+        assert_eq!(
+            loaded.entries[0].calories,
+            Calories::from_str("200").unwrap()
+        );
         assert_eq!(
             loaded.entries[0].protein_g,
             Grams::from_str("15.0").unwrap()
@@ -309,7 +312,10 @@ mod tests {
     #[test]
     fn test_totals_scale_by_servings() {
         let e = entry("test", "2.0", 100, "10.0", "5.0", "4.0", "20.0", "3.0");
-        assert_eq!(e.total_calories().unwrap(), Calories::from_u32(200));
+        assert_eq!(
+            e.total_calories().unwrap(),
+            Calories::from_str("200").unwrap()
+        );
         assert_eq!(e.total_protein().unwrap(), Grams::from_str("20.0").unwrap());
         assert_eq!(e.total_fiber().unwrap(), Grams::from_str("10.0").unwrap());
         assert_eq!(e.total_fat().unwrap(), Grams::from_str("8.0").unwrap());
@@ -320,7 +326,10 @@ mod tests {
     #[test]
     fn test_totals_fractional_servings() {
         let e = entry("test", "1.5", 100, "10.0", "0.0", "0.0", "0.0", "0.0");
-        assert_eq!(e.total_calories().unwrap(), Calories::from_u32(150));
+        assert_eq!(
+            e.total_calories().unwrap(),
+            Calories::from_str("150").unwrap()
+        );
         assert_eq!(e.total_protein().unwrap(), Grams::from_str("15.0").unwrap());
     }
 
@@ -338,7 +347,7 @@ mod tests {
     fn test_totals_overflow_errors() {
         let mut e = entry("test", "1.0", 0, "0.0", "0.0", "0.0", "0.0", "0.0");
         e.protein_g = Grams::from_decimal(Decimal::MAX).unwrap();
-        e.servings = Servings::from_u32(2);
+        e.servings = Servings::from_str("2").unwrap();
         assert!(e.total_protein().is_err());
     }
 
@@ -447,7 +456,7 @@ mod tests {
         )?;
 
         let loaded = load_day(dir.path(), date)?.expect("day log should exist");
-        assert_eq!(loaded.exercise_calories, Calories::from_u32(300));
+        assert_eq!(loaded.exercise_calories, Calories::from_str("300").unwrap());
 
         Ok(())
     }

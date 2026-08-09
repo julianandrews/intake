@@ -273,9 +273,9 @@ mod tests {
     #[test]
     fn test_build_rows_calories_scaled_by_servings() {
         let mut e = entry("coffee", "2.0");
-        e.calories = Calories::from_u32(24);
+        e.calories = Calories::from_str("24").unwrap();
         let rows = build_rows(&[e]).unwrap();
-        assert_eq!(rows[0].macros.calories, Calories::from_u32(48));
+        assert_eq!(rows[0].macros.calories, Calories::from_str("48").unwrap());
     }
 
     #[test]

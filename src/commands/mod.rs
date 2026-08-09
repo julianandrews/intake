@@ -53,7 +53,7 @@ pub(crate) fn run(command: Commands, config: &Config) -> Result<()> {
                 &mut stdout,
                 &log_dir,
                 &name,
-                servings.unwrap_or(Servings::from_u32(1)),
+                servings.unwrap_or(Servings::ONE),
                 &Macros {
                     calories: calories.unwrap_or(Calories::ZERO),
                     protein_g: protein.unwrap_or(Grams::ZERO),

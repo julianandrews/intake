@@ -195,7 +195,7 @@ mod tests {
             quantity: None,
             protein_g: grams(protein),
             fiber_g: grams(fiber),
-            calories: Calories::from_u32(calories),
+            calories: Calories::from_str(&calories.to_string()).unwrap(),
             fat_g: grams(fat),
             carbs_g: grams(carbs),
             alcohol_g: grams(alcohol),
@@ -216,14 +216,17 @@ mod tests {
         let food = food_with_ingredient(3, ingredient("0.0", "0.0", 100, "0.0", "0.0", "0.0"));
         let ps = food.per_serving().unwrap();
         assert_eq!(ps.calories, Calories::from_str("33.333").unwrap());
-        assert_eq!(food.totals().unwrap().calories, Calories::from_u32(100));
+        assert_eq!(
+            food.totals().unwrap().calories,
+            Calories::from_str("100").unwrap()
+        );
     }
 
     #[test]
     fn test_per_serving_exact_division() {
         let food = food_with_ingredient(2, ingredient("20.0", "6.0", 100, "4.0", "30.0", "2.0"));
         let ps = food.per_serving().unwrap();
-        assert_eq!(ps.calories, Calories::from_u32(50));
+        assert_eq!(ps.calories, Calories::from_str("50").unwrap());
         assert_eq!(ps.protein_g, grams("10.0"));
         assert_eq!(ps.fiber_g, grams("3.0"));
         assert_eq!(ps.fat_g, grams("2.0"));
@@ -235,7 +238,7 @@ mod tests {
     fn test_per_serving_fractional_input() {
         let food = food_with_ingredient(1, ingredient("0.0", "0.3", 5, "0.0", "0.0", "0.0"));
         let ps = food.per_serving().unwrap();
-        assert_eq!(ps.calories, Calories::from_u32(5));
+        assert_eq!(ps.calories, Calories::from_str("5").unwrap());
         assert_eq!(ps.fiber_g, grams("0.3"));
     }
 

@@ -228,7 +228,7 @@ mod tests {
                 carbs_g: Grams::from_str("8.0").unwrap(),
                 alcohol_g: Grams::ZERO,
             }],
-            exercise_calories: Calories::from_u32(exercise),
+            exercise_calories: Calories::from_str(&exercise.to_string()).unwrap(),
         };
         let content = toml::to_string(&day_log).unwrap();
         std::fs::write(dir.join(format!("{}.toml", date)), content).unwrap();

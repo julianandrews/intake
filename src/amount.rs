@@ -68,11 +68,6 @@ macro_rules! decimal_type {
                 Self::from_decimal(dec)
             }
 
-            /// Build from an integer (unchecked).
-            pub fn from_u32(value: u32) -> Self {
-                $t(Decimal::from(value))
-            }
-
             /// The exact decimal value (may have more than [`SCALE`] places).
             pub fn to_decimal(self) -> Decimal {
                 self.0
@@ -240,6 +235,11 @@ impl Grams {
     pub const ZERO: Grams = Grams(Decimal::ZERO);
 }
 
+impl Servings {
+    /// One serving.
+    pub const ONE: Servings = Servings(Decimal::ONE);
+}
+
 impl Calories {
     /// Zero calories.
     pub const ZERO: Calories = Calories(Decimal::ZERO);
@@ -377,6 +377,7 @@ mod tests {
         assert!(Servings::from_str("-1").is_err());
         assert!(Servings::from_f64(0.0).is_err());
         assert_eq!(servings("1.5"), Servings::from_f64(1.5).unwrap());
+        assert_eq!(Servings::ONE, servings("1"));
     }
 
     #[test]
@@ -391,7 +392,7 @@ mod tests {
         assert!(Calories::from_str("-0.1").is_err());
         assert!(Calories::from_f64(-1.0).is_err());
         assert!(Calories::try_from(Decimal::new(-1, 0)).is_err());
-        assert_eq!(Calories::from_u32(250), calories("250"));
+        assert_eq!(Calories::from_str("250").unwrap(), calories("250"));
         assert_eq!(Calories::from_f64(1.23456).unwrap(), calories("1.235"));
         assert_eq!(Calories::ZERO, calories("0"));
     }
