@@ -88,8 +88,8 @@ show the proposed change, and write it only after your confirmation
 (`--yes` skips the proposal and confirmation). The prompt can be given as a
 positional, via `--prompt "..."`, or by opening `$VISUAL` / `$EDITOR` /
 `nano` on a temp file (leave it unchanged to abort). Nutrition data comes
-from the USDA FoodData Central API via the `usda_search` / `usda_get`
-tools; `ai log` also looks up your own foods (`food_lookup`). Anything a
+from the USDA FoodData Central API via the `usda_search`
+tool; `ai log` also looks up your own foods (`food_lookup`). Anything a
 model returns is validated and re-requested on failure, and the day or food
 file is re-checked before writing so a concurrent change aborts instead of
 being overwritten.

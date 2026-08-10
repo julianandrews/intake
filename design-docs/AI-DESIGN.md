@@ -9,7 +9,7 @@ existing log days and foods. All commands share one
 pipeline: capture a user prompt (via a `[prompt...]` positional, `--prompt`,
 or `$EDITOR`), send it to an LLM
 along with a base prompt, let the model use function-calling tools
-(`usda_search`/`usda_get` for nutrition data, `food_lookup` for the user's
+(`usda_search` for nutrition data, `food_lookup` for the user's
 own foods)
 to look up data, retry until the model returns valid TOML, show the
 proposed change, and write it only after a three-way confirmation.
@@ -25,7 +25,7 @@ The system is intentionally provider-neutral: it speaks the OpenAI-compatible
 Ollama, vLLM, etc.). Nutrition lookup is a plain function-calling tool
 executed in-process — no MCP, no external server packages, no closed
 ecosystem. v1 nutrition data comes from the USDA FoodData Central API (free
-API key, structured per-100g JSON, shipped as `usda_search` + `usda_get`); a
+API key, structured per-100g JSON, shipped as `usda_search`); a
 generic web search and page fetch is future work (see Open questions).
 
 ## Workspace structure
@@ -44,11 +44,9 @@ or TOML:
   trace_requests, trace_responses — both bool, default false; see
   "Tracing"), deriving `Deserialize`
   so consumers map their config onto it directly.
-- `usda.rs` — the USDA FoodData Central-backed nutrition tools:
-  `usda_search` (batched queries → candidate foods with per-100g macros)
-  and `usda_get` (fdc_id + amount_g → exact macros, scaled code-side with
-  the same exact-decimal checked math as the rest of intake). Both hit
-  `api.nal.usda.gov/fdc/v1` via `ureq` (blocking + rustls); no HTML
+- `usda.rs` — the USDA FoodData Central-backed nutrition tool:
+  `usda_search` (batched queries → candidate foods with per-100g macros).
+  Hits `api.nal.usda.gov/fdc/v1` via `ureq` (blocking + rustls); no HTML
   scraping — the API returns structured JSON. Exposed behind a small
   `Tool` trait so the agent loop is generic.
 - `llm.rs` — `LlmBackend` trait; real impl does
@@ -56,8 +54,8 @@ or TOML:
   a scripted fake backend (no network). Responses are read for
   `reasoning_content` / `reasoning` fields when the provider emits them
   (DeepSeek, OpenRouter, etc.). Agent loop: the caller registers the
-  tools it wants available (the lib ships the `usda_search`/`usda_get`
-  pair); registered tools
+  tools it wants available (the lib ships the `usda_search`
+  tool); registered tools
   become function definitions; a response is final iff `tool_calls` is
   absent — while it is non-empty, all `tool_calls` in the response are
   executed in-process (each execution, successful or failed, counts against
@@ -348,7 +346,8 @@ intent, emit `add-food` (name + servings; macros computed by intake, exact
 by construction); if the user wants a modified version or no food exists,
 emit `add-adhoc` with its own macros, preserved untouched — sourced from the
 user's own past logs (the history digest, scaled to the portion) when one
-exists, from a `usda_get` result when it doesn't, and estimated only when
+exists, from a `usda_search` per-100g result scaled to the portion when it
+doesn't, and estimated only when
 neither applies (restaurant meals, non-US items). No automatic
 conversion, no `from food:` marker — intent lives in the op kind, and the
 row diff shows the outcome.
@@ -424,10 +423,11 @@ digest alone, skipping `food_lookup` and USDA round-trips entirely. The
 digest is the **first** source for macros: an entry matching the user's
 request is copied and scaled to the requested portion by the model —
 preferable to tool round-trips and to estimation, since it reflects the
-user's own logging. This model-side scaling is the one deliberate exception
+user's own logging. This model-side scaling is a deliberate exception
 to the "the model never does scaling arithmetic" rule: digest-sourced
-macros are accepted as estimate-grade (like any
-`usda_get`-less `add-adhoc`), and the proposal diff shows every value
+macros are accepted as estimate-grade (like any USDA-sourced
+`add-adhoc` — `usda_search` returns per-100g values, scaled to the portion
+by the model, see "Tools"), and the proposal diff shows every value
 before confirmation.
 
 ## Tools
@@ -458,20 +458,13 @@ pub trait Tool {
   raw/cooked ambiguity is explicit, not buried in a snippet). Per-query
   and total output caps (~2k chars). A fetch failure or rate limit (429)
   returns a short error string, counting against the budget like any
-  failure.
-- **`usda_get`** (ships with the lib): batched — `requests: [{fdc_id,
-  amount_g}]`; computes exact macros for the requested amount from the
-  per-100g values code-side (exact-decimal, checked — an absurd `amount_g`
-  is an error string, never a panic). Returns `name | amount | all six
-  macros` — the numbers the model copies verbatim into `add-adhoc` ops
-  with `servings = 1` (entry macros are per-serving, and the returned
-  values already match the requested portion, so any other servings factor
-  would double-scale). The model never does scaling arithmetic. v1 validation
-  does not enforce the pairing code-side — an `add-adhoc` copying verbatim
-  tool macros with `servings ≠ 1` double-scales silently — but the proposal
-  diff shows every value, and a future check (rejecting an `add-adhoc` whose
-  macros exactly match a prior `usda_get` result unless `servings = 1`) is
-  cheap.
+  failure. The model scales the per-100g values to the requested portion
+  itself (portion ÷ 100 × each value, rounded to whole calories and 0.1 g);
+  the earlier `usda_get` companion (code-side exact scaling) was dropped in
+  v2 — it hit the `/food/{fdcId}` endpoint whose nutrient payload nests the
+  id under `nutrient.id` and the value under `amount` (unlike search's flat
+  `nutrientId`/`value`), so its parsing always read all-zero macros, and the
+  search endpoint already carries every value the model needs.
 - **`food_lookup`** (intake-side, registered by `ai log` only):
   batched — takes `queries: [string]` (one or more titles) and returns
   per-query matches, so a multi-entry edit costs 1-2 calls instead of one
@@ -485,23 +478,25 @@ pub trait Tool {
      output cap. An empty foods dir or no matches returns an explicit empty
      result.
 
-Registration per command: `ai log` → `food_lookup` + `usda_search` +
-`usda_get`; `ai food new <name>` / `ai food edit <name>` → `usda_search` +
-`usda_get` — the name comes from the CLI (see "Name argument"), so there
-is no naming collision for the model to manage; the USDA tools cover
+Registration per command: `ai log` → `food_lookup` + `usda_search`;
+`ai food new <name>` / `ai food edit <name>` → `usda_search` — the name
+comes from the CLI (see "Name argument"), so there
+is no naming collision for the model to manage; the USDA tool covers
 ingredient nutrition.
 
 Why USDA-only v1: a general web search's ~200-char snippets cannot carry
 all six macros plus serving context, and extraction + scaling would land
 on the model (see Open questions for the deferred generic-search design).
 The USDA API returns structured per-100g JSON with explicit variant names,
-so the model only chooses; arithmetic is code-side. Cost: a free API key
+so the model only picks the variant; the per-100g→portion scaling it
+performs is estimate-grade, accepted like digest-sourced scaling and shown
+in the proposal diff. Cost: a free API key
 (fdc.nal.usda.gov) and gaps for restaurant meals, branded items absent
 from FDC, and non-US foods — the `web_search` + `fetch_url` follow-up
 covers those.
 
-Budget math: batching keeps a 10-entry edit at 2-3 tool calls (one
-`usda_search` batch, one `usda_get` batch, occasional re-search) — and the
+Budget math: batching keeps a 10-entry edit at 1-2 tool calls (one
+`usda_search` batch, occasional re-search) — and the
 history digest lets reuse-heavy edits land at zero tool calls;
 `max_tool_calls` (default 20) is a loose ceiling rather than a tight fit —
 revisit when the `web_search` + `fetch_url` follow-up lands (see Open
@@ -706,7 +701,7 @@ food_edit_prompt = "..."
    `usda_api_key` resolves config → env only — no CLI flag.
 - The API keys (LLM and USDA) are never logged or printed.
 - Timeouts: `timeout_secs` (default 60) bounds each LLM API call;
-  `usda_timeout_secs` (default 15) bounds each `usda_search`/`usda_get`
+  `usda_timeout_secs` (default 15) bounds each `usda_search`
   fetch.
   Transient transport failures on the LLM endpoint (HTTP 429/5xx) retry up
   to twice with backoff; timeouts and other errors abort with a clear
@@ -714,7 +709,7 @@ food_edit_prompt = "..."
   failures, not transport failures). USDA fetches never auto-retry: any
   failure, including 429, returns a short error string to the model and
   counts against the tool budget — the model's own retry of a
-  `usda_search`/`usda_get` call is the throttle, doubling as natural
+  `usda_search` call is the throttle, doubling as natural
   rate-limit backoff.
   The editor prompt capture and confirmation prompt are user-paced and
   untimed.
@@ -729,10 +724,10 @@ user's prompt; the command's context (`ai log`: the edited day's entries,
 the history digest (the `history_days` window, count-deduplicated), totals
 and targets; `ai food edit`: the target food's TOML; `ai food new`: the
 three sample foods); the queries the model makes via
-`usda_search`/`usda_get`; and the generated proposal.
+`usda_search`; and the generated proposal.
 `food_lookup` queries are also visible to the provider (they are part of
 the conversation), though the results never leave the machine.
-`usda_search`/`usda_get` additionally send their queries from intake's
+`usda_search` additionally sends its queries from intake's
 process straight to `api.nal.usda.gov` — the provider is not involved in
 that hop. Nothing is sent unless an `ai`
 command is run, and nothing is stored beyond intake's existing local
@@ -815,11 +810,11 @@ Every template has the same anatomy:
    or `DayLogOps`), mirroring `AGENTS.md` / the serde structs.
 3. **Rules** — all macro fields required, no default of zero; the macro
    source order for `ai log` is: the history digest first (an entry matching
-   the request is copied and scaled to the portion — the one deliberate
-   scaling exception, accepted as estimate-grade), then a tool result where
+   the request is copied and scaled to the portion — an accepted
+   scaling exception, estimate-grade), then a tool result where
    one exists (`food_lookup` before going online, then `usda_search` for the
-   right variant + `usda_get` for the requested amount, copied verbatim with
-   `servings = 1` — never scale or recompute a tool result yourself), then a
+   right variant, scaled to the portion by the model — never recompute or
+   estimate from memory when a result exists), then a
    best-effort estimate (the proposal diff shows every value and the user
    confirms before anything is written). Output TOML only, no prose, no
    surrounding fenced blocks.
@@ -844,7 +839,8 @@ Per-command content:
     include intended titles in a batched `food_lookup` call, deciding per
     title: `add-food` when a match fits the user's intent (macros computed
     by intake), `add-adhoc` with all six macros for one-offs and modified
-    versions — macros verbatim from a `usda_get` result (`servings = 1`)
+    versions — scaled to the portion from a `usda_search` per-100g result
+    (`servings = 1`)
     when one exists, else from the history digest scaled to the portion,
     else a best-effort estimate.
   - **Row semantics** — `row` indices are 1-based against the numbered list
@@ -870,9 +866,9 @@ Per-command content:
    feature-gated `ai` tree (`ai log`, `ai food new`, `ai food edit`) with the
    Resolver + confirmation flow, the three-option terminal `Confirmer`
    (+ `ConfirmAlways`, `#[cfg(feature = "ai")]`), per-command prompt
-   template files (`src/ai/prompts/*.md`), the `Tool` trait wiring
-   (`usda_search` + `usda_get` +
-   batched `food_lookup` with per-command registration), the `DayLogOps`
+    template files (`src/ai/prompts/*.md`), the `Tool` trait wiring
+    (`usda_search` +
+    batched `food_lookup` with per-command registration), the `DayLogOps`
    schema with `apply_ops`, the checked day write
    (`src/ai/write.rs::write_day_checked`), and the stale-write check.
 3. **Docs** — AGENTS.md / README `[ai]` section and path touch-ups.
@@ -955,7 +951,7 @@ Per-command content:
 ## Docs
 
 Update `AGENTS.md` and `README.md` with the `[ai]` config section, a note on
-the USDA FoodData Central-backed nutrition lookup (`usda_search`/`usda_get`),
+the USDA FoodData Central-backed nutrition lookup (`usda_search`),
 and corrected paths for the workspace layout.
 
 ## Open questions / future work
@@ -976,7 +972,7 @@ and corrected paths for the workspace layout.
   impl running a sub-loop) that takes a food description + portion and
   returns exact per-serving macros — fixes the arithmetic-scaling and
   macro-completeness error classes and isolates the main agent's tool
-  budget. `usda_get` already makes scaling code-side for USDA-sourced
+  budget. Without `usda_get`, scaling is model-side for all tool-sourced
   data, so the agent's value is concentrated in the `web_search` era
   (extraction from arbitrary pages). Details not scoped: caching, output
   contract/confidence, nested budget accounting, and whether it rides on
@@ -992,8 +988,8 @@ and corrected paths for the workspace layout.
 - A `log_lookup` tool as the sibling of `food_lookup` (given a date or range,
   return the day logs as entry lines) — would later extend the configurable
   history digest, letting the model pull older logs on demand; returning full
-  macro values would also let intake scale them code-side, closing the one
-  model-side scaling exception in "Context windows".
+  macro values would also let intake scale them code-side, closing the
+  remaining model-side scaling gap in "Context windows".
 - Optionally, search tools for each domain on top of lookup: a `food_search`
   (fuzzy/full-text search across food titles, ingredients, and notes) and a
   `log_search` (search past log entries by title or macros, e.g. "when did I

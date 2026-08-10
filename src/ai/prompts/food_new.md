@@ -17,10 +17,10 @@ shows the exact shape.
 - `notes` is optional; `quantity` is optional.
 - Match the user's ingredient granularity and quantity style — see the
   example food at the end of this prompt.
-- Ingredient macros must come from a tool result where one exists:
-  `usda_search` to find the right variant, `usda_get` for the requested
-  amount, then copy the numbers verbatim — never scale or recompute a tool
-  result yourself.
+- Ingredient macros must come from a tool result where one exists: `usda_search`
+  to find the right variant, then scale its per-100g values to the ingredient
+  quantity yourself (quantity ÷ 100 × each value), rounding to whole calories
+  and 0.1 g — never estimate or recompute from memory when a result exists.
 - When no tool result exists, estimate. Every value is shown for
   confirmation before anything is written.
 - Output only TOML. No prose, no fenced code blocks.

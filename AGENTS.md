@@ -16,8 +16,8 @@ directory.
 `intake` is a Cargo workspace. The binary lives at the root; `intake-ai` is
 a library under `crates/` that implements the generic AI pipeline
 (settings, LLM backend, agent loop with tools, resolve loop with
-confirmation) and ships the USDA FoodData Central nutrition tools
-(`usda_search` / `usda_get`). It knows nothing about intake, food, or TOML;
+confirmation) and ships the USDA FoodData Central nutrition tool
+(`usda_search`). It knows nothing about intake, food, or TOML;
 intake supplies the parse closures, prompt templates, `food_lookup` tool,
 and confirmation UX.
 

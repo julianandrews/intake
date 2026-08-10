@@ -375,7 +375,6 @@ impl Drop for StatusLine {
 fn tool_label(name: &str) -> String {
     match name {
         "usda_search" => "Searching USDA".to_string(),
-        "usda_get" => "Fetching USDA nutrition".to_string(),
         "food_lookup" => "Looking up your foods".to_string(),
         other => format!("Running {other}"),
     }
@@ -885,7 +884,6 @@ mod tests {
     #[test]
     fn test_tool_label_mapping() {
         assert_eq!(tool_label("usda_search"), "Searching USDA");
-        assert_eq!(tool_label("usda_get"), "Fetching USDA nutrition");
         assert_eq!(tool_label("food_lookup"), "Looking up your foods");
         assert_eq!(tool_label("unknown_tool"), "Running unknown_tool");
     }
@@ -930,7 +928,7 @@ mod tests {
 
     #[test]
     fn test_status_tool_error_propagates_and_resets_label() {
-        let tool = FakeTool::failing("usda_get");
+        let tool = FakeTool::failing("usda_search");
         let status = StatusLine::with_tty(true);
         let wrapped = StatusTool::new(&tool, &status);
         let err = wrapped.execute(&serde_json::json!({})).unwrap_err();

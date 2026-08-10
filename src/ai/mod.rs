@@ -22,7 +22,7 @@ use intake_ai::llm::{LlmBackend, OpenAiCompatible};
 use intake_ai::pipeline::{ResolveContext, ResolveError, Resolver};
 use intake_ai::settings::AiSettings;
 use intake_ai::tools::Tool;
-use intake_ai::usda::{UsdaGet, UsdaSearch};
+use intake_ai::usda::UsdaSearch;
 use similar::{ChangeTag, TextDiff};
 use std::io::Write;
 use std::path::Path;
@@ -226,10 +226,10 @@ impl AiSession {
     }
 }
 
-fn usda_tools(settings: &AiSettings) -> (UsdaSearch, UsdaGet) {
+fn usda_tools(settings: &AiSettings) -> UsdaSearch {
     let key = settings.usda_api_key.as_deref().unwrap_or("");
     let timeout = Duration::from_secs(settings.usda_timeout_secs);
-    (UsdaSearch::new(key, timeout), UsdaGet::new(key, timeout))
+    UsdaSearch::new(key, timeout)
 }
 
 fn sample_foods_context(foods_dir: &Path) -> Result<String> {
@@ -346,7 +346,7 @@ fn cmd_ai_log(
         prompt_override(config, |ai| &ai.log_prompt),
         &context_text,
     );
-    let (usda_search, usda_get) = usda_tools(settings);
+    let usda_search = usda_tools(settings);
     let status = spinner::StatusLine::new(settings);
     let warn = |msg: &str| status.warn(msg);
     let food_lookup = food_lookup::FoodLookup::new(foods_dir).with_warn(&warn);
@@ -378,7 +378,7 @@ fn cmd_ai_log(
     let (outcome, presented) = {
         let confirmer = make_confirmer(writer);
         let presented = proposal_presented(confirmer.as_ref());
-        let tools: [&dyn Tool; 3] = [&food_lookup, &usda_search, &usda_get];
+        let tools: [&dyn Tool; 2] = [&food_lookup, &usda_search];
         let outcome = resolve_session(
             env,
             confirmer,
@@ -447,7 +447,7 @@ fn cmd_ai_food_new(
         prompt_override(config, |ai| &ai.food_new_prompt),
         &samples,
     );
-    let (usda_search, usda_get) = usda_tools(settings);
+    let usda_search = usda_tools(settings);
     let status = spinner::StatusLine::new(settings);
     let columns = config.columns()?;
 
@@ -461,7 +461,7 @@ fn cmd_ai_food_new(
     let (outcome, presented) = {
         let confirmer = make_confirmer(writer);
         let presented = proposal_presented(confirmer.as_ref());
-        let tools: [&dyn Tool; 2] = [&usda_search, &usda_get];
+        let tools: [&dyn Tool; 1] = [&usda_search];
         let outcome = resolve_session(
             env,
             confirmer,
@@ -520,7 +520,7 @@ fn cmd_ai_food_edit(
         prompt_override(config, |ai| &ai.food_edit_prompt),
         &context_text,
     );
-    let (usda_search, usda_get) = usda_tools(settings);
+    let usda_search = usda_tools(settings);
     let status = spinner::StatusLine::new(settings);
     let columns = config.columns()?;
 
@@ -537,7 +537,7 @@ fn cmd_ai_food_edit(
     let (outcome, presented) = {
         let confirmer = make_confirmer(writer);
         let presented = proposal_presented(confirmer.as_ref());
-        let tools: [&dyn Tool; 2] = [&usda_search, &usda_get];
+        let tools: [&dyn Tool; 1] = [&usda_search];
         let outcome = resolve_session(
             env,
             confirmer,

@@ -50,6 +50,8 @@ For ad-hoc replacement use `title` instead of `name` and all 6 macros
 - Before looking online, include intended titles in a batched `food_lookup`
   call. A match is a decision point: prefer add-food when the food fits the
   user's intent, use add-adhoc for one-offs and modified versions.
-- When you use the `usda_get` tool, prefer to copy its returned macros verbatim
-  into the op with `servings = 1`.
+- When you use the `usda_search` tool, scale the candidate's per-100g macros
+  to the requested portion yourself (portion_g ÷ 100 × each value), rounding
+  to whole calories and 0.1 g, and put them in an add-adhoc op with
+  `servings = 1`. Never invent values.
 - Output only TOML. No prose, no fenced code blocks.
