@@ -188,6 +188,15 @@ fn test_ai_log_confirmed_proposal_writes_day() {
         "proposal diff missing: {stdout}"
     );
     assert!(stdout.contains(OATMEAL_LINE), "day table missing: {stdout}");
+    assert!(
+        stdout.contains("Logged to 2026-08-10"),
+        "confirmation line missing: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("Total").count(),
+        1,
+        "day table must render only once: {stdout}"
+    );
     let day = std::fs::read_to_string(log_dir.path().join("2026-08-10.toml")).unwrap();
     assert!(day.contains("title = \"Oatmeal\""), "day: {day}");
     assert!(day.contains("servings = 1"), "day: {day}");
@@ -269,6 +278,14 @@ fn test_ai_log_yes_skips_confirmation_and_writes() {
         None,
     );
     assert!(success, "stdout: {stdout}");
+    assert!(
+        stdout.contains("Total"),
+        "day table missing after --yes: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Logged to"),
+        "--yes must not print the confirmation line: {stdout}"
+    );
     let day = std::fs::read_to_string(log_dir.path().join("2026-08-10.toml")).unwrap();
     assert!(day.contains("title = \"Oatmeal\""), "day: {day}");
 }
@@ -300,6 +317,10 @@ fn test_ai_food_new_writes_food_file() {
     assert!(
         foods.path().join("e2e-food.toml").exists(),
         "food file was not written"
+    );
+    assert!(
+        !stdout.contains("Wrote"),
+        "--yes must not print the confirmation line: {stdout}"
     );
     assert!(stdout.contains("E2e Food"), "stdout: {stdout}");
 }

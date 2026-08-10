@@ -109,6 +109,16 @@ fn confirmer_for<'a>(writer: &'a mut dyn Write, yes: bool) -> Box<dyn Confirmer 
     }
 }
 
+/// Whether the confirmer renders the proposal to the writer before the user
+/// decides: true for the interactive confirmer, false for `--yes`, which
+/// auto-accepts without presenting anything. After a successful write the
+/// commands branch on this — when the proposal was shown, a one-line
+/// confirmation suffices; when not, the affected table is reprinted as the
+/// only display.
+fn proposal_presented(confirmer: &dyn Confirmer) -> bool {
+    confirmer.present_before_confirm()
+}
+
 fn write_nothing(writer: &mut impl Write) -> Result<()> {
     writeln!(writer, "Nothing written")?;
     Ok(())
@@ -365,10 +375,11 @@ fn cmd_ai_log(
         format!("{diff}\n\n{table}")
     };
 
-    let outcome = {
+    let (outcome, presented) = {
         let confirmer = make_confirmer(writer);
+        let presented = proposal_presented(confirmer.as_ref());
         let tools: [&dyn Tool; 3] = [&food_lookup, &usda_search, &usda_get];
-        resolve_session(
+        let outcome = resolve_session(
             env,
             confirmer,
             &tools,
@@ -379,7 +390,8 @@ fn cmd_ai_log(
                 parse: &parse,
                 present: &present,
             },
-        )
+        );
+        (outcome, presented)
     };
 
     match outcome {
@@ -395,8 +407,12 @@ fn cmd_ai_log(
                 return Ok(());
             }
             write::write_day_checked(log_dir, date, original.as_ref(), applied)?;
-            writeln!(writer)?;
-            crate::commands::log::cmd_day(writer, log_dir, date, config)?;
+            if presented {
+                writeln!(writer, "Logged to {date}")?;
+            } else {
+                writeln!(writer)?;
+                crate::commands::log::cmd_day(writer, log_dir, date, config)?;
+            }
         }
         Err(err) => {
             status.pause();
@@ -442,10 +458,11 @@ fn cmd_ai_food_new(
             .unwrap_or_else(|e| format!("(unavailable: {e})"))
     };
 
-    let outcome = {
+    let (outcome, presented) = {
         let confirmer = make_confirmer(writer);
+        let presented = proposal_presented(confirmer.as_ref());
         let tools: [&dyn Tool; 2] = [&usda_search, &usda_get];
-        resolve_session(
+        let outcome = resolve_session(
             env,
             confirmer,
             &tools,
@@ -456,19 +473,23 @@ fn cmd_ai_food_new(
                 parse: &parse,
                 present: &present,
             },
-        )
+        );
+        (outcome, presented)
     };
 
     match outcome {
         Ok(new_food) => {
             food::create_food(foods_dir, name, &new_food)?;
-            writeln!(writer, "Wrote {}", path.display())?;
-            writeln!(writer)?;
-            write!(
-                writer,
-                "{}",
-                crate::commands::food::render_food(&new_food, &columns)?
-            )?;
+            if presented {
+                writeln!(writer, "Wrote {}", path.display())?;
+            } else {
+                writeln!(writer)?;
+                write!(
+                    writer,
+                    "{}",
+                    crate::commands::food::render_food(&new_food, &columns)?
+                )?;
+            }
         }
         Err(err) => {
             status.pause();
@@ -513,10 +534,11 @@ fn cmd_ai_food_edit(
         format!("Before:\n{before}\nAfter:\n{after}")
     };
 
-    let outcome = {
+    let (outcome, presented) = {
         let confirmer = make_confirmer(writer);
+        let presented = proposal_presented(confirmer.as_ref());
         let tools: [&dyn Tool; 2] = [&usda_search, &usda_get];
-        resolve_session(
+        let outcome = resolve_session(
             env,
             confirmer,
             &tools,
@@ -527,7 +549,8 @@ fn cmd_ai_food_edit(
                 parse: &parse,
                 present: &present,
             },
-        )
+        );
+        (outcome, presented)
     };
 
     match outcome {
@@ -545,13 +568,16 @@ fn cmd_ai_food_edit(
                 return Ok(());
             }
             food::write_food(foods_dir, name, &new_food)?;
-            writeln!(writer, "Wrote {}", path.display())?;
-            writeln!(writer)?;
-            write!(
-                writer,
-                "{}",
-                crate::commands::food::render_food(&new_food, &columns)?
-            )?;
+            if presented {
+                writeln!(writer, "Wrote {}", path.display())?;
+            } else {
+                writeln!(writer)?;
+                write!(
+                    writer,
+                    "{}",
+                    crate::commands::food::render_food(&new_food, &columns)?
+                )?;
+            }
         }
         Err(err) => {
             status.pause();
@@ -1206,10 +1232,46 @@ mod tests {
             Box::new(Scripted::new(vec![ConfirmDecision::Accept]))
         })
         .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains(&format!("Wrote {}", name.file_path(dir.path()).display())),
+            "confirmation line missing: {text}"
+        );
+        assert!(
+            !text.contains("My Food"),
+            "table must not be reprinted after presentation: {text}"
+        );
         assert!(name.file_path(dir.path()).exists());
         let loaded = food::load_food(&name.file_path(dir.path())).unwrap();
         assert_eq!(loaded.title, "My Food");
         assert_eq!(loaded.ingredients.len(), 1);
+    }
+
+    #[test]
+    fn test_ai_food_new_skip_present_renders_table() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let name = FoodName::from_str("my-food").unwrap();
+        let toml = "title = \"My Food\"\nservings = 2\n\n[[ingredients]]\nname = \"Chicken\"\nquantity = \"200g\"\ncalories = 330\nprotein_g = 46\nfiber_g = 0\nfat_g = 6\ncarbs_g = 0\nalcohol_g = 0\n";
+        let backend = FakeBackend::new(vec![Ok(AssistantMessage::text(toml))]);
+        let mut out = Vec::new();
+        let config = Config::default();
+        let settings = settings();
+        let env = AiEnv {
+            settings: &settings,
+            backend: &backend,
+            config: &config,
+        };
+        cmd_ai_food_new(&mut out, &env, dir.path(), &name, "make it", |_| {
+            Box::new(Scripted::skip_present(vec![ConfirmDecision::Accept]))
+        })
+        .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("My Food"),
+            "table must be reprinted without present: {text}"
+        );
+        assert!(!text.contains("Wrote"), "got: {text}");
+        assert!(name.file_path(dir.path()).exists());
     }
 
     #[test]
@@ -1311,9 +1373,46 @@ mod tests {
             Box::new(Scripted::new(vec![ConfirmDecision::Accept]))
         })
         .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains(&format!("Wrote {}", name.file_path(dir.path()).display())),
+            "confirmation line missing: {text}"
+        );
+        assert!(
+            !text.contains("My Food v2"),
+            "table must not be reprinted after presentation: {text}"
+        );
         let loaded = food::load_food(&name.file_path(dir.path())).unwrap();
         assert_eq!(loaded.title, "My Food v2");
         assert_eq!(loaded.servings.get(), 4);
+    }
+
+    #[test]
+    fn test_ai_food_edit_skip_present_renders_table() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let name = FoodName::from_str("my-food").unwrap();
+        let original = "title = \"My Food\"\nservings = 2\n\n[[ingredients]]\nname = \"Chicken\"\ncalories = 330\nprotein_g = 46\nfiber_g = 0\nfat_g = 6\ncarbs_g = 0\nalcohol_g = 0\n";
+        std::fs::write(name.file_path(dir.path()), original).unwrap();
+        let edited = "title = \"My Food v2\"\nservings = 4\n\n[[ingredients]]\nname = \"Chicken\"\ncalories = 660\nprotein_g = 92\nfiber_g = 0\nfat_g = 12\ncarbs_g = 0\nalcohol_g = 0\n";
+        let backend = FakeBackend::new(vec![Ok(AssistantMessage::text(edited))]);
+        let mut out = Vec::new();
+        let config = Config::default();
+        let settings = settings();
+        let env = AiEnv {
+            settings: &settings,
+            backend: &backend,
+            config: &config,
+        };
+        cmd_ai_food_edit(&mut out, &env, dir.path(), &name, "double it", |_| {
+            Box::new(Scripted::skip_present(vec![ConfirmDecision::Accept]))
+        })
+        .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("My Food v2"),
+            "table must be reprinted without present: {text}"
+        );
+        assert!(!text.contains("Wrote"), "got: {text}");
     }
 
     #[test]

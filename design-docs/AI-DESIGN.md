@@ -562,8 +562,12 @@ and proceeds to the parse step (see `llm.rs`).
    new` the collision check already ran at parse time (see "Name
    argument"); the write-time recheck aborts if the file appeared
    mid-flow. After a
-   successful write, reprint the affected table (day log for `ai log`, food
-   for `ai food new`/`ai food edit`).
+   successful write: if the proposal was presented (interactive
+   confirmation), print a one-line confirmation — `Logged to {date}` for
+   `ai log`, `Wrote {path}` for `ai food new`/`ai food edit` — since the
+   proposal already showed the full table. When the proposal was not
+   presented (`--yes`), reprint the affected table (day log for `ai log`,
+   food for `ai food new`/`ai food edit`) as the only display.
 
 Steps 2–7 run inside the lib's `resolve` loop (see "The resolve loop"); intake
 builds the system prompt, constructs a `Resolver` with `ctx` + its confirmer,
@@ -928,10 +932,12 @@ Per-command content:
   `[[test]] required-features` in Cargo.toml — no cfg attributes in the
   shared file): the real binary driven against a fake OpenAI-compatible
   server (local TCP listener serving scripted `chat/completions`
-  responses), covering `ai log` with confirm-yes (proposal diff shown, day
-  written), confirm-no (nothing written), and `--yes` (no confirmation),
-  plus `ai food new` writing a food file — including assertions on the
-  recorded request (model name, `food_lookup` tool advertised, prompt
+  responses), covering `ai log` with confirm-yes (proposal diff shown
+  once, day written, one-line confirmation instead of a second table),
+  confirm-no (nothing written), and `--yes` (no confirmation; the day
+  table is the only display), plus `ai food new` in `--yes` (food table
+  as the only display, no confirmation line) — including assertions on
+  the recorded request (model name, `food_lookup` tool advertised, prompt
   carried).
 - Quality gates (workspace root): `cargo test --workspace`,
   `cargo clippy --workspace -- -D warnings`,
