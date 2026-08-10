@@ -240,16 +240,28 @@ fn sample_foods_context(foods_dir: &Path) -> Result<String> {
 }
 
 fn row_diff(before: &[log::LogEntry], after: &[log::LogEntry]) -> String {
-    let before_text = before
+    let mut before_text = before
         .iter()
         .map(context::entry_line)
         .collect::<Vec<_>>()
         .join("\n");
-    let after_text = after
+    let mut after_text = after
         .iter()
         .map(context::entry_line)
         .collect::<Vec<_>>()
         .join("\n");
+    // `similar` counts each line's trailing newline as part of the line, so
+    // an unterminated final line differs from a terminated one. Both inputs
+    // must therefore end in a newline: otherwise appending an entry after
+    // the last line would diff the untouched previous line as deleted and
+    // re-inserted instead of showing a single insertion. A side with no
+    // entries stays empty so it doesn't contribute a phantom blank line.
+    if !before_text.is_empty() {
+        before_text.push('\n');
+    }
+    if !after_text.is_empty() {
+        after_text.push('\n');
+    }
     let diff = TextDiff::from_lines(&before_text, &after_text);
     let mut out = String::new();
     for change in diff.iter_all_changes() {
@@ -258,7 +270,12 @@ fn row_diff(before: &[log::LogEntry], after: &[log::LogEntry]) -> String {
             ChangeTag::Insert => '+',
             ChangeTag::Equal => continue,
         };
-        out.push_str(&format!("{sign} {}\n", change.value().trim_end()));
+        // Lines are newline-terminated tokens; strip exactly the newline so
+        // trailing whitespace inside a line survives untouched.
+        out.push_str(&format!(
+            "{sign} {}\n",
+            change.value().trim_end_matches('\n')
+        ));
     }
     out
 }
@@ -713,6 +730,47 @@ mod tests {
     }
 
     #[test]
+    fn test_row_diff_appended_entry_keeps_previous_line_untouched() {
+        let diff = row_diff(
+            &[entry("protein shake", "1", "275")],
+            &[
+                entry("protein shake", "1", "275"),
+                entry("apple", "1", "52"),
+            ],
+        );
+        assert_eq!(diff, "+ apple | 1 | 52, 0, 0, 0, 0, 0\n");
+    }
+
+    #[test]
+    fn test_row_diff_removed_last_entry_keeps_previous_line_untouched() {
+        let diff = row_diff(
+            &[
+                entry("protein shake", "1", "275"),
+                entry("apple", "1", "52"),
+            ],
+            &[entry("protein shake", "1", "275")],
+        );
+        assert_eq!(diff, "- apple | 1 | 52, 0, 0, 0, 0, 0\n");
+    }
+
+    #[test]
+    fn test_row_diff_middle_edit_keeps_unchanged_last_line() {
+        let mut shake = entry("protein shake", "1", "275");
+        shake.calories = crate::amount::Calories::from_str("276").unwrap();
+        let diff = row_diff(
+            &[
+                entry("protein shake", "1", "275"),
+                entry("apple", "1", "52"),
+            ],
+            &[shake, entry("apple", "1", "52")],
+        );
+        assert_eq!(
+            diff,
+            "- protein shake | 1 | 275, 0, 0, 0, 0, 0\n+ protein shake | 1 | 276, 0, 0, 0, 0, 0\n"
+        );
+    }
+
+    #[test]
     fn test_capture_prompt_prefers_positional_and_inline() {
         assert_eq!(
             capture_prompt(&["add".to_string(), "dinner".to_string()], None).unwrap(),
@@ -813,8 +871,11 @@ mod tests {
             |w| Box::new(Scripted::with_writer(w, vec![ConfirmDecision::Accept])),
         )
         .unwrap();
-        assert!(String::from_utf8_lossy(&out).contains("- coffee | 1 | 12, 0, 0, 0, 0, 0"));
-        assert!(String::from_utf8_lossy(&out).contains("+ Oatmeal | 2 | 200, 10, 5, 4, 30, 0"));
+        let text = String::from_utf8_lossy(&out);
+        // The confirmation must present exactly one insertion, leading the
+        // output: appending after the last entry must not diff the untouched
+        // "coffee" line as deleted and re-inserted.
+        assert!(text.starts_with("+ Oatmeal | 2 | 200, 10, 5, 4, 30, 0\n\n"));
         let loaded = log::load_day(log_dir.path(), date).unwrap().unwrap();
         assert_eq!(loaded.entries.len(), 2);
         assert_eq!(loaded.entries[1].title, "Oatmeal");
