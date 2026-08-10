@@ -2,7 +2,9 @@ use crate::settings::AiSettings;
 use crate::tools::{function_definitions, Tool};
 use serde_json::Value;
 use std::fmt;
+use std::io;
 use std::io::Write;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +83,7 @@ pub enum LlmError {
     Http { status: u16, body: String },
     BadResponse(String),
     Transport(String),
+    Trace(String),
 }
 
 impl LlmError {
@@ -98,7 +101,14 @@ impl LlmError {
             }
             LlmError::BadResponse(detail) => format!("invalid LLM response: {detail}"),
             LlmError::Transport(detail) => format!("LLM request failed: {detail}"),
+            LlmError::Trace(detail) => format!("failed to write trace output: {detail}"),
         }
+    }
+}
+
+impl From<io::Error> for LlmError {
+    fn from(e: io::Error) -> Self {
+        LlmError::Trace(e.to_string())
     }
 }
 
@@ -275,11 +285,50 @@ pub enum AgentOutcome {
     Exhausted(AssistantMessage),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// A destination for trace output that may be shared between threads and
+/// re-acquired across calls. Implementations guarantee exclusive access to
+/// the underlying writer for the duration of `f`, so a caller can emit a
+/// multi-line dump that no other writer on the same sink can interleave
+/// with. Write failures inside `f` are returned to the caller, which
+/// decides whether to fail loudly or ignore them.
+pub trait TraceSink: Send + Sync {
+    fn with_writer(&self, f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<()>;
+}
+
+// Any mutex-wrapped writer: the shared case. Poisoned locks are recovered —
+// a panic mid-dump should not take down the next writer.
+impl<W: Write + Send> TraceSink for Mutex<W> {
+    fn with_writer(&self, f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<()> {
+        f(&mut *self.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
+// Arc forwards, so `Arc<Mutex<...>>` and `Arc<dyn TraceSink>` both work.
+impl<T: TraceSink + ?Sized> TraceSink for Arc<T> {
+    fn with_writer(&self, f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<()> {
+        (**self).with_writer(f)
+    }
+}
+
+/// The default sink: raw stderr. `stderr()` returns a fresh handle per call,
+/// so no interior mutability is needed.
+struct StderrSink;
+
+impl TraceSink for StderrSink {
+    fn with_writer(&self, f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<()> {
+        f(&mut std::io::stderr())
+    }
+}
+
+/// Trace output routing: which events print, in what colors, and where.
+/// The sink is the destination — raw stderr unless replaced with
+/// [`Trace::with_sink`]; the flags gate what gets printed at all.
+#[derive(Clone)]
 pub struct Trace {
     pub requests: bool,
     pub responses: bool,
     pub colors: bool,
+    sink: Arc<dyn TraceSink>,
     printed: usize,
 }
 
@@ -289,14 +338,43 @@ impl Trace {
             requests,
             responses,
             colors,
+            sink: Arc::new(StderrSink),
             printed: 0,
         }
+    }
+
+    /// Routes trace output to `sink` instead of raw stderr. Callers that
+    /// share the destination with other writers (such as a progress line)
+    /// can inject a sink that serializes dumps with them.
+    pub fn with_sink(mut self, sink: Arc<dyn TraceSink>) -> Trace {
+        self.sink = sink;
+        self
+    }
+
+    /// Runs `f` against the sink's writer while it is exclusively held, so
+    /// the whole dump is written atomically with respect to other sink users.
+    /// Write failures are passed through to the caller.
+    pub(crate) fn with_writer(
+        &self,
+        f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.sink.with_writer(f)
     }
 
     fn new_messages<'a>(&mut self, messages: &'a [Message]) -> &'a [Message] {
         let start = self.printed.min(messages.len());
         self.printed = messages.len();
         &messages[start..]
+    }
+}
+
+impl fmt::Debug for Trace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Trace")
+            .field("requests", &self.requests)
+            .field("responses", &self.responses)
+            .field("colors", &self.colors)
+            .finish_non_exhaustive()
     }
 }
 
@@ -329,15 +407,19 @@ fn marker(enabled: bool, title: &str) -> String {
     paint(enabled, title, ANSI_BOLD_YELLOW)
 }
 
-fn trace_message(msg: &AssistantMessage, trace: Trace) {
-    write_trace_message(&mut std::io::stderr(), msg, trace)
+fn trace_message(msg: &AssistantMessage, trace: &Trace) -> io::Result<()> {
+    trace.with_writer(&mut |w| write_trace_message(w, msg, trace))
 }
 
-fn write_trace_message(out: &mut impl Write, msg: &AssistantMessage, trace: Trace) {
+fn write_trace_message(
+    out: &mut dyn Write,
+    msg: &AssistantMessage,
+    trace: &Trace,
+) -> io::Result<()> {
     if !trace.responses {
-        return;
+        return Ok(());
     }
-    writeln!(out, "{}", marker(trace.colors, "--- from model ---")).unwrap();
+    writeln!(out, "{}", marker(trace.colors, "--- from model ---"))?;
     if let Some(reasoning) = &msg.reasoning {
         writeln!(
             out,
@@ -347,8 +429,7 @@ fn write_trace_message(out: &mut impl Write, msg: &AssistantMessage, trace: Trac
                 &format!("[reasoning] {reasoning}"),
                 ANSI_GREEN
             )
-        )
-        .unwrap();
+        )?;
     }
     for call in &msg.tool_calls {
         writeln!(
@@ -359,25 +440,28 @@ fn write_trace_message(out: &mut impl Write, msg: &AssistantMessage, trace: Trac
                 &format!("[tool] {} {}", call.name, call.arguments),
                 ANSI_GREEN
             )
-        )
-        .unwrap();
+        )?;
     }
     if let Some(content) = &msg.content {
-        writeln!(out, "{}", paint(trace.colors, content, ANSI_GREEN)).unwrap();
+        writeln!(out, "{}", paint(trace.colors, content, ANSI_GREEN))?;
     }
-    writeln!(out, "{}", marker(trace.colors, "--- end from model ---")).unwrap();
-    writeln!(out).unwrap();
+    writeln!(out, "{}", marker(trace.colors, "--- end from model ---"))?;
+    writeln!(out)
 }
 
-fn trace_messages(messages: &[Message], trace: Trace) {
-    write_trace_messages(&mut std::io::stderr(), messages, trace)
+fn trace_messages(messages: &[Message], trace: &Trace) -> io::Result<()> {
+    trace.with_writer(&mut |w| write_trace_messages(w, messages, trace))
 }
 
-fn write_trace_messages(out: &mut impl Write, messages: &[Message], trace: Trace) {
+fn write_trace_messages(
+    out: &mut dyn Write,
+    messages: &[Message],
+    trace: &Trace,
+) -> io::Result<()> {
     if !trace.requests {
-        return;
+        return Ok(());
     }
-    writeln!(out, "{}", marker(trace.colors, "--- to model ---")).unwrap();
+    writeln!(out, "{}", marker(trace.colors, "--- to model ---"))?;
     for message in messages {
         let line = match message {
             Message::System(content) => format!("[system] {content}"),
@@ -395,12 +479,17 @@ fn write_trace_messages(out: &mut impl Write, messages: &[Message], trace: Trace
             },
             Message::Tool { call_id, content } => format!("[tool:{call_id}] {content}"),
         };
-        writeln!(out, "{}", paint(trace.colors, &line, ANSI_CYAN)).unwrap();
+        writeln!(out, "{}", paint(trace.colors, &line, ANSI_CYAN))?;
     }
-    writeln!(out, "{}", marker(trace.colors, "--- end to model ---")).unwrap();
-    writeln!(out).unwrap();
+    writeln!(out, "{}", marker(trace.colors, "--- end to model ---"))?;
+    writeln!(out)
 }
 
+/// Drives the agent loop: sends the pending messages, executes any tool
+/// calls the model requests, and repeats until the model answers without
+/// tool calls (or the call budget is exhausted). Trace output is written
+/// through the `trace` sink; a write failure aborts the loop with
+/// [`LlmError::Trace`] rather than being swallowed.
 pub fn run_agent_loop(
     backend: &dyn LlmBackend,
     messages: &mut Vec<Message>,
@@ -411,9 +500,9 @@ pub fn run_agent_loop(
     let mut executions: u32 = 0;
     loop {
         let new = trace.new_messages(messages);
-        trace_messages(new, *trace);
+        trace_messages(new, trace)?;
         let msg = backend.complete(messages, tools)?;
-        trace_message(&msg, *trace);
+        trace_message(&msg, trace)?;
         if msg.tool_calls.is_empty() {
             messages.push(Message::Assistant(msg.clone()));
             return Ok(AgentOutcome::Final(msg));
@@ -448,9 +537,9 @@ pub fn run_agent_loop(
                 "Tool call budget exhausted (max {max_tool_calls}) — produce your final answer with the data you have."
             )));
             let new = trace.new_messages(messages);
-            trace_messages(new, *trace);
+            trace_messages(new, trace)?;
             let mut last = backend.complete(messages, tools)?;
-            trace_message(&last, *trace);
+            trace_message(&last, trace)?;
             last.tool_calls = Vec::new();
             messages.push(Message::Assistant(last.clone()));
             return Ok(AgentOutcome::Exhausted(last));
@@ -482,6 +571,10 @@ mod tests {
 
     fn tools() -> Vec<&'static dyn Tool> {
         vec![&EchoTool, &FailTool]
+    }
+
+    fn default_trace() -> Trace {
+        Trace::new(false, false, false)
     }
 
     #[test]
@@ -569,7 +662,7 @@ mod tests {
         ]);
         let mut messages = vec![Message::User("hi".to_string())];
         let outcome =
-            run_agent_loop(&backend, &mut messages, &tools(), 20, &mut Trace::default()).unwrap();
+            run_agent_loop(&backend, &mut messages, &tools(), 20, &mut default_trace()).unwrap();
         assert_eq!(outcome, AgentOutcome::Final(text("final answer")));
         assert_eq!(messages.len(), 4);
         match &messages[1] {
@@ -598,7 +691,7 @@ mod tests {
             Ok(text("done")),
         ]);
         let mut messages = vec![Message::User("hi".to_string())];
-        run_agent_loop(&backend, &mut messages, &tools(), 20, &mut Trace::default()).unwrap();
+        run_agent_loop(&backend, &mut messages, &tools(), 20, &mut default_trace()).unwrap();
         let tool_msgs: Vec<&str> = messages
             .iter()
             .filter_map(|m| match m {
@@ -628,7 +721,7 @@ mod tests {
         ]);
         let mut messages = vec![Message::User("hi".to_string())];
         let outcome =
-            run_agent_loop(&backend, &mut messages, &tools(), 1, &mut Trace::default()).unwrap();
+            run_agent_loop(&backend, &mut messages, &tools(), 1, &mut default_trace()).unwrap();
         let AgentOutcome::Exhausted(last) = outcome else {
             panic!("expected exhaustion");
         };
@@ -664,7 +757,7 @@ mod tests {
             Ok(text("done")),
         ]);
         let mut messages = vec![Message::User("hi".to_string())];
-        run_agent_loop(&backend, &mut messages, &tools(), 20, &mut Trace::default()).unwrap();
+        run_agent_loop(&backend, &mut messages, &tools(), 20, &mut default_trace()).unwrap();
         match &messages[2] {
             Message::Tool { content, .. } => assert_eq!(content, "error: no such tool 'nope'"),
             _ => panic!("expected tool message"),
@@ -694,7 +787,7 @@ mod tests {
         ]);
         let mut messages = vec![Message::User("hi".to_string())];
         let outcome =
-            run_agent_loop(&backend, &mut messages, &tools(), 3, &mut Trace::default()).unwrap();
+            run_agent_loop(&backend, &mut messages, &tools(), 3, &mut default_trace()).unwrap();
         let AgentOutcome::Exhausted(last) = outcome else {
             panic!("expected exhaustion");
         };
@@ -731,7 +824,7 @@ mod tests {
         ]);
         let mut messages = vec![Message::User("hi".to_string())];
         let outcome =
-            run_agent_loop(&backend, &mut messages, &tools(), 3, &mut Trace::default()).unwrap();
+            run_agent_loop(&backend, &mut messages, &tools(), 3, &mut default_trace()).unwrap();
         let AgentOutcome::Exhausted(last) = outcome else {
             panic!("expected exhaustion");
         };
@@ -786,7 +879,7 @@ mod tests {
         ]);
         let mut messages = vec![Message::User("hi".to_string())];
         let outcome =
-            run_agent_loop(&backend, &mut messages, &tools(), 3, &mut Trace::default()).unwrap();
+            run_agent_loop(&backend, &mut messages, &tools(), 3, &mut default_trace()).unwrap();
         let AgentOutcome::Exhausted(last) = outcome else {
             panic!("expected exhaustion");
         };
@@ -803,7 +896,7 @@ mod tests {
     fn test_agent_loop_no_tools_when_empty() {
         let backend = ScriptedBackend::new(vec![Ok(text("done"))]);
         let mut messages = vec![Message::User("hi".to_string())];
-        run_agent_loop(&backend, &mut messages, &[], 20, &mut Trace::default()).unwrap();
+        run_agent_loop(&backend, &mut messages, &[], 20, &mut default_trace()).unwrap();
         let (_, tool_names) = &backend.record()[0];
         assert!(tool_names.is_empty());
     }
@@ -865,15 +958,15 @@ mod tests {
         );
     }
 
-    fn capture_messages(messages: &[Message], trace: Trace) -> String {
+    fn capture_messages(messages: &[Message], trace: &Trace) -> String {
         let mut out = Vec::new();
-        write_trace_messages(&mut out, messages, trace);
+        write_trace_messages(&mut out, messages, trace).unwrap();
         String::from_utf8(out).unwrap()
     }
 
-    fn capture_response(msg: &AssistantMessage, trace: Trace) -> String {
+    fn capture_response(msg: &AssistantMessage, trace: &Trace) -> String {
         let mut out = Vec::new();
-        write_trace_message(&mut out, msg, trace);
+        write_trace_message(&mut out, msg, trace).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -891,7 +984,7 @@ mod tests {
                 content: "result".to_string(),
             },
         ];
-        let out = capture_messages(&messages, Trace::new(true, false, false));
+        let out = capture_messages(&messages, &Trace::new(true, false, false));
         assert!(out.contains("--- to model ---"), "got: {out}");
         assert!(out.contains("[system] sys"), "got: {out}");
         assert!(out.contains("[user] hi"), "got: {out}");
@@ -909,10 +1002,16 @@ mod tests {
     fn test_trace_requests_prints_only_new_messages() {
         let mut trace = Trace::new(true, false, false);
         let mut messages = vec![Message::User("a".to_string())];
-        let first = capture_messages(&trace.new_messages(&messages), trace);
+        let first = {
+            let new = trace.new_messages(&messages);
+            capture_messages(new, &trace)
+        };
         assert!(first.contains("[user] a"), "got: {first}");
         messages.push(Message::User("b".to_string()));
-        let second = capture_messages(&trace.new_messages(&messages), trace);
+        let second = {
+            let new = trace.new_messages(&messages);
+            capture_messages(new, &trace)
+        };
         assert!(
             !second.contains("[user] a"),
             "old message reprinted: {second}"
@@ -927,7 +1026,7 @@ mod tests {
             tool_calls: vec![tc("c1", "usda_search", "{\"queries\":[\"rice\"]}")],
             reasoning: Some("think step".to_string()),
         };
-        let out = capture_response(&msg, Trace::new(false, true, false));
+        let out = capture_response(&msg, &Trace::new(false, true, false));
         assert!(out.contains("--- from model ---"), "got: {out}");
         assert!(out.contains("[reasoning] think step"), "got: {out}");
         assert!(
@@ -944,27 +1043,27 @@ mod tests {
     fn test_trace_toggles_independent() {
         let msg = AssistantMessage::text("x");
         assert!(
-            capture_response(&msg, Trace::new(false, false, false)).is_empty(),
+            capture_response(&msg, &Trace::new(false, false, false)).is_empty(),
             "all toggles off prints nothing"
         );
-        assert!(!capture_response(&msg, Trace::new(false, true, false)).is_empty());
+        assert!(!capture_response(&msg, &Trace::new(false, true, false)).is_empty());
         let messages = [Message::User("x".to_string())];
         assert!(
-            capture_messages(&messages, Trace::new(false, true, false)).is_empty(),
+            capture_messages(&messages, &Trace::new(false, true, false)).is_empty(),
             "responses-only must not print requests"
         );
-        assert!(!capture_messages(&messages, Trace::new(true, false, false)).is_empty());
+        assert!(!capture_messages(&messages, &Trace::new(true, false, false)).is_empty());
     }
 
     #[test]
     fn test_trace_colors_markers_and_lines() {
         let msg = AssistantMessage::text("x");
-        let out = capture_response(&msg, Trace::new(false, true, true));
+        let out = capture_response(&msg, &Trace::new(false, true, true));
         assert!(out.contains("\x1b[1;33m"), "bold yellow marker: {out}");
         assert!(out.contains("\x1b[32m"), "green response line: {out}");
         assert!(out.contains("\x1b[0m"), "reset: {out}");
         let messages = [Message::User("x".to_string())];
-        let out = capture_messages(&messages, Trace::new(true, false, true));
+        let out = capture_messages(&messages, &Trace::new(true, false, true));
         assert!(out.contains("\x1b[36m"), "cyan request line: {out}");
     }
 
@@ -1109,5 +1208,36 @@ mod tests {
             body: "bad request".to_string(),
         };
         assert!(!err.message().contains("tool calling"));
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_agent_loop_trace_write_failure_aborts_with_trace_error() {
+        let backend = ScriptedBackend::new(vec![Ok(text("done"))]);
+        let sink: Arc<Mutex<FailingWriter>> = Arc::new(Mutex::new(FailingWriter));
+        let mut trace = Trace::new(true, false, false).with_sink(sink);
+        let mut messages = vec![Message::User("hi".to_string())];
+        let err = run_agent_loop(&backend, &mut messages, &[], 20, &mut trace).unwrap_err();
+        assert!(
+            matches!(err, LlmError::Trace(_)),
+            "trace write failure must surface as LlmError::Trace: {err:?}"
+        );
+        assert_eq!(err.message(), "failed to write trace output: pipe closed");
+        assert_eq!(
+            messages.len(),
+            1,
+            "no messages may be pushed after the failure"
+        );
     }
 }

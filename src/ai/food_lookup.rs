@@ -6,6 +6,10 @@ use std::path::Path;
 
 use super::catalog;
 
+fn eprintln_warn(msg: &str) {
+    eprintln!("{msg}");
+}
+
 const MAX_PER_QUERY: usize = 5;
 const TOTAL_CAP: usize = 2000;
 
@@ -18,15 +22,28 @@ fn normalize(s: &str) -> String {
 
 pub struct FoodLookup<'a> {
     foods_dir: &'a Path,
+    warn: Option<&'a dyn Fn(&str)>,
 }
 
 impl<'a> FoodLookup<'a> {
     pub fn new(foods_dir: &'a Path) -> FoodLookup<'a> {
-        FoodLookup { foods_dir }
+        FoodLookup {
+            foods_dir,
+            warn: None,
+        }
+    }
+
+    /// Routes catalog warnings through `warn` instead of the default stderr
+    /// print, so a running status line can print them without the spinner
+    /// garbling them.
+    pub fn with_warn(mut self, warn: &'a dyn Fn(&str)) -> FoodLookup<'a> {
+        self.warn = Some(warn);
+        self
     }
 
     fn catalog(&self) -> Result<Vec<(String, food::Food)>, String> {
-        catalog::find_all_foods_with_names(self.foods_dir).map_err(|e| e.to_string())
+        let warn: &dyn Fn(&str) = self.warn.unwrap_or(&eprintln_warn);
+        catalog::find_all_foods_with_names(self.foods_dir, warn).map_err(|e| e.to_string())
     }
 
     fn query_block(&self, query: &str) -> Result<String, String> {
@@ -311,6 +328,24 @@ mod tests {
             .execute(&serde_json::json!({ "queries": ["coffee"] }))
             .unwrap();
         assert!(out.contains("no matches"));
+    }
+
+    #[test]
+    fn test_broken_food_files_warn_through_hook() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("broken.toml"), "not toml at all").unwrap();
+        let warned = {
+            let warned = std::cell::RefCell::new(Vec::new());
+            let warn = |m: &str| warned.borrow_mut().push(m.to_string());
+            let tool = FoodLookup::new(dir.path()).with_warn(&warn);
+            let out = tool
+                .execute(&serde_json::json!({ "queries": ["coffee"] }))
+                .unwrap();
+            assert!(out.contains("no matches"));
+            warned.into_inner()
+        };
+        assert_eq!(warned.len(), 1);
+        assert!(warned[0].contains("broken.toml"), "got: {warned:?}");
     }
 
     #[test]

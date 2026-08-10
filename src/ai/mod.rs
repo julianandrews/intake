@@ -6,6 +6,7 @@ mod food_lookup;
 mod ops;
 mod prompts;
 pub(crate) mod settings;
+mod spinner;
 mod write;
 
 use crate::amount::Calories;
@@ -262,6 +263,44 @@ fn row_diff(before: &[log::LogEntry], after: &[log::LogEntry]) -> String {
     out
 }
 
+/// The parse-and-present payload of a resolve session: the system prompt
+/// and user prompt, plus the closures that turn the model's text into a
+/// value and render it for confirmation.
+struct ResolveJob<'a, T> {
+    system: String,
+    prompt: &'a str,
+    parse: &'a dyn Fn(&str) -> Result<T, String>,
+    present: &'a dyn Fn(&T) -> String,
+}
+
+/// Runs a resolve session under a status line: wraps the backend, tools,
+/// and confirmer with the spinner decorators, then drives the resolver.
+/// The caller creates the line — it may need it to wire tool warnings —
+/// and it is erased when it drops after the session.
+fn resolve_session<T>(
+    env: &AiEnv<'_>,
+    confirmer: Box<dyn Confirmer + '_>,
+    tools: &[&dyn Tool],
+    status: &spinner::StatusLine,
+    job: ResolveJob<'_, T>,
+) -> Result<T, ResolveError> {
+    let backend = spinner::SpinnerBackend::new(env.backend, env.settings, status);
+    let wrapped: Vec<spinner::StatusTool<'_>> = tools
+        .iter()
+        .map(|t| spinner::StatusTool::new(*t, status))
+        .collect();
+    let wrapped: Vec<&dyn Tool> = wrapped.iter().map(|t| t as &dyn Tool).collect();
+    let mut confirmer = spinner::SpinnerConfirmer::new(confirmer, status);
+    let ctx = ResolveContext {
+        settings: env.settings,
+        backend: &backend,
+        tools: &wrapped,
+        trace_sink: Some(status.sink()),
+    };
+    let mut resolver = Resolver::new(&ctx, &mut confirmer, job.system);
+    resolver.resolve(job.prompt, job.parse, job.present)
+}
+
 fn cmd_ai_log(
     writer: &mut impl Write,
     env: &AiEnv<'_>,
@@ -272,7 +311,6 @@ fn cmd_ai_log(
     make_confirmer: impl FnOnce(&mut dyn Write) -> Box<dyn Confirmer + '_>,
 ) -> Result<()> {
     let settings = env.settings;
-    let backend = env.backend;
     let config = env.config;
     let original = log::load_day(log_dir, date)?;
     let context_text = context::day_context(date, original.as_ref(), log_dir, config)?;
@@ -282,7 +320,9 @@ fn cmd_ai_log(
         &context_text,
     );
     let (usda_search, usda_get) = usda_tools(settings);
-    let food_lookup = food_lookup::FoodLookup::new(foods_dir);
+    let status = spinner::StatusLine::new(settings);
+    let warn = |msg: &str| status.warn(msg);
+    let food_lookup = food_lookup::FoodLookup::new(foods_dir).with_warn(&warn);
 
     let base = original.clone().unwrap_or(log::DayLog {
         entries: Vec::new(),
@@ -309,15 +349,20 @@ fn cmd_ai_log(
     };
 
     let outcome = {
-        let mut confirmer = make_confirmer(writer);
-        let tools: Vec<&dyn Tool> = vec![&food_lookup, &usda_search, &usda_get];
-        let ctx = ResolveContext {
-            settings,
-            backend,
-            tools: &tools,
-        };
-        let mut resolver = Resolver::new(&ctx, confirmer.as_mut(), system);
-        resolver.resolve(prompt, parse, &present)
+        let confirmer = make_confirmer(writer);
+        let tools: [&dyn Tool; 3] = [&food_lookup, &usda_search, &usda_get];
+        resolve_session(
+            env,
+            confirmer,
+            &tools,
+            &status,
+            ResolveJob {
+                system,
+                prompt,
+                parse: &parse,
+                present: &present,
+            },
+        )
     };
 
     match outcome {
@@ -336,7 +381,10 @@ fn cmd_ai_log(
             writeln!(writer)?;
             crate::commands::log::cmd_day(writer, log_dir, date, config)?;
         }
-        Err(err) => handle_error(writer, err)?,
+        Err(err) => {
+            status.pause();
+            handle_error(writer, err)?
+        }
     }
     Ok(())
 }
@@ -350,7 +398,6 @@ fn cmd_ai_food_new(
     make_confirmer: impl FnOnce(&mut dyn Write) -> Box<dyn Confirmer + '_>,
 ) -> Result<()> {
     let settings = env.settings;
-    let backend = env.backend;
     let config = env.config;
     let path = name.file_path(foods_dir);
     if path.exists() {
@@ -368,6 +415,7 @@ fn cmd_ai_food_new(
         &samples,
     );
     let (usda_search, usda_get) = usda_tools(settings);
+    let status = spinner::StatusLine::new(settings);
     let columns = config.columns()?;
 
     let parse =
@@ -378,15 +426,20 @@ fn cmd_ai_food_new(
     };
 
     let outcome = {
-        let mut confirmer = make_confirmer(writer);
-        let tools: Vec<&dyn Tool> = vec![&usda_search, &usda_get];
-        let ctx = ResolveContext {
-            settings,
-            backend,
-            tools: &tools,
-        };
-        let mut resolver = Resolver::new(&ctx, confirmer.as_mut(), system);
-        resolver.resolve(prompt, parse, &present)
+        let confirmer = make_confirmer(writer);
+        let tools: [&dyn Tool; 2] = [&usda_search, &usda_get];
+        resolve_session(
+            env,
+            confirmer,
+            &tools,
+            &status,
+            ResolveJob {
+                system,
+                prompt,
+                parse: &parse,
+                present: &present,
+            },
+        )
     };
 
     match outcome {
@@ -400,7 +453,10 @@ fn cmd_ai_food_new(
                 crate::commands::food::render_food(&new_food, &columns)?
             )?;
         }
-        Err(err) => handle_error(writer, err)?,
+        Err(err) => {
+            status.pause();
+            handle_error(writer, err)?
+        }
     }
     Ok(())
 }
@@ -414,7 +470,6 @@ fn cmd_ai_food_edit(
     make_confirmer: impl FnOnce(&mut dyn Write) -> Box<dyn Confirmer + '_>,
 ) -> Result<()> {
     let settings = env.settings;
-    let backend = env.backend;
     let config = env.config;
     let path = name.file_path(foods_dir);
     let original = food::load_food(&path).with_context(|| format!("food '{}' not found", name))?;
@@ -428,6 +483,7 @@ fn cmd_ai_food_edit(
         &context_text,
     );
     let (usda_search, usda_get) = usda_tools(settings);
+    let status = spinner::StatusLine::new(settings);
     let columns = config.columns()?;
 
     let parse =
@@ -441,15 +497,20 @@ fn cmd_ai_food_edit(
     };
 
     let outcome = {
-        let mut confirmer = make_confirmer(writer);
-        let tools: Vec<&dyn Tool> = vec![&usda_search, &usda_get];
-        let ctx = ResolveContext {
-            settings,
-            backend,
-            tools: &tools,
-        };
-        let mut resolver = Resolver::new(&ctx, confirmer.as_mut(), system);
-        resolver.resolve(prompt, parse, &present)
+        let confirmer = make_confirmer(writer);
+        let tools: [&dyn Tool; 2] = [&usda_search, &usda_get];
+        resolve_session(
+            env,
+            confirmer,
+            &tools,
+            &status,
+            ResolveJob {
+                system,
+                prompt,
+                parse: &parse,
+                present: &present,
+            },
+        )
     };
 
     match outcome {
@@ -475,7 +536,10 @@ fn cmd_ai_food_edit(
                 crate::commands::food::render_food(&new_food, &columns)?
             )?;
         }
-        Err(err) => handle_error(writer, err)?,
+        Err(err) => {
+            status.pause();
+            handle_error(writer, err)?
+        }
     }
     Ok(())
 }

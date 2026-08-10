@@ -1,8 +1,11 @@
 use crate::confirm::{ConfirmDecision, ConfirmError, Confirmer};
-use crate::llm::{run_agent_loop, AgentOutcome, AssistantMessage, LlmBackend, LlmError, Message};
+use crate::llm::{
+    run_agent_loop, AgentOutcome, AssistantMessage, LlmBackend, LlmError, Message, TraceSink,
+};
 use crate::settings::AiSettings;
 use crate::tools::Tool;
 use anyhow::Error as AnyhowError;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum ResolveError {
@@ -25,6 +28,10 @@ pub struct ResolveContext<'a> {
     pub settings: &'a AiSettings,
     pub backend: &'a dyn LlmBackend,
     pub tools: &'a [&'a dyn Tool],
+    /// Where trace dumps go; when None, raw stderr. Callers that share
+    /// stderr with other output (such as a progress line) can inject a sink
+    /// that serializes dumps with it.
+    pub trace_sink: Option<Arc<dyn TraceSink>>,
 }
 
 pub struct Resolver<'ctx, 'a> {
@@ -63,6 +70,12 @@ impl<'ctx, 'a> Resolver<'ctx, 'a> {
         }
     }
 
+    /// Resolves `user` into a `T`: runs the agent loop, parses the final
+    /// answer with `parse`, and confirms with the confirmer, retrying on
+    /// parse failures up to `max_retries`. Trace output goes to the
+    /// context's sink; unlike [`crate::llm::run_agent_loop`], the internal
+    /// parse-error notes here are best-effort — a trace write failure
+    /// inside the retry loop is ignored, not propagated.
     pub fn resolve<T>(
         &mut self,
         user: &str,
@@ -80,6 +93,9 @@ impl<'ctx, 'a> Resolver<'ctx, 'a> {
             self.ctx.settings.trace_responses,
             self.ctx.settings.trace_colors,
         );
+        if let Some(sink) = &self.ctx.trace_sink {
+            trace = trace.with_sink(Arc::clone(sink));
+        }
 
         loop {
             let tools: &[&dyn Tool] = if no_tools { &[] } else { self.ctx.tools };
@@ -111,14 +127,17 @@ impl<'ctx, 'a> Resolver<'ctx, 'a> {
                     }
                     retries_left -= 1;
                     if trace.responses {
-                        eprintln!(
-                            "{}",
-                            crate::llm::paint(
-                                trace.colors,
-                                &format!("[parse error] {e}"),
-                                crate::llm::ANSI_RED
+                        let _ = trace.with_writer(&mut |w| {
+                            writeln!(
+                                w,
+                                "{}",
+                                crate::llm::paint(
+                                    trace.colors,
+                                    &format!("[parse error] {e}"),
+                                    crate::llm::ANSI_RED
+                                )
                             )
-                        );
+                        });
                     }
                     let mut note = String::new();
                     if no_tools {
@@ -157,6 +176,7 @@ mod tests {
     use super::*;
     use crate::confirm::ConfirmDecision;
     use crate::testing::{ScriptedBackend, ScriptedConfirmer};
+    use std::sync::Mutex;
 
     fn settings() -> AiSettings {
         let mut s = AiSettings::default();
@@ -179,6 +199,7 @@ mod tests {
             settings,
             backend,
             tools,
+            trace_sink: None,
         };
         let mut resolver = Resolver::new(&ctx, confirmer, "system".to_string());
         f(&mut resolver)
@@ -428,6 +449,39 @@ mod tests {
         s.trace_requests = true;
         let value = resolve_int(&s, &backend, &mut confirmer, &[], "x").unwrap();
         assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn test_resolve_trace_requests_writes_to_sink() {
+        let backend = ScriptedBackend::new(vec![Ok(crate::llm::AssistantMessage::text("7"))]);
+        let mut confirmer = ScriptedConfirmer::new(vec![ConfirmDecision::Accept]);
+        let mut s = settings();
+        s.trace_requests = true;
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let ctx = ResolveContext {
+            settings: &s,
+            backend: &backend,
+            tools: &[],
+            trace_sink: Some(buf.clone()),
+        };
+        let mut resolver = Resolver::new(&ctx, &mut confirmer, "system".to_string());
+        let value = resolver
+            .resolve(
+                "x",
+                |s: &str| s.trim().parse::<i64>().map_err(|e| e.to_string()),
+                &|v: &i64| format!("proposal: {v}"),
+            )
+            .unwrap();
+        assert_eq!(value, 7);
+        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            out.contains("--- to model ---"),
+            "request trace must land in the sink: {out:?}"
+        );
+        assert!(
+            out.contains("--- end to model ---"),
+            "request trace must be complete in the sink: {out:?}"
+        );
     }
 
     #[test]

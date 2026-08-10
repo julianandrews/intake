@@ -8,6 +8,12 @@ use std::path::Path;
 
 use super::catalog;
 
+/// The pre-session default: `sample_foods` runs before any status line
+/// exists, so catalog warnings go straight to stderr.
+fn eprintln_warn(msg: &str) {
+    eprintln!("{msg}");
+}
+
 pub const DEFAULT_HISTORY_DAYS: u32 = 14;
 const HISTORY_MAX_LINES: usize = 200;
 
@@ -163,7 +169,7 @@ fn is_simple(p: &(String, food::Food)) -> bool {
 type SlotPred = fn(&(String, food::Food)) -> bool;
 
 pub fn sample_foods(foods_dir: &Path) -> Result<Vec<food::Food>> {
-    let pairs = catalog::find_all_foods_with_names(foods_dir)?;
+    let pairs = catalog::find_all_foods_with_names(foods_dir, &eprintln_warn)?;
     let slots: [SlotPred; 3] = [is_complex, has_notes, is_simple];
     let mut picked: Vec<String> = Vec::new();
     let mut out: Vec<food::Food> = Vec::new();
