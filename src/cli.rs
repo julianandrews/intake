@@ -113,6 +113,12 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: FoodCommands,
     },
+    /// AI-assisted commands (prompt a model to log or edit foods)
+    #[cfg(feature = "ai")]
+    Ai {
+        #[command(subcommand)]
+        command: crate::ai::cli::AiCommands,
+    },
     /// Generate shell completion script
     Completions {
         /// Shell to generate completions for (bash, zsh, fish, powershell, elvish)

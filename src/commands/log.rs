@@ -152,8 +152,13 @@ pub(crate) fn cmd_log(
     }
 
     let not_found = || {
+        let ai_hint = if cfg!(feature = "ai") {
+            ", or use `ai log` for AI-assisted logging"
+        } else {
+            ""
+        };
         anyhow!(
-            "no food '{}' found — log an ad-hoc entry by adding macro flags (e.g. `--calories 250`)",
+            "no food '{}' found — log an ad-hoc entry by adding macro flags (e.g. `--calories 250`){ai_hint}",
             name
         )
     };
@@ -205,105 +210,111 @@ pub(crate) fn cmd_day(
 
     match day_log {
         None => writeln!(writer, "No entries for {}", date)?,
-        Some(day_log) => {
-            let columns = config.columns()?;
-            let mut headers: Vec<&str> = vec!["#", "Item", "Servings"];
-            headers.extend(columns.iter().map(|c| c.label()));
-            let mut aligns = vec![Align::Right, Align::Left, Align::Right];
-            aligns.extend(columns.iter().map(|_| Align::Right));
-            let mut table = Table::with_align(&headers, &aligns);
-            table.set_title(&date.to_string());
-
-            let rows = build_rows(&day_log.entries)?;
-
-            let mut totals = Macros::ZERO;
-
-            for (i, row) in rows.iter().enumerate() {
-                let serv_str = display::servings_cell(row.servings.to_decimal());
-
-                let mut cells = vec![(i + 1).to_string(), row.title.clone(), serv_str];
-                for column in &columns {
-                    cells.push(display::log_cell(*column, row.column_value(*column)));
-                }
-                table.add_row(cells);
-
-                totals = totals
-                    .checked_add(&row.macros)
-                    .context("day macro total overflow")?;
-            }
-
-            let (net_cal, deficit) = log::day_net_and_deficit(
-                totals.calories.to_decimal(),
-                day_log.exercise_calories,
-                config.maintenance_calories,
-            )?;
-
-            let now = Local::now();
-            let now_time = (date == now.date_naive()).then(|| now.time());
-            let targets = config.targets()?;
-            let show_exercise =
-                day_log.exercise_calories > Calories::ZERO && columns.contains(&Column::Calories);
-
-            let mut plain_cells = Vec::new();
-            let mut colored_cells = Vec::new();
-            let mut exercise_cells = Vec::new();
-            for column in &columns {
-                let total = totals.column_value(*column);
-                let colored = if *column == Column::Calories {
-                    net_cal
-                } else {
-                    total
-                };
-                let color = display::column_color(now_time, colored, &targets.for_column(*column));
-                plain_cells.push(display::log_cell(*column, total));
-                colored_cells.push(display::wrap_color(
-                    &display::log_cell(*column, colored),
-                    color,
-                ));
-                if show_exercise {
-                    exercise_cells.push(if *column == Column::Calories {
-                        format!(
-                            "-{}",
-                            display::log_cell(
-                                Column::Calories,
-                                day_log.exercise_calories.to_decimal()
-                            )
-                        )
-                    } else {
-                        String::new()
-                    });
-                }
-            }
-
-            let mut total_row = vec![String::new(), "Total".to_string(), String::new()];
-            if show_exercise {
-                total_row.extend(plain_cells);
-                table.add_footer_custom(total_row);
-
-                let mut exercise_row = vec![String::new(), "Exercise".to_string(), String::new()];
-                exercise_row.extend(exercise_cells);
-                table.add_footer_custom(exercise_row);
-
-                let mut net_row = vec![String::new(), "Net".to_string(), String::new()];
-                net_row.extend(colored_cells);
-                table.add_footer_custom(net_row);
-            } else {
-                total_row.extend(colored_cells);
-                table.add_footer_custom(total_row);
-            }
-
-            write!(writer, "{}", table.format())?;
-
-            let summary = display::render_day_summary(
-                day_log.exercise_calories,
-                config.maintenance_calories,
-                deficit,
-            )?;
-            write!(writer, "{}", summary)?;
-        }
+        Some(day_log) => write!(writer, "{}", render_day(&day_log, date, config)?)?,
     }
 
     Ok(())
+}
+
+/// The day-log table (plus the summary lines) for `day_log`, rendered to a
+/// string. `date` only affects the "now" color scaling for today's rows.
+pub(crate) fn render_day(
+    day_log: &log::DayLog,
+    date: chrono::NaiveDate,
+    config: &Config,
+) -> Result<String> {
+    let columns = config.columns()?;
+    let mut headers: Vec<&str> = vec!["#", "Item", "Servings"];
+    headers.extend(columns.iter().map(|c| c.label()));
+    let mut aligns = vec![Align::Right, Align::Left, Align::Right];
+    aligns.extend(columns.iter().map(|_| Align::Right));
+    let mut table = Table::with_align(&headers, &aligns);
+    table.set_title(&date.to_string());
+
+    let rows = build_rows(&day_log.entries)?;
+
+    let mut totals = Macros::ZERO;
+
+    for (i, row) in rows.iter().enumerate() {
+        let serv_str = display::servings_cell(row.servings.to_decimal());
+
+        let mut cells = vec![(i + 1).to_string(), row.title.clone(), serv_str];
+        for column in &columns {
+            cells.push(display::log_cell(*column, row.column_value(*column)));
+        }
+        table.add_row(cells);
+
+        totals = totals
+            .checked_add(&row.macros)
+            .context("day macro total overflow")?;
+    }
+
+    let (net_cal, deficit) = log::day_net_and_deficit(
+        totals.calories.to_decimal(),
+        day_log.exercise_calories,
+        config.maintenance_calories,
+    )?;
+
+    let now = Local::now();
+    let now_time = (date == now.date_naive()).then(|| now.time());
+    let targets = config.targets()?;
+    let show_exercise =
+        day_log.exercise_calories > Calories::ZERO && columns.contains(&Column::Calories);
+
+    let mut plain_cells = Vec::new();
+    let mut colored_cells = Vec::new();
+    let mut exercise_cells = Vec::new();
+    for column in &columns {
+        let total = totals.column_value(*column);
+        let colored = if *column == Column::Calories {
+            net_cal
+        } else {
+            total
+        };
+        let color = display::column_color(now_time, colored, &targets.for_column(*column));
+        plain_cells.push(display::log_cell(*column, total));
+        colored_cells.push(display::wrap_color(
+            &display::log_cell(*column, colored),
+            color,
+        ));
+        if show_exercise {
+            exercise_cells.push(if *column == Column::Calories {
+                format!(
+                    "-{}",
+                    display::log_cell(Column::Calories, day_log.exercise_calories.to_decimal())
+                )
+            } else {
+                String::new()
+            });
+        }
+    }
+
+    let mut total_row = vec![String::new(), "Total".to_string(), String::new()];
+    if show_exercise {
+        total_row.extend(plain_cells);
+        table.add_footer_custom(total_row);
+
+        let mut exercise_row = vec![String::new(), "Exercise".to_string(), String::new()];
+        exercise_row.extend(exercise_cells);
+        table.add_footer_custom(exercise_row);
+
+        let mut net_row = vec![String::new(), "Net".to_string(), String::new()];
+        net_row.extend(colored_cells);
+        table.add_footer_custom(net_row);
+    } else {
+        total_row.extend(colored_cells);
+        table.add_footer_custom(total_row);
+    }
+
+    let mut out = table.format();
+
+    let summary = display::render_day_summary(
+        day_log.exercise_calories,
+        config.maintenance_calories,
+        deficit,
+    )?;
+    out.push_str(&summary);
+    Ok(out)
 }
 
 struct DisplayRow {

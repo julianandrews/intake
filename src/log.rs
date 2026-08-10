@@ -70,14 +70,14 @@ impl LogEntry {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DayLog {
     pub entries: Vec<LogEntry>,
     pub exercise_calories: Calories,
 }
 
-fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
+pub(crate) fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
     log_dir.join(format!("{}.toml", date.format("%Y-%m-%d")))
 }
 
@@ -88,7 +88,7 @@ fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
 /// across the atomic rename below. Released on drop; flock is also released
 /// by the kernel if the process dies mid-write, so a crash cannot wedge
 /// future writes.
-fn lock_log_dir(log_dir: &Path) -> Result<fs::File> {
+pub(crate) fn lock_log_dir(log_dir: &Path) -> Result<fs::File> {
     fs::create_dir_all(log_dir)
         .with_context(|| format!("failed to create log directory: {}", log_dir.display()))?;
     let dir = fs::File::open(log_dir)
@@ -97,7 +97,7 @@ fn lock_log_dir(log_dir: &Path) -> Result<fs::File> {
     Ok(dir)
 }
 
-fn write_day_locked(log_dir: &Path, date: NaiveDate, day_log: &DayLog) -> Result<()> {
+pub(crate) fn write_day_locked(log_dir: &Path, date: NaiveDate, day_log: &DayLog) -> Result<()> {
     let path = log_path(log_dir, date);
 
     let content = toml::to_string(day_log).context("failed to serialize log")?;

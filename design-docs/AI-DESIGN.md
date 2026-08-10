@@ -1,6 +1,6 @@
 # Design Doc: AI Commands for intake
 
-Status: Drafting
+Status: Implemented
 
 ## Overview
 
@@ -40,8 +40,9 @@ under `crates/`.
 or TOML:
 
 - `settings.rs` — `AiSettings` (api_key, model, base_url, max_retries,
-  max_tool_calls, timeout_secs, usda_api_key, usda_timeout_secs, verbose —
-  bool, default false; see "Verbose mode"), deriving `Deserialize`
+  max_tool_calls, timeout_secs, usda_api_key, usda_timeout_secs,
+  trace_requests, trace_responses — both bool, default false; see
+  "Tracing"), deriving `Deserialize`
   so consumers map their config onto it directly.
 - `usda.rs` — the USDA FoodData Central-backed nutrition tools:
   `usda_search` (batched queries → candidate foods with per-100g macros)
@@ -67,11 +68,11 @@ or TOML:
   unconditionally as the loop's last (even if it still names tools), and the
   parse step runs; retries after that re-request without tools.
 - `pipeline.rs` — the orchestrator: the `Resolver` struct with `resolve<T>`
-  (see "The resolve loop" below), with `generate_valid<T>` as its internal
-  parse/retry step: strip markdown
+  (see "The resolve loop" below); the parse/retry step — strip markdown
   code fences → caller-supplied `parse: Fn(&str) -> Result<T, String>` closure
   → on failure append the error to the conversation and re-request, up to
-  `max_retries` (default 3). Format-agnostic — no `toml` dependency; intake
+  `max_retries` (default 3) — is inlined in `resolve`. Format-agnostic — no
+  `toml` dependency; intake
   supplies the parse closures: plain `toml::from_str` for foods, ops
   deserialize + validation + `apply_ops` for `ai log` (see "`ai log` ops").
 - `confirm.rs` — the `Confirmer` trait
@@ -95,9 +96,13 @@ The lib takes text in and returns the validated `T`; prompt capture
 - a non-gated `[y]es` / `[n]o` confirm helper (+ `--yes`) used by the plain
   `food new`/`food edit` path
 - the three-option terminal `Confirmer` (`[y]es` / `[n]o` / `[f]eedback`) and
-  `ConfirmAlways` for `--yes`, implementing the lib trait — AI-only,
-  `#[cfg(feature = "ai")]` (the one gating exception, see "Feature gating");
-  composed on the y/n helper
+  `ConfirmAlways` for `--yes`, implementing the lib trait — AI-only, living
+  in the gated `src/ai/confirm.rs` (no cfg of its own). It reuses the same
+  `y`/`yes`/`n`/`no` vocabulary as the y/n helper above, deliberately
+  duplicated in its own tri-state classifier rather than composed: the
+  vocabularies are tiny and stable, and the AI classifier's `f`/`feedback`
+  branch is inherently AI-only, so a fall-through layering would couple the
+  gated module to the shared file for no real gain
 - the plain `food new`/`food edit` editor + validation + confirm path
   (non-gated — no LLM involvement)
 - `[ai]` config wiring (config file → env var → CLI flag resolution)
@@ -108,7 +113,8 @@ The lib takes text in and returns the validated `T`; prompt capture
   and per-command tool registration (see "Tools")
 - name validation + parse-time collision checks (shared by both `food new`
   paths; see "Name argument")
-- the actual writes: food files, `log::write_day`
+- the actual writes: food files, and the checked day write
+  (`src/ai/write.rs::write_day_checked` — see "Change review & safety")
 
 ## The resolve loop (pipeline ownership)
 
@@ -221,7 +227,7 @@ The AI commands, in full:
 
 | Command | Input | Output | Write |
 |---|---|---|---|
-| `ai log` | numbered day rows + totals line + history digest + user prompt | `DayLogOps` — see "`ai log` ops"; macros for food-derived rows never come from the model | validated and applied by intake, whole-day rewrite via new `log::write_day` |
+| `ai log` | numbered day rows + totals line + history digest + user prompt | `DayLogOps` — see "`ai log` ops"; macros for food-derived rows never come from the model | validated and applied by intake, whole-day rewrite via checked `write_day_checked` (`src/ai/write.rs`) |
 | `ai food new <name>` | user prompt + name positional | `Food` TOML | new `<name>.toml` in foods dir; an existing name errors at parse time (see "Name argument") — never a model retry |
 | `ai food edit <name>` | current food TOML + user prompt | updated `Food` | overwrite food file |
 
@@ -247,8 +253,10 @@ Shared flags (all `ai` commands, plus `--yes` on plain `food new`/`food edit`):
 - `--yes` — skip confirmation, accept
 - `--prompt "..."` — provide the prompt inline; conflicts with the
   `[prompt...]` positional; either wins over opening `$EDITOR`
-- `--verbose` — print a per-round LLM trace (reasoning, raw output, tool calls,
-  parse errors) to stderr
+- `--trace-requests` — print the request messages sent to the model to
+  stderr (see "Tracing")
+- `--trace-responses` — print the model's responses (reasoning, raw output,
+  tool calls, parse errors) to stderr (see "Tracing")
 
 ## `ai log` ops
 
@@ -338,17 +346,20 @@ the user confirms.
 The model's task shrinks to *choosing*: if a result matches the user's
 intent, emit `add-food` (name + servings; macros computed by intake, exact
 by construction); if the user wants a modified version or no food exists,
-emit `add-adhoc` with its own macros, preserved untouched — sourced from a
-`usda_get` result when one exists, from the user's own past logs (the
-history digest, scaled to the portion) when it doesn't, and estimated only
-when neither applies (restaurant meals, non-US items). No automatic
+emit `add-adhoc` with its own macros, preserved untouched — sourced from the
+user's own past logs (the history digest, scaled to the portion) when one
+exists, from a `usda_get` result when it doesn't, and estimated only when
+neither applies (restaurant meals, non-US items). No automatic
 conversion, no `from food:` marker — intent lives in the op kind, and the
 row diff shows the outcome.
 
-The prompt makes lookup mandatory: before emitting any `add-adhoc` op,
-include the intended title in a batched `food_lookup` call; a match is a
-decision point (use the food, or keep your own macros), not a prohibition
-on adhoc entries.
+The prompt makes lookup mandatory only when local data is absent: an item
+already in the history digest is reused directly (see "Context windows"),
+and any other intended `add-adhoc` title must appear in a batched
+`food_lookup` call before going online; a match is a decision point (use the
+food, or keep your own macros), not a prohibition on adhoc entries. USDA
+round-trips are the last resort, so reuse-heavy edits typically cost zero
+tool calls.
 
 ## Context windows
 
@@ -367,14 +378,14 @@ controls human display, not model context):
   `food_lookup`; never embedded in prompts — the model sees foods only when
   it asks.
 - **Totals line** — `totals: cal | protein | fiber | fat | carbs | alcohol`,
-  plus `exercise: N` and the configured min/max targets when set. Present in
-  `ai log` context only.
+  plus `exercise: N` when the day has exercise calories, and the configured
+  min/max targets when set. Present in `ai log` context only.
 
 Per command:
 
 | Command | Prompt context |
 |---|---|
-| `ai log` | numbered entry lines for the day being edited, a totals line (which includes `exercise: N`), and a history digest of the `history_days` days before the edited day — distinct entry lines with occurrence counts, count-sorted |
+| `ai log` | numbered entry lines for the day being edited, a totals line (which includes `exercise: N` when exercise was logged), and a history digest of the `history_days` days before the edited day — distinct entry lines with occurrence counts, count-sorted |
 | `ai food new <name>` | none beyond the schema + 3 full sample foods from the user's own foods dir (naming, serving, and ingredient conventions — see "Sample foods") |
 | `ai food edit <name>` | the target food's full TOML + the same 3 sample foods |
 
@@ -410,12 +421,12 @@ conventions like "Cherries - 155g", portion sizes, which macros are usually
 non-zero — for the adhoc entries it appends mid-edit. Because re-used
 entries are explicit (counts), reuse-heavy edits can be answered from the
 digest alone, skipping `food_lookup` and USDA round-trips entirely. The
-digest is also the first fallback source for macros when no tool result
-exists: an entry matching the user's request is copied and scaled to the
-requested portion by the model — preferable to estimation, since it
-reflects the user's own logging. This model-side scaling is the one
-deliberate exception to the "the model never does scaling arithmetic" rule:
-digest-sourced macros are accepted as estimate-grade (like any
+digest is the **first** source for macros: an entry matching the user's
+request is copied and scaled to the requested portion by the model —
+preferable to tool round-trips and to estimation, since it reflects the
+user's own logging. This model-side scaling is the one deliberate exception
+to the "the model never does scaling arithmetic" rule: digest-sourced
+macros are accepted as estimate-grade (like any
 `usda_get`-less `add-adhoc`), and the proposal diff shows every value
 before confirmation.
 
@@ -565,15 +576,39 @@ stdin is `Cancelled`: exit 0 with a stderr hint (see "Exit codes"); the
 stdin — without `[prompt...]`/`--prompt` and without a usable editor it
 errors, it does not block.
 
-## Verbose mode
+## Tracing
 
-When `verbose` is set (via `[ai] verbose` or `--verbose`), each LLM round in
-the loop prints a short trace to **stderr** — reasoning content when the
-provider emits it (e.g. DeepSeek's `reasoning_content`, OpenRouter's
-`reasoning`), the model's raw text output before parsing, tool calls
-(`[tool] usda_search [...]`), and parse errors per retry. Nothing goes to
-stdout — proposal tables and the confirm dialog are unaffected. Behavior is
-identical with the flag off; the flag only adds visibility.
+Tracing is off by default and split into two independent toggles, each
+available as a config key (`[ai] trace_requests` / `[ai] trace_responses`)
+and a shared CLI flag (`--trace-requests` / `--trace-responses`); config
+and flags OR together:
+
+- **`trace_requests`** — print the request messages sent to the model to
+  **stderr**, each message exactly once, on the round it first enters the
+  conversation: role-prefixed lines (`[system]`, `[user]`, `[assistant]`,
+  `[tool:{call id}]`), bracketed per round by `--- to model ---` /
+  `--- end to model ---`. Later rounds print only what is new — tool
+  results, parse-error retries, feedback — so stderr reads as a
+  conversation transcript rather than a repeated dump.
+- **`trace_responses`** — print each response as it arrives as one block,
+  bracketed by `--- from model ---` / `--- end from model ---`: reasoning
+  content when the provider emits it (e.g. DeepSeek's
+  `reasoning_content`, OpenRouter's `reasoning`), tool calls
+  (`[tool] usda_search [...]`), and the model's raw text output before
+  parsing. Parse errors per retry print as a standalone red line between
+  blocks.
+
+Blocks are always separated by a blank line. When the terminal supports
+color (per intake's usual `NO_COLOR` / `CLICOLOR_FORCE` / tty rules), the
+markers are bold yellow, request lines cyan, and response lines green —
+intake computes this itself (the lib's `trace_colors` setting is not
+accepted in the `[ai]` config table).
+
+Neither toggle affects behavior; both only add stderr visibility. Nothing
+goes to stdout — proposal tables and the confirm dialog are unaffected.
+Turning on requests without responses shows what is being sent but nothing
+about what comes back, and vice versa; both toggles together reproduce the
+full per-round trace.
 
 ## Change review & safety
 
@@ -596,7 +631,8 @@ likewise safe by construction: `apply_ops` copies it through and no op can
 change it.
 
 All day-log writes are full-file rewrites (`append_entry`,
-`set_exercise_calories`, and the new `log::write_day`), so a rewrite can
+`set_exercise_calories`, and the checked `write_day_checked` in
+`src/ai/write.rs`, built on `log::write_day_locked`), so a rewrite can
 only preserve the fields the binary knows. `DayLog` and `LogEntry` — like
 `Food` and `Ingredient` — already carry `#[serde(deny_unknown_fields)]`,
 and that is what makes the whole-day rewrites and the `ai food edit`
@@ -644,7 +680,8 @@ max_tool_calls = 20      # tool executions per resolve attempt; exhaustion → o
 timeout_secs = 60        # per LLM API call
 usda_api_key = "..."     # or INTAKE_AI_USDA_API_KEY
 usda_timeout_secs = 15   # per USDA backend fetch
-verbose = false          # or --verbose; per-round LLM trace on stderr
+trace_requests = false   # or --trace-requests; print request messages to stderr
+trace_responses = false  # or --trace-responses; print model responses to stderr
 history_days = 14        # ai log history window, days before the edited day
 log_prompt = "..."       # optional overrides of default templates
 food_new_prompt = "..."
@@ -653,12 +690,13 @@ food_edit_prompt = "..."
 
 - `Config` gets a `#[cfg(feature = "ai")]`-gated `ai: Option<AiConfig>` field
   (see Feature gating), so existing configs and tests are unaffected; the
-  `[ai]` table deserializes directly into the intake-side `AiConfig` wrapper,
-  which flattens `intake_ai::AiSettings` (no field-by-field mapping) and adds
-  the intake-owned keys (`log_prompt`, `food_new_prompt`, `food_edit_prompt`,
-  `history_days`).
+  `[ai]` table deserializes directly into the intake-side `AiConfig` wrapper
+  (`src/ai/settings.rs`), which flattens `intake_ai::AiSettings` (no
+  field-by-field mapping) and adds the intake-owned keys (`log_prompt`,
+  `food_new_prompt`, `food_edit_prompt`, `history_days`).
 - Resolution order matches `Config::resolve`: config file → env var → CLI flag.
-  The merge happens in `ai_cmd`: it combines the `[ai]` config values, the
+  The merge happens in `ai` (`src/ai/mod.rs`): it combines the `[ai]` config
+  values, the
    `INTAKE_AI_*` env vars, and the shared `ai` flags into the final
    `AiSettings` before constructing a `Resolver` and calling `resolve`.
    `usda_api_key` resolves config → env only — no CLI flag.
@@ -712,30 +750,38 @@ default:
 ```toml
 [features]
 default = ["ai"]
-ai = ["dep:intake-ai"]
+ai = ["dep:intake-ai", "dep:serde_json", "dep:similar"]
 ```
 
+The `serde_json` and `similar` deps ride the same feature because the `ai`
+tree's own code needs them — `serde_json` for the `Tool` schemas
+(`food_lookup`, USDA), `similar` for the `ai log` row diff — and they must
+stay optional so the no-AI build omits them. `similar` is an intake-crate
+dependency (proposal rendering is intake's job), never a lib dependency.
+
 - With the default feature, everything in this doc applies.
-- Gating is **module-level**, not scattered: `#[cfg(feature = "ai")] mod ai_cmd;`
-  in main.rs owns the clap args, the `ai` tree handlers, the prompt
-  templates, `INTAKE_AI_*` env resolution, and the Resolver wiring for the
-  AI commands — the editor capture and the y/n confirm helper are shared,
-  non-gated code (see "Crate boundaries"); no cfg
-  attributes inside the module. **One documented exception:** the
-  three-option terminal `Confirmer` in `confirm.rs` carries
-  `#[cfg(feature = "ai")]` — it implements the lib's `Confirmer` trait and
-  exists only for the AI pipeline. The templates are `.md` files under
-  `src/ai/prompts/` (`log.md`, `food_new.md`, `food_edit.md`),
-  embedded via `include_str!` *inside* the gated module — so they compile into
-  the binary only when the `ai` feature is on; no-feature builds embed nothing.
-  The plain `food new`/`food edit` editor prefill is a non-gated schema
-  skeleton (serialized canned example), not these files.
-  The cfg sites are: `#[cfg(feature = "ai")] mod ai_cmd;` in main.rs; the
-  `Ai` variant on the `Commands` enum in cli.rs; its match arm in
-  `commands/mod.rs`; and two in config.rs (the
-  `ai: Option<AiConfig>` field and the gated `AiConfig` wrapper holding
-  `intake_ai::AiSettings`) — five in total, no cfg attributes inside
-  `ai_cmd`.
+- Gating is **module-level**, not scattered: `#[cfg(feature = "ai")] mod ai;`
+  in main.rs owns the clap args (`src/ai/cli.rs`), the `ai` tree handlers,
+  the prompt templates, `INTAKE_AI_*` env resolution, and the Resolver
+  wiring for the AI commands — the editor capture and the y/n confirm
+  helper are shared, non-gated code (see "Crate boundaries"); no cfg
+  attributes inside the module. Every ai-only item lives inside `src/ai/`
+  (`cli.rs` clap tree, `settings.rs` config wrapper, `confirm.rs` terminal
+  `Confirmer`, `write.rs` checked day writes, `catalog.rs` food listing),
+  so shared files carry no per-item attributes. The templates are `.md`
+  files under `src/ai/prompts/` (`log.md`, `food_new.md`, `food_edit.md`),
+  embedded via `include_str!` *inside* the gated module — so they compile
+  into the binary only when the `ai` feature is on; no-feature builds embed
+  nothing. The plain `food new`/`food edit` editor prefill is a non-gated
+  schema skeleton (serialized canned example), not these files.
+  The cfg sites are: `#[cfg(feature = "ai")] mod ai;` in main.rs; the
+  `Ai` variant on the `Commands` enum in cli.rs (referencing
+  `crate::ai::cli::AiCommands`); its match arm in `commands/mod.rs`; and
+  the `ai: Option<crate::ai::settings::AiConfig>` field in config.rs — four
+  in total, no cfg attributes inside `ai`. (The no-feature test that
+  rejects an `[ai]` config table carries the mirrored
+  `#[cfg(not(feature = "ai"))]`, and the `ai` e2e test binary is gated via
+  `[[test]] required-features = ["ai"]` in Cargo.toml — no attributes.)
 - Without the feature, the CLI is the full surface minus the `ai` tree. No
   cross-feature config compatibility is provided: a config.toml containing
   an `[ai]` table fails to parse with the standard unknown-field error
@@ -763,20 +809,21 @@ Every template has the same anatomy:
 1. **Role and task** — one or two sentences framing the command.
 2. **Schema** — the exact TOML the model must emit (`Food` + `Ingredient`,
    or `DayLogOps`), mirroring `AGENTS.md` / the serde structs.
-3. **Rules** — all macro fields required, no default of zero; macros not
-   stated by the user must come from a tool result where one exists:
-   `usda_search` to find the right variant, `usda_get` for the requested
-   amount, then copy the numbers into the op verbatim — never scale or
-   recompute a tool result yourself. When no tool result exists, the
-   fallback order is: the user's own past logs (for `ai log`, an entry in
-   the history digest matching the request, copied and scaled to the
-   portion — preferable to estimation), then a best-effort estimate (the
-   proposal diff shows every value and the user confirms before anything
-   is written). Output TOML only, no prose, no surrounding fenced blocks.
+3. **Rules** — all macro fields required, no default of zero; the macro
+   source order for `ai log` is: the history digest first (an entry matching
+   the request is copied and scaled to the portion — the one deliberate
+   scaling exception, accepted as estimate-grade), then a tool result where
+   one exists (`food_lookup` before going online, then `usda_search` for the
+   right variant + `usda_get` for the requested amount, copied verbatim with
+   `servings = 1` — never scale or recompute a tool result yourself), then a
+   best-effort estimate (the proposal diff shows every value and the user
+   confirms before anything is written). Output TOML only, no prose, no
+   surrounding fenced blocks.
 4. **Examples** — 1-2 short canned examples illustrating the schema and
-   conventions. For `ai log` the history digest doubles as live examples of
-   the user's actual patterns; for `food_new`/`food_edit` the context
-   embeds three of the user's own foods (see "Context windows"), and the
+   conventions; `log.md` embeds its examples inline in the Schema section,
+   and the history digest doubles as live examples of the user's actual
+   patterns. For `food_new`/`food_edit` the context embeds three of the
+   user's own foods (see "Context windows"), and the
    canned examples serve as the fallback when the foods dir is empty.
 5. **Context block** (code-injected, never part of the `.md`): the
    per-command data from "Context windows", injected last so the user's
@@ -788,13 +835,14 @@ Per-command content:
   - **Schema** — the `DayLogOps` shape (see "`ai log` ops").
   - **Rows are references** — the numbered context rows are handles the ops
     point at, never entries to re-emit; the model's output is ops only.
-  - **Lookup before adhoc** — before any `add-adhoc` op, the title must
-    appear in a batched `food_lookup` call, deciding per title: `add-food`
-    when a match fits the user's intent (macros computed by intake),
-    `add-adhoc` with all six macros for one-offs and modified versions —
-    macros verbatim from a `usda_get` result (`servings = 1`) when one
-    exists, else from the history digest scaled to the portion, else a
-    best-effort estimate.
+  - **Digest before lookup** — prefer scaling values from the history
+    digest when available to avoid round-trips; before going online,
+    include intended titles in a batched `food_lookup` call, deciding per
+    title: `add-food` when a match fits the user's intent (macros computed
+    by intake), `add-adhoc` with all six macros for one-offs and modified
+    versions — macros verbatim from a `usda_get` result (`servings = 1`)
+    when one exists, else from the history digest scaled to the portion,
+    else a best-effort estimate.
   - **Row semantics** — `row` indices are 1-based against the numbered list
     exactly as shown and never shift as ops apply (see "`ai log` ops").
 - `food_new.md` (`ai food new <name>`): the `Food` schema; the name is
@@ -814,14 +862,15 @@ Per-command content:
    terminal confirmer impl. Verify all four quality gates stay green at the
    root.
 2. **AI integration** — `[features] default = ["ai"]`,
-   `ai = ["dep:intake-ai"]`; `[ai]` config wiring, the
+   `ai = ["dep:intake-ai", "dep:serde_json", "dep:similar"]`; `[ai]` config wiring, the
    feature-gated `ai` tree (`ai log`, `ai food new`, `ai food edit`) with the
    Resolver + confirmation flow, the three-option terminal `Confirmer`
    (+ `ConfirmAlways`, `#[cfg(feature = "ai")]`), per-command prompt
    template files (`src/ai/prompts/*.md`), the `Tool` trait wiring
    (`usda_search` + `usda_get` +
    batched `food_lookup` with per-command registration), the `DayLogOps`
-   schema with `apply_ops`, `log::write_day`, and the stale-write check.
+   schema with `apply_ops`, the checked day write
+   (`src/ai/write.rs::write_day_checked`), and the stale-write check.
 3. **Docs** — AGENTS.md / README `[ai]` section and path touch-ups.
 
 ## Testing
@@ -840,15 +889,17 @@ Per-command content:
   mapping (a scripted
   `Confirmer` impl driving the loop); timeout aborts with a clear error
   (hang-mode fake backend + tiny timeout, no slow tests); transport retry
-  (scripted 429/5xx then success, no slow tests); verbose mode —
+  (scripted 429/5xx then success, no slow tests); tracing —
   scripted fake backend responses carrying `reasoning_content` produce the
-  expected stderr trace lines.
+  expected stderr trace lines under `trace_responses`, and the
+  `trace_requests` path prints role-prefixed lines for every message sent
+  per round; the two toggles are independent (each exercisable alone).
 - `intake` unit: the three-option confirmer decision mapping (in the `ai` build);
   exit-code mapping — reject and EOF-at-prompt cancel exit 0, `Exhausted`
   and `Io` exit 1 (both confirmers);
   `--yes` skips proposal rendering;
   `[ai]` config parsing and env/flag resolution;
-  `log::write_day` roundtrip;
+  `write_day_checked` roundtrip;
   clap parsing of the `ai` tree and shared flags (the shared `--date` arg,
   no short form, `--prompt` vs. `[prompt...]` conflict);
   `apply_ops` (add-food / add-adhoc / remove / replace; row out of
@@ -873,13 +924,27 @@ Per-command content:
   prompt-file drift guard (each prompt `.md` under `src/ai/prompts/` contains
   its key schema field names, e.g. `protein_g` / `add-adhoc` — fails if serde
   structs change without prompt updates).
-- Quality gates (workspace root): `cargo test`, `cargo clippy -- -D warnings`,
-  `cargo fmt --check`, `cargo build`, plus `cargo test -p intake
+- `intake` e2e (`tests/ai.rs`, compiled only with the `ai` feature via
+  `[[test]] required-features` in Cargo.toml — no cfg attributes in the
+  shared file): the real binary driven against a fake OpenAI-compatible
+  server (local TCP listener serving scripted `chat/completions`
+  responses), covering `ai log` with confirm-yes (proposal diff shown, day
+  written), confirm-no (nothing written), and `--yes` (no confirmation),
+  plus `ai food new` writing a food file — including assertions on the
+  recorded request (model name, `food_lookup` tool advertised, prompt
+  carried).
+- Quality gates (workspace root): `cargo test --workspace`,
+  `cargo clippy --workspace -- -D warnings`,
+  `cargo fmt --check`, `cargo build --workspace`, plus `cargo test -p intake
   --no-default-features` and `cargo build -p intake --no-default-features`
-  for the no-AI configuration — scoped to the `intake` package: a
-  root-level `--no-default-features` run also compiles `intake-ai`,
-  whose dependencies the no-AI build is supposed to avoid. `intake-ai`
-  keeps its coverage through the plain root gates.
+  for the no-AI configuration. The `--workspace` flags are required because
+  this is a non-virtual workspace (the root is a package): bare `cargo
+  test` from the root runs the `intake` package only, which would leave
+  `intake-ai`'s own tests and lints uncovered. The no-AI gates are scoped
+  to the `intake` package so `intake-ai`'s dependencies stay out of the
+  no-AI build. `intake-ai` keeps its coverage through the workspace-wide
+  gates; when it is split off into its own repository, its `cargo test`
+  runs everything there and the `--workspace` flags here go away.
 
 ## Docs
 
@@ -913,7 +978,7 @@ and corrected paths for the workspace layout.
 - Templating the template: variables/placeholders inside the prompt `.md`
   files (context blocks are currently injected by code only, so overrides
   cannot reach them).
-- Streaming token output from the model (independent of verbose mode, which
+- Streaming token output from the model (independent of tracing, which
   works without streaming).
 - If `ai log` proves slower or less reliable than expected for simple appends,
   an add-only mode (no remove/replace ops, no day context or diff) is a thin

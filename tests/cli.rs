@@ -1525,10 +1525,10 @@ fn test_day_shows_entry_numbers() {
     );
 
     let chili = item_row(&stdout, "Chili");
-    assert_eq!(chili.split_whitespace().nth(0), Some("1"), "row: {chili}");
+    assert_eq!(chili.split_whitespace().next(), Some("1"), "row: {chili}");
     let oatmeal = item_row(&stdout, "Oatmeal");
     assert_eq!(
-        oatmeal.split_whitespace().nth(0),
+        oatmeal.split_whitespace().next(),
         Some("2"),
         "row: {oatmeal}"
     );

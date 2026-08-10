@@ -34,6 +34,9 @@ intake food show <name>                 Show food details with ingredients
 intake food new <name>                  Create a food in your editor
 intake food edit <name>                 Edit a food in your editor
 intake food rm <name>                   Delete a food (existing log entries are unaffected)
+intake ai log [prompt...] [--date D]    Edit a day's log with AI (ops-based)
+intake ai food new <name> [prompt...]   Create a recipe with AI
+intake ai food edit <name> [prompt...]  Edit a recipe with AI
 intake completions <shell>              Generate or install completion script
 ```
 
@@ -77,6 +80,50 @@ above max is red. Targets scale with day progress.
 
 Paths can also be set via `INTAKE_FOODS_DIR` and `INTAKE_LOG_DIR` environment
 variables, or `--foods-dir` / `--log-dir` CLI flags (CLI wins).
+
+## AI Commands
+
+`ai log`, `ai food new`, and `ai food edit` route a prompt through an LLM,
+show the proposed change, and write it only after your confirmation
+(`--yes` skips the proposal and confirmation). The prompt can be given as a
+positional, via `--prompt "..."`, or by opening `$VISUAL` / `$EDITOR` /
+`nano` on a temp file (leave it unchanged to abort). Nutrition data comes
+from the USDA FoodData Central API via the `usda_search` / `usda_get`
+tools; `ai log` also looks up your own foods (`food_lookup`). Anything a
+model returns is validated and re-requested on failure, and the day or food
+file is re-checked before writing so a concurrent change aborts instead of
+being overwritten.
+
+```sh
+intake ai log "add a late snack under 200 cal"
+intake ai food new tjs-lunch "build a lunch like my usual one"
+intake ai food edit turkey-chili "make it lower sodium"
+```
+
+Configure the provider in `~/.config/intake/config.toml`:
+
+```toml
+[ai]
+api_key = "..."          # or INTAKE_AI_API_KEY / --api-key
+model = "gpt-4o-mini"    # or INTAKE_AI_MODEL / --model
+# base_url = "https://api.openai.com/v1"   # any OpenAI-compatible endpoint
+usda_api_key = "..."     # or INTAKE_AI_USDA_API_KEY (free at fdc.nal.usda.gov)
+history_days = 14        # ai log context window
+```
+
+Settings resolve config file → environment → CLI flags (`--api-key`,
+`--model`, `--yes`, `--trace-requests`, `--trace-responses`, `--prompt`).
+Tracing is off by default; `--trace-requests` prints each message sent to
+the model once, on the round it first appears (stderr, in `--- to model ---`
+blocks), and `--trace-responses` prints the model's output in
+`--- from model ---` blocks (both
+also settable as `[ai] trace_requests` / `[ai] trace_responses`; blocks are
+colorized when the terminal supports it). Without a
+`usda_api_key` the USDA tools error with a
+setup hint; pointing `base_url` at a local endpoint (Ollama, vLLM, ...)
+keeps the whole flow offline. Running an `ai` command sends the prompt,
+context, and tool queries to the configured provider; the conversation is
+never stored.
 
 ## Adding Foods
 

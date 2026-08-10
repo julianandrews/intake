@@ -11,7 +11,7 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::str::FromStr;
 
-fn render_food(food: &food::Food, columns: &[Column]) -> Result<String> {
+pub(crate) fn render_food(food: &food::Food, columns: &[Column]) -> Result<String> {
     let serving_label = if food.servings.get() == 1 {
         "serving"
     } else {
@@ -115,7 +115,7 @@ fn comment_lines(s: &str) -> String {
         .join("\n")
 }
 
-fn canned_example_food() -> food::Food {
+pub(crate) fn canned_example_food() -> food::Food {
     food::Food {
         title: "My Food".to_string(),
         servings: NonZeroU32::new(4).unwrap(),

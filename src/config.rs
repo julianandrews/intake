@@ -84,6 +84,8 @@ pub struct Config {
     pub max_carbs: Option<Decimal>,
     pub min_alcohol: Option<Decimal>,
     pub max_alcohol: Option<Decimal>,
+    #[cfg(feature = "ai")]
+    pub ai: Option<crate::ai::settings::AiConfig>,
 }
 
 impl Config {
@@ -381,5 +383,14 @@ mod tests {
         assert!(Config::resolve(Some(PathBuf::from("")), None).is_err());
         assert!(Config::resolve(None, Some(PathBuf::from(""))).is_err());
         assert!(Config::resolve(Some(PathBuf::from("foods")), None).is_ok());
+    }
+
+    #[cfg(not(feature = "ai"))]
+    #[test]
+    fn test_ai_table_rejected_without_feature() {
+        let err = toml::from_str::<Config>("[ai]\nmodel = \"m\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ai"), "got: {err}");
     }
 }

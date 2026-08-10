@@ -51,7 +51,7 @@ impl fmt::Display for FoodName {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Ingredient {
     pub name: String,
@@ -64,7 +64,7 @@ pub struct Ingredient {
     pub alcohol_g: Grams,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Food {
     pub title: String,
@@ -126,7 +126,7 @@ impl Food {
     }
 }
 
-fn toml_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn toml_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let entries = fs::read_dir(dir)
         .with_context(|| format!("foods directory not found: {}", dir.display()))?;

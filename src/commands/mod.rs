@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use clap::CommandFactory;
 
-mod food;
-mod log;
+pub(crate) mod food;
+pub(crate) mod log;
 mod summary;
 
 pub(crate) fn run(command: Option<Commands>, config: &Config) -> Result<()> {
@@ -96,6 +96,10 @@ pub(crate) fn run(command: Option<Commands>, config: &Config) -> Result<()> {
                 food::cmd_rm_food(&mut stdout, &foods_dir, &name, yes)?;
             }
         },
+        #[cfg(feature = "ai")]
+        Some(Commands::Ai { command }) => {
+            crate::ai::run(&mut stdout, &foods_dir, &log_dir, command, config)?;
+        }
         Some(Commands::Completions { shell, install }) => {
             completion::cmd_completions(&mut stdout, shell, install, Cli::command())?;
         }
@@ -121,7 +125,7 @@ fn resolve_date(date: Option<String>, days_ago: Option<u32>) -> Result<chrono::N
     }
 }
 
-fn resolve_log_date(date: Option<String>) -> Result<chrono::NaiveDate> {
+pub(crate) fn resolve_log_date(date: Option<String>) -> Result<chrono::NaiveDate> {
     match date {
         Some(d) => parse_date(&d),
         None => Ok(Local::now().date_naive()),

@@ -12,6 +12,21 @@ chrono = "0.4"
 anyhow = "1"
 anstyle-query = "1.1.5"
 dirs = "6"
+intake-ai = { path = "crates/intake-ai", optional = true }
 rust_decimal = { version = "1.42.1", features = ["serde"] }
+serde_json = { version = "1", optional = true }
+similar = { version = "2", optional = true }
 tempfile = "3"
 unicode-width = "0.2"
+
+[features]
+default = ["ai"]
+ai = ["dep:intake-ai", "dep:serde_json", "dep:similar"]
+
+[workspace]
+resolver = "2"
+members = [".", "crates/intake-ai"]
+
+[[test]]
+name = "ai"
+required-features = ["ai"]
