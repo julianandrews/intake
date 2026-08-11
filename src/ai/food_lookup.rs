@@ -1,6 +1,7 @@
 use crate::food;
 use intake_ai::tools::Tool;
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -13,11 +14,148 @@ fn eprintln_warn(msg: &str) {
 const MAX_PER_QUERY: usize = 5;
 const TOTAL_CAP: usize = 2000;
 
+/// Lowercase, fold diacritics (`é`→`e`), strip non-alphanumerics.
 fn normalize(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        for lower in c.to_lowercase() {
+            if lower.is_alphanumeric() {
+                match fold_char(lower) {
+                    Some(folded) => out.push_str(folded),
+                    None => out.push(lower),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Fold a single accented or special Latin character to its ASCII base.
+fn fold_char(c: char) -> Option<&'static str> {
+    Some(match c {
+        'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' | 'ā' | 'ă' | 'ą' | 'ǎ' => "a",
+        'é' | 'è' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => "e",
+        'í' | 'ì' | 'î' | 'ï' | 'ī' | 'į' | 'ǐ' | 'ı' => "i",
+        'ó' | 'ò' | 'ô' | 'ö' | 'õ' | 'ø' | 'ō' | 'ŏ' | 'ő' | 'ǒ' => "o",
+        'ú' | 'ù' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ũ' | 'ű' | 'ǔ' => "u",
+        'ý' | 'ÿ' | 'ŷ' | 'ỳ' | 'ỵ' | 'ỷ' | 'ỹ' => "y",
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => "c",
+        'ñ' | 'ń' | 'ň' | 'ņ' => "n",
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ș' => "s",
+        'ź' | 'ż' | 'ž' => "z",
+        'ğ' | 'ģ' => "g",
+        'ł' | 'ļ' | 'ľ' => "l",
+        'ř' | 'ŕ' => "r",
+        'ţ' | 'ť' | 'ț' => "t",
+        'đ' | 'ď' => "d",
+        'ķ' => "k",
+        'ħ' => "h",
+        'ŵ' => "w",
+        'ẋ' => "x",
+        'ß' => "ss",
+        'æ' => "ae",
+        'œ' => "oe",
+        'ð' => "d",
+        'þ' => "th",
+        _ => return None,
+    })
+}
+
+/// Fold a whole word's diacritics in place.
+fn fold_word(w: &str) -> String {
+    let mut out = String::new();
+    for c in w.chars() {
+        match fold_char(c) {
+            Some(folded) => out.push_str(folded),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+/// Lowercase, diacritic-folded words; word boundaries survive.
+fn words(s: &str) -> Vec<String> {
     s.chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(char::to_lowercase)
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .map(|w| fold_word(&w.to_lowercase()))
         .collect()
+}
+
+fn bigrams(s: &str) -> Vec<(char, char)> {
+    let chars: Vec<char> = s.chars().collect();
+    chars.windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+/// Scaled Dice coefficient over character bigrams, pure integer: returns
+/// `(2 * |common|, |Bq| + |Bt|)`; equal when either side has no bigrams.
+fn dice(q_bigrams: &HashSet<(char, char)>, t: &str) -> (usize, usize) {
+    let t_bigrams: HashSet<(char, char)> = bigrams(t).into_iter().collect();
+    if q_bigrams.is_empty() || t_bigrams.is_empty() {
+        return (0, 0);
+    }
+    let common = q_bigrams.iter().filter(|b| t_bigrams.contains(b)).count();
+    (2 * common, q_bigrams.len() + t_bigrams.len())
+}
+
+struct Score {
+    exact: bool,
+    tokens: usize,
+    dice_num: usize,
+    dice_den: usize,
+}
+
+/// Tiered per-food score: exact > token overlap > bigram Dice.
+fn score(
+    q: &str,
+    q_words: &[String],
+    q_bigrams: &HashSet<(char, char)>,
+    name: &str,
+    title: &str,
+) -> Score {
+    let norm_name = normalize(name);
+    let norm_title = normalize(title);
+    let exact = norm_name == q || norm_title == q;
+    let name_words = words(name);
+    let title_words = words(title);
+    let tokens = q_words
+        .iter()
+        .filter(|qw| {
+            name_words
+                .iter()
+                .any(|w| w == *qw || w.starts_with(qw.as_str()))
+                || title_words
+                    .iter()
+                    .any(|w| w == *qw || w.starts_with(qw.as_str()))
+        })
+        .count();
+    let (n1, d1) = dice(q_bigrams, &norm_name);
+    let (n2, d2) = dice(q_bigrams, &norm_title);
+    let (dice_num, dice_den) = if n1 as u128 * d2 as u128 >= n2 as u128 * d1 as u128 {
+        (n1, d1)
+    } else {
+        (n2, d2)
+    };
+    Score {
+        exact,
+        tokens,
+        dice_num,
+        dice_den,
+    }
+}
+
+/// Lexicographic score comparison; Dice ratios compared by integer
+/// cross-multiplication (never floating point).
+fn compare_scores(a: &Score, b: &Score) -> Ordering {
+    b.exact
+        .cmp(&a.exact)
+        .then(b.tokens.cmp(&a.tokens))
+        .then_with(|| {
+            let ab = a.dice_num as u128 * b.dice_den as u128;
+            let ba = b.dice_num as u128 * a.dice_den as u128;
+            ba.cmp(&ab)
+        })
 }
 
 pub struct FoodLookup<'a> {
@@ -53,29 +191,22 @@ impl<'a> FoodLookup<'a> {
             out.push_str("  no matches\n");
             return Ok(out);
         }
-        let mut exact: Vec<(&String, &food::Food)> = Vec::new();
-        let mut partial: Vec<(&String, &food::Food)> = Vec::new();
+        let q_words = words(query);
+        let q_bigrams: HashSet<(char, char)> = bigrams(&q).into_iter().collect();
+
+        let mut scored: Vec<(&String, &food::Food, Score)> = Vec::new();
         for (name, f) in catalog {
-            let norm_name = normalize(name);
-            let norm_title = normalize(&f.title);
-            if norm_name == q || norm_title == q {
-                exact.push((name, f));
-            } else if norm_name.contains(&q)
-                || norm_title.contains(&q)
-                || q.contains(&norm_name)
-                || q.contains(&norm_title)
-            {
-                partial.push((name, f));
+            let s = score(&q, &q_words, &q_bigrams, name, &f.title);
+            if s.exact || s.tokens > 0 || s.dice_num > 0 {
+                scored.push((name, f, s));
             }
         }
-        exact.sort_by(|a, b| a.0.cmp(b.0));
-        partial.sort_by(|a, b| a.0.cmp(b.0));
-        exact.extend(partial);
+        scored.sort_by(|a, b| compare_scores(&a.2, &b.2).then_with(|| a.0.cmp(b.0)));
 
         let mut seen: HashSet<String> = HashSet::new();
         let mut count = 0usize;
-        for (name, f) in exact {
-            if !seen.insert(name.clone()) {
+        for (name, f, _) in scored {
+            if !seen.insert((*name).clone()) {
                 continue;
             }
             if count >= MAX_PER_QUERY {
@@ -193,7 +324,25 @@ mod tests {
         assert_eq!(normalize("Turkey Chili"), "turkeychili");
         assert_eq!(normalize("sour-cream 60g"), "sourcream60g");
         assert_eq!(normalize(""), "");
-        assert_eq!(normalize("Café"), "café");
+        assert_eq!(normalize("Café"), "cafe");
+        assert_eq!(normalize("Jalapeño"), "jalapeno");
+        assert_eq!(normalize("Strøganoff"), "stroganoff");
+    }
+
+    #[test]
+    fn test_words_split() {
+        assert_eq!(
+            words("Turkey Chili"),
+            vec!["turkey".to_string(), "chili".to_string()]
+        );
+        assert_eq!(
+            words("sour-cream 60g"),
+            vec!["sour".to_string(), "cream".to_string(), "60g".to_string()]
+        );
+        assert_eq!(
+            words("Café au lait"),
+            vec!["cafe".to_string(), "au".to_string(), "lait".to_string()]
+        );
     }
 
     #[test]
@@ -249,6 +398,83 @@ mod tests {
             .execute(&serde_json::json!({ "queries": ["Café"] }))
             .unwrap();
         assert!(out.contains("cafe | Café au lait"));
+    }
+
+    #[test]
+    fn test_diacritic_folding_ascii_query() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("cafe.toml"),
+            "title = \"Café au lait\"\nservings = 1\n\n[[ingredients]]\nname = \"Milk\"\ncalories = 100\nprotein_g = 5\nfiber_g = 0\nfat_g = 5\ncarbs_g = 10\nalcohol_g = 0\n",
+        )
+        .unwrap();
+        let tool = FoodLookup::new(dir.path());
+        let out = tool
+            .execute(&serde_json::json!({ "queries": ["cafe"] }))
+            .unwrap();
+        assert!(out.contains("cafe | Café au lait"));
+    }
+
+    #[test]
+    fn test_typo_matches_via_bigrams() {
+        let dir = foods_dir();
+        let tool = FoodLookup::new(dir.path());
+        let out = tool
+            .execute(&serde_json::json!({ "queries": ["chilli"] }))
+            .unwrap();
+        assert!(out.contains("turkey-chili | Turkey Chili"), "got: {out}");
+    }
+
+    #[test]
+    fn test_word_order_matches() {
+        let dir = foods_dir();
+        let tool = FoodLookup::new(dir.path());
+        let out = tool
+            .execute(&serde_json::json!({ "queries": ["chili turkey"] }))
+            .unwrap();
+        assert!(out.contains("turkey-chili | Turkey Chili"), "got: {out}");
+    }
+
+    #[test]
+    fn test_token_overlap_ranks_relevance() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for (name, title) in [
+            ("mushroom-soup", "Mushroom Soup"),
+            ("chicken-soup", "Chicken Soup"),
+            ("chicken-sandwich", "Chicken Sandwich"),
+        ] {
+            std::fs::write(
+                dir.path().join(format!("{name}.toml")),
+                format!("title = \"{title}\"\nservings = 1\n\n[[ingredients]]\nname = \"X\"\ncalories = 100\nprotein_g = 1\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\n"),
+            )
+            .unwrap();
+        }
+        let tool = FoodLookup::new(dir.path());
+        let out = tool
+            .execute(&serde_json::json!({ "queries": ["chicken soup"] }))
+            .unwrap();
+        let first = out.lines().nth(1).unwrap();
+        assert!(first.contains("chicken-soup"), "got: {out}");
+    }
+
+    #[test]
+    fn test_single_char_query_prefix_matches() {
+        let dir = foods_dir();
+        let tool = FoodLookup::new(dir.path());
+        let out = tool
+            .execute(&serde_json::json!({ "queries": ["o"] }))
+            .unwrap();
+        assert!(out.contains("oatmeal | Oatmeal"), "got: {out}");
+    }
+
+    #[test]
+    fn test_gibberish_returns_no_matches() {
+        let dir = foods_dir();
+        let tool = FoodLookup::new(dir.path());
+        let out = tool
+            .execute(&serde_json::json!({ "queries": ["zzzqq"] }))
+            .unwrap();
+        assert!(out.contains("no matches"));
     }
 
     #[test]

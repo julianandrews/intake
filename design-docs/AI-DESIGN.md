@@ -469,11 +469,16 @@ pub trait Tool {
   batched — takes `queries: [string]` (one or more titles) and returns
   per-query matches, so a multi-entry edit costs 1-2 calls instead of one
   per entry. Matching per query:
-  1. Normalize both sides: lowercase, strip non-alphanumerics
-     (Unicode-aware, e.g. `char::is_alphanumeric`).
-  2. Exact matches on name or title first, then containment (query inside
-     name/title or vice versa). Top ~5 per query, exact matches first,
-     deduplicated.
+  1. Normalize both sides: lowercase, fold diacritics (`é`→`e`), strip
+     non-alphanumerics (Unicode-aware, e.g. `char::is_alphanumeric`).
+  2. Rank by a tiered all-integer score: exact match on name or title,
+     then token overlap (query words equal to or prefixing name/title
+     words — word boundaries survive normalization, so reordering and
+     extra words still hit), then character-bigram Dice similarity
+     (catches typos and partial words). Ratios compare by integer
+     cross-multiplication, never floats; ties break alphabetically.
+     Zero-score candidates drop, so unknown foods still return an
+     explicit empty result. Top ~5 per query, deduplicated.
   3. Results render as catalog lines (see "Context windows"), with a total
      output cap. An empty foods dir or no matches returns an explicit empty
      result.
@@ -919,8 +924,8 @@ Per-command content:
   `apply_ops` (add-food / add-adhoc / remove / replace; row out of
   range; duplicate and conflicting ops; additions append, replacements keep
   position; overflow — huge `servings` returns a retryable `Err(String)`,
-  never a panic or `Io`); `food_lookup` matching (normalized exact match on name and
-  title; containment fallback; top-N ordering; batch mode — multiple
+  never a panic or `Io`);   `food_lookup` matching (tiered integer scoring — exact, token overlap,
+  bigram Dice; top-N ordering; batch mode — multiple
   queries in one call; empty result for unknown foods and for an empty
   foods dir); context assembly (totals line, history digest anchored to the
   edited day, dedup + occurrence counts, count sort order, pre-dedup cap,
