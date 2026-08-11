@@ -46,17 +46,17 @@ impl<'a> FoodLookup<'a> {
         catalog::find_all_foods_with_names(self.foods_dir, warn).map_err(|e| e.to_string())
     }
 
-    fn query_block(&self, query: &str) -> Result<String, String> {
+    fn query_block(catalog: &[(String, food::Food)], query: &str) -> Result<String, String> {
         let q = normalize(query);
         let mut out = format!("query: {query}\n");
         if q.is_empty() {
             out.push_str("  no matches\n");
             return Ok(out);
         }
-        let mut exact: Vec<(String, food::Food)> = Vec::new();
-        let mut partial: Vec<(String, food::Food)> = Vec::new();
-        for (name, f) in self.catalog()? {
-            let norm_name = normalize(&name);
+        let mut exact: Vec<(&String, &food::Food)> = Vec::new();
+        let mut partial: Vec<(&String, &food::Food)> = Vec::new();
+        for (name, f) in catalog {
+            let norm_name = normalize(name);
             let norm_title = normalize(&f.title);
             if norm_name == q || norm_title == q {
                 exact.push((name, f));
@@ -68,8 +68,8 @@ impl<'a> FoodLookup<'a> {
                 partial.push((name, f));
             }
         }
-        exact.sort_by(|a, b| a.0.cmp(&b.0));
-        partial.sort_by(|a, b| a.0.cmp(&b.0));
+        exact.sort_by(|a, b| a.0.cmp(b.0));
+        partial.sort_by(|a, b| a.0.cmp(b.0));
         exact.extend(partial);
 
         let mut seen: HashSet<String> = HashSet::new();
@@ -141,9 +141,10 @@ impl Tool for FoodLookup<'_> {
         if queries.is_empty() {
             return Err("food_lookup: 'queries' must contain at least one string".to_string());
         }
+        let catalog = self.catalog()?;
         let mut out = String::new();
         for (i, query) in queries.iter().enumerate() {
-            let block = self.query_block(query)?;
+            let block = Self::query_block(&catalog, query)?;
             if i > 0 {
                 out.push('\n');
             }

@@ -50,8 +50,9 @@ For ad-hoc replacement use `title` instead of `name` and all 6 macros
 - Before looking online, include intended titles in a batched `food_lookup`
   call. A match is a decision point: prefer add-food when the food fits the
   user's intent, use add-adhoc for one-offs and modified versions.
-- When you use the `usda_search` tool, scale the candidate's per-100g macros
-  to the requested portion yourself (portion_g ÷ 100 × each value), rounding
-  to whole calories and 0.1 g, and put them in an add-adhoc op with
-  `servings = 1`. Never invent values.
-- Output only TOML. No prose, no fenced code blocks.
+- `food_lookup` takes bare food names only: strip portion suffixes and
+  quantities ("- 55g", "x 2", "2 cups") from row titles before querying. A
+  no-match on one phrasing is not conclusive: retry with a less specific name
+  (brand + product → product → generic type, e.g. "cabot alpine cheddar" →
+  "alpine cheddar" → "cheddar cheese") before giving up. Batch candidate
+  phrasings in one call — round trips are expensive.

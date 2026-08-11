@@ -768,8 +768,10 @@ dependency (proposal rendering is intake's job), never a lib dependency.
   (`cli.rs` clap tree, `settings.rs` config wrapper, `confirm.rs` terminal
   `Confirmer`, `write.rs` checked day writes, `catalog.rs` food listing),
   so shared files carry no per-item attributes. The templates are `.md`
-  files under `src/ai/prompts/` (`log.md`, `food_new.md`, `food_edit.md`),
-  embedded via `include_str!` *inside* the gated module — so they compile
+  files under `src/ai/prompts/` (`log_head.md` + `log_tail.md`,
+  `food_new_head.md` + `food_new_tail.md`, `food_edit_head.md` +
+  `food_edit_tail.md`, `query_style.md`), embedded via `include_str!` *inside*
+  the gated module — so they compile
   into the binary only when the `ai` feature is on; no-feature builds embed
   nothing. The plain `food new`/`food edit` editor prefill is a non-gated
   schema skeleton (serialized canned example), not these files.
@@ -792,9 +794,15 @@ dependency (proposal rendering is intake's job), never a lib dependency.
 
 ## Prompt templates
 
-Templates are `.md` files under `src/ai/prompts/` (`log.md`,
-`food_new.md`, `food_edit.md`), embedded at compile time via `include_str!`
-(built into the binary). The `[ai]` config keys (`log_prompt`,
+Templates are `.md` files under `src/ai/prompts/`, embedded at compile time
+via `include_str!` (built into the binary). Each prompt is assembled with
+`concat!` around the shared `query_style.md` block — the `usda_search`
+query rules (identifying words, batching, and the per-100g scaling rule),
+the lookup guidance every session shares since all three tool sets include
+`usda_search`. It lives in exactly one place and is spliced into all three
+templates. The `food_lookup` query rules are `ai log`-only and live in
+`log_head.md`, because `ai log` is the only session with the tool. The
+`[ai]` config keys (`log_prompt`,
 `food_new_prompt`, `food_edit_prompt`) override only the **static text** —
 the context block is always injected by code, appended after the static
 text, so an override cannot omit the data the model needs. These files are
@@ -819,7 +827,8 @@ Every template has the same anatomy:
    confirms before anything is written). Output TOML only, no prose, no
    surrounding fenced blocks.
 4. **Examples** — 1-2 short canned examples illustrating the schema and
-   conventions; `log.md` embeds its examples inline in the Schema section,
+   conventions; the `log` template embeds its examples inline in the Schema
+   section,
    and the history digest doubles as live examples of the user's actual
    patterns. For `food_new`/`food_edit` the context embeds three of the
    user's own foods (see "Context windows"), and the
@@ -830,7 +839,7 @@ Every template has the same anatomy:
 
 Per-command content:
 
-- `log.md` (`ai log`):
+- `log_head.md` + `log_tail.md` (`ai log`):
   - **Schema** — the `DayLogOps` shape (see "`ai log` ops").
   - **Rows are references** — the numbered context rows are handles the ops
     point at, never entries to re-emit; the model's output is ops only.
@@ -843,12 +852,17 @@ Per-command content:
     (`servings = 1`)
     when one exists, else from the history digest scaled to the portion,
     else a best-effort estimate.
+  - **Query style** — `food_lookup` takes bare food names: strip portion
+    suffixes and quantities ("- 55g", "x 2", "2 cups") from row titles
+    before querying and retry with a less specific name on a no-match;
+    the `usda_search` rules (identifying words, batching, scaling) come
+    from the shared `query_style.md` block.
   - **Row semantics** — `row` indices are 1-based against the numbered list
     exactly as shown and never shift as ops apply (see "`ai log` ops").
-- `food_new.md` (`ai food new <name>`): the `Food` schema; the name is
+- `food_new_head.md` + `food_new_tail.md` (`ai food new <name>`): the `Food` schema; the name is
   supplied on the command line and the title may differ from it (see "Name
   argument"); `notes` is optional.
-- `food_edit.md` (`ai food edit <name>`): the target food's TOML is the
+- `food_edit_head.md` + `food_edit_tail.md` (`ai food edit <name>`): the target food's TOML is the
   context; preserve all untouched fields; the 3 sample foods for
   consistency; before/after is shown at confirm.
 

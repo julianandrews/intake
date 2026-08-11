@@ -1527,6 +1527,23 @@ mod tests {
     }
 
     #[test]
+    fn test_query_style_block_spliced_into_every_prompt() {
+        for (name, text) in [
+            ("log", prompts::LOG),
+            ("food_new", prompts::FOOD_NEW),
+            ("food_edit", prompts::FOOD_EDIT),
+        ] {
+            assert!(text.contains("identifying words"), "{name}");
+            assert!(text.contains("never quantities, units, or"), "{name}");
+            assert!(text.contains("scale its per-100g values"), "{name}");
+            assert!(text.contains("round trips are expensive"), "{name}");
+        }
+        assert!(prompts::LOG.contains("strip portion suffixes"));
+        assert!(!prompts::FOOD_NEW.contains("strip portion suffixes"));
+        assert!(!prompts::FOOD_EDIT.contains("strip portion suffixes"));
+    }
+
+    #[test]
     fn test_system_prompt_appends_context() {
         let text = system_prompt("BASE", None, "CONTEXT");
         assert!(text.starts_with("BASE"));
