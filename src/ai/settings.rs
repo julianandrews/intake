@@ -1,13 +1,19 @@
 use serde::de::Error as DeError;
 use serde::Deserialize;
 
+/// Default timeout for the USDA search tool when `usda_timeout_secs` is
+/// unset.
+pub const DEFAULT_USDA_TIMEOUT_SECS: u64 = 15;
+
 /// The `[ai]` config table: the generic `intake-ai` settings plus the
-/// intake-owned keys (`history_days`, prompt overrides). Deserialization
-/// rejects unknown keys with a friendly message instead of the default
-/// serde one.
+/// intake-owned keys (`usda_api_key`, `usda_timeout_secs`, `history_days`,
+/// prompt overrides). Deserialization rejects unknown keys with a friendly
+/// message instead of the default serde one.
 #[derive(Debug)]
 pub(crate) struct AiConfig {
     pub settings: intake_ai::settings::AiSettings,
+    pub usda_api_key: Option<String>,
+    pub usda_timeout_secs: Option<u64>,
     pub history_days: Option<u32>,
     pub log_prompt: Option<String>,
     pub food_new_prompt: Option<String>,
@@ -35,6 +41,10 @@ const AI_CONFIG_KEYS: &[&str] = &[
 struct RawAiConfig {
     #[serde(flatten)]
     settings: intake_ai::settings::AiSettings,
+    #[serde(default)]
+    usda_api_key: Option<String>,
+    #[serde(default)]
+    usda_timeout_secs: Option<u64>,
     history_days: Option<u32>,
     log_prompt: Option<String>,
     food_new_prompt: Option<String>,
@@ -58,6 +68,8 @@ impl<'de> Deserialize<'de> for AiConfig {
         let raw = RawAiConfig::deserialize(&value).map_err(D::Error::custom)?;
         Ok(AiConfig {
             settings: raw.settings,
+            usda_api_key: raw.usda_api_key,
+            usda_timeout_secs: raw.usda_timeout_secs,
             history_days: raw.history_days,
             log_prompt: raw.log_prompt,
             food_new_prompt: raw.food_new_prompt,

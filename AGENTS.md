@@ -16,17 +16,17 @@ directory.
 `intake` is a Cargo workspace. The binary lives at the root; `intake-ai` is
 a library under `crates/` that implements the generic AI pipeline
 (settings, LLM backend, agent loop with tools, resolve loop with
-confirmation) and ships the USDA FoodData Central nutrition tool
-(`usda_search`). It knows nothing about intake, food, or TOML;
-intake supplies the parse closures, prompt templates, `food_lookup` tool,
-and confirmation UX.
+confirmation). It knows nothing about intake, food, nutrition, or TOML;
+intake supplies the parse closures, prompt templates, `food_lookup` and
+`usda_search` tools, and confirmation UX.
 
 AI support is the `ai` Cargo feature (on by default), gated module-level:
 `#[cfg(feature = "ai")] mod ai;` in main.rs, the `Ai` variant on
 `Commands` in cli.rs, its match arm in `commands/mod.rs`, and the `[ai]`
 field in `Config` — four attributes in total, none inside `src/ai/`. All
 ai-only code lives inside `src/ai/` (clap tree, config wrapper, confirmer,
-checked day writes, food catalog); shared files carry no per-item cfg.
+checked day writes, food catalog, USDA search tool); shared files carry no
+per-item cfg.
 
 This is a non-virtual workspace (the root is a package), so bare `cargo
 test` / `clippy` / `build` from the root operate on the `intake` package

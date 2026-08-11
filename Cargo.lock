@@ -593,6 +593,7 @@ dependencies = [
  "tempfile",
  "toml",
  "unicode-width",
+ "ureq",
 ]
 
 [[package]]
@@ -600,7 +601,6 @@ name = "intake-ai"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "rust_decimal",
  "serde",
  "serde_json",
  "toml",

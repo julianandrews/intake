@@ -1,7 +1,5 @@
-use crate::tools::Tool;
-use rust_decimal::prelude::FromPrimitive;
-use rust_decimal::Decimal;
-use rust_decimal::RoundingStrategy;
+use crate::amount::{Calories, Grams};
+use intake_ai::tools::Tool;
 use serde_json::Value;
 use std::fmt::Write;
 use std::time::Duration;
@@ -19,30 +17,38 @@ const NUTRIENT_FIBER: i64 = 1079;
 const NUTRIENT_FIBER_LEGACY: i64 = 1007;
 const NUTRIENT_ALCOHOL: i64 = 1013;
 
-fn round_three(value: f64) -> Option<Decimal> {
-    if !value.is_finite() {
-        return None;
-    }
-    let d = Decimal::from_f64(value)?;
-    Some(
-        d.round_dp_with_strategy(3, RoundingStrategy::MidpointAwayFromZero)
-            .normalize(),
-    )
+fn round_three(value: f64) -> Option<Grams> {
+    Grams::from_f64(value).ok()
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+fn round_calories(value: f64) -> Option<Calories> {
+    Calories::from_f64(value).ok()
+}
+
+#[derive(Debug, Clone, Copy)]
 struct Per100g {
-    calories: Decimal,
-    protein_g: Decimal,
-    fiber_g: Decimal,
-    fat_g: Decimal,
-    carbs_g: Decimal,
-    alcohol_g: Decimal,
+    calories: Calories,
+    protein_g: Grams,
+    fiber_g: Grams,
+    fat_g: Grams,
+    carbs_g: Grams,
+    alcohol_g: Grams,
 }
 
 impl Per100g {
+    fn zero() -> Per100g {
+        Per100g {
+            calories: Calories::ZERO,
+            protein_g: Grams::ZERO,
+            fiber_g: Grams::ZERO,
+            fat_g: Grams::ZERO,
+            carbs_g: Grams::ZERO,
+            alcohol_g: Grams::ZERO,
+        }
+    }
+
     fn from_nutrients(nutrients: &Value) -> Per100g {
-        let mut p = Per100g::default();
+        let mut p = Per100g::zero();
         let Some(arr) = nutrients.as_array() else {
             return p;
         };
@@ -54,7 +60,11 @@ impl Per100g {
                 continue;
             };
             match id {
-                NUTRIENT_ENERGY_KCAL => p.calories = v,
+                NUTRIENT_ENERGY_KCAL => {
+                    if let Some(v) = round_calories(value) {
+                        p.calories = v;
+                    }
+                }
                 NUTRIENT_PROTEIN => p.protein_g = v,
                 NUTRIENT_FAT => p.fat_g = v,
                 NUTRIENT_CARBS => p.carbs_g = v,
@@ -230,9 +240,10 @@ impl Tool for UsdaSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_decimal::Decimal;
+    use crate::amount::{Calories, Grams};
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::str::FromStr;
     use std::sync::{Arc, Mutex};
     use std::thread;
 
@@ -307,14 +318,18 @@ mod tests {
         })
     }
 
-    fn dec(s: &str) -> Decimal {
-        Decimal::from_str_radix(s, 10).unwrap()
+    fn grams(s: &str) -> Grams {
+        Grams::from_str(s).unwrap()
+    }
+
+    fn cals(s: &str) -> Calories {
+        Calories::from_str(s).unwrap()
     }
 
     #[test]
     fn test_round_three() {
-        assert_eq!(round_three(2.7).unwrap(), dec("2.7"));
-        assert_eq!(round_three(2.6996).unwrap(), dec("2.7"));
+        assert_eq!(round_three(2.7).unwrap(), grams("2.7"));
+        assert_eq!(round_three(2.6996).unwrap(), grams("2.7"));
         assert_eq!(round_three(f64::NAN), None);
         assert_eq!(round_three(f64::INFINITY), None);
     }
@@ -322,30 +337,30 @@ mod tests {
     #[test]
     fn test_per100g_from_nutrients() {
         let p = Per100g::from_nutrients(&search_response()["foods"][0]["foodNutrients"]);
-        assert_eq!(p.calories, dec("130"));
-        assert_eq!(p.protein_g, dec("2.69"));
-        assert_eq!(p.fiber_g, dec("0.4"));
-        assert_eq!(p.fat_g, dec("0.28"));
-        assert_eq!(p.carbs_g, dec("28.17"));
-        assert_eq!(p.alcohol_g, dec("0"));
+        assert_eq!(p.calories, cals("130"));
+        assert_eq!(p.protein_g, grams("2.69"));
+        assert_eq!(p.fiber_g, grams("0.4"));
+        assert_eq!(p.fat_g, grams("0.28"));
+        assert_eq!(p.carbs_g, grams("28.17"));
+        assert_eq!(p.alcohol_g, grams("0"));
     }
 
     #[test]
     fn test_per100g_missing_nutrients_default_zero() {
         let p = Per100g::from_nutrients(&search_response()["foods"][1]["foodNutrients"]);
-        assert_eq!(p.calories, dec("365"));
-        assert_eq!(p.protein_g, dec("7.13"));
-        assert_eq!(p.fiber_g, Decimal::ZERO);
-        assert_eq!(p.fat_g, Decimal::ZERO);
-        assert_eq!(p.carbs_g, Decimal::ZERO);
-        assert_eq!(p.alcohol_g, Decimal::ZERO);
+        assert_eq!(p.calories, cals("365"));
+        assert_eq!(p.protein_g, grams("7.13"));
+        assert_eq!(p.fiber_g, Grams::ZERO);
+        assert_eq!(p.fat_g, Grams::ZERO);
+        assert_eq!(p.carbs_g, Grams::ZERO);
+        assert_eq!(p.alcohol_g, Grams::ZERO);
     }
 
     #[test]
     fn test_legacy_fiber_nutrient_id() {
         let nutrients = serde_json::json!([{ "nutrientId": 1007, "value": 2.5 }]);
         let p = Per100g::from_nutrients(&nutrients);
-        assert_eq!(p.fiber_g, dec("2.5"));
+        assert_eq!(p.fiber_g, grams("2.5"));
     }
 
     #[test]

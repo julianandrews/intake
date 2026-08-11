@@ -5,7 +5,6 @@ pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
 pub const DEFAULT_MAX_TOOL_CALLS: u32 = 20;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
-pub const DEFAULT_USDA_TIMEOUT_SECS: u64 = 15;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,10 +22,6 @@ pub struct AiSettings {
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
     #[serde(default)]
-    pub usda_api_key: Option<String>,
-    #[serde(default = "default_usda_timeout_secs")]
-    pub usda_timeout_secs: u64,
-    #[serde(default)]
     pub trace_requests: bool,
     #[serde(default)]
     pub trace_responses: bool,
@@ -43,8 +38,6 @@ impl Default for AiSettings {
             max_retries: default_max_retries(),
             max_tool_calls: default_max_tool_calls(),
             timeout_secs: default_timeout_secs(),
-            usda_api_key: None,
-            usda_timeout_secs: default_usda_timeout_secs(),
             trace_requests: false,
             trace_responses: false,
             trace_colors: false,
@@ -72,10 +65,6 @@ fn default_timeout_secs() -> u64 {
     DEFAULT_TIMEOUT_SECS
 }
 
-fn default_usda_timeout_secs() -> u64 {
-    DEFAULT_USDA_TIMEOUT_SECS
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,11 +77,9 @@ mod tests {
         assert_eq!(s.max_retries, 3);
         assert_eq!(s.max_tool_calls, 20);
         assert_eq!(s.timeout_secs, 60);
-        assert_eq!(s.usda_timeout_secs, 15);
         assert!(!s.trace_requests);
         assert!(!s.trace_responses);
         assert!(!s.trace_colors);
-        assert_eq!(s.usda_api_key, None);
     }
 
     #[test]
@@ -109,14 +96,13 @@ mod tests {
     #[test]
     fn test_deserialize_override() {
         let s: AiSettings = toml::from_str(
-            "api_key = \"k\"\nmodel = \"deepseek\"\nbase_url = \"http://localhost:11434/v1\"\nmax_retries = 5\nusda_api_key = \"u\"\ntrace_requests = true\ntrace_responses = true\ntrace_colors = true\n",
+            "api_key = \"k\"\nmodel = \"deepseek\"\nbase_url = \"http://localhost:11434/v1\"\nmax_retries = 5\ntrace_requests = true\ntrace_responses = true\ntrace_colors = true\n",
         )
         .unwrap();
         assert_eq!(s.api_key, "k");
         assert_eq!(s.model, "deepseek");
         assert_eq!(s.base_url, "http://localhost:11434/v1");
         assert_eq!(s.max_retries, 5);
-        assert_eq!(s.usda_api_key.as_deref(), Some("u"));
         assert!(s.trace_requests);
         assert!(s.trace_responses);
         assert!(s.trace_colors);

@@ -7,6 +7,7 @@ mod ops;
 mod prompts;
 pub(crate) mod settings;
 mod spinner;
+mod usda;
 mod write;
 
 use crate::amount::Calories;
@@ -22,7 +23,6 @@ use intake_ai::llm::{LlmBackend, OpenAiCompatible};
 use intake_ai::pipeline::{ResolveContext, ResolveError, Resolver};
 use intake_ai::settings::AiSettings;
 use intake_ai::tools::Tool;
-use intake_ai::usda::UsdaSearch;
 use similar::{ChangeTag, TextDiff};
 use std::io::Write;
 use std::path::Path;
@@ -152,19 +152,14 @@ fn capture_prompt(prompt_words: &[String], inline: Option<&str>) -> Result<Optio
 fn resolve_settings(config: &Config, flags: &cli::AiFlags) -> Result<AiSettings> {
     let from_config = config.ai.as_ref().map(|ai| ai.settings.clone());
     let mut settings = from_config.unwrap_or_default();
-    for (key, target) in [
-        ("INTAKE_AI_API_KEY", &mut settings.api_key),
-        ("INTAKE_AI_MODEL", &mut settings.model),
-    ] {
-        if let Ok(value) = std::env::var(key) {
-            if !value.is_empty() {
-                *target = value;
-            }
+    if let Ok(value) = std::env::var("INTAKE_AI_API_KEY") {
+        if !value.is_empty() {
+            settings.api_key = value;
         }
     }
-    if let Ok(value) = std::env::var("INTAKE_AI_USDA_API_KEY") {
+    if let Ok(value) = std::env::var("INTAKE_AI_MODEL") {
         if !value.is_empty() {
-            settings.usda_api_key = Some(value);
+            settings.model = value;
         }
     }
     if let Some(value) = &flags.api_key {
@@ -226,10 +221,30 @@ impl AiSession {
     }
 }
 
-fn usda_tools(settings: &AiSettings) -> UsdaSearch {
-    let key = settings.usda_api_key.as_deref().unwrap_or("");
-    let timeout = Duration::from_secs(settings.usda_timeout_secs);
-    UsdaSearch::new(key, timeout)
+fn usda_key(config: &Config) -> String {
+    let mut key = config
+        .ai
+        .as_ref()
+        .and_then(|ai| ai.usda_api_key.as_deref())
+        .unwrap_or("")
+        .to_string();
+    if let Ok(value) = std::env::var("INTAKE_AI_USDA_API_KEY") {
+        if !value.is_empty() {
+            key = value;
+        }
+    }
+    key
+}
+
+fn usda_tools(config: &Config) -> usda::UsdaSearch {
+    let timeout = Duration::from_secs(
+        config
+            .ai
+            .as_ref()
+            .and_then(|ai| ai.usda_timeout_secs)
+            .unwrap_or(settings::DEFAULT_USDA_TIMEOUT_SECS),
+    );
+    usda::UsdaSearch::new(&usda_key(config), timeout)
 }
 
 fn sample_foods_context(foods_dir: &Path) -> Result<String> {
@@ -346,7 +361,7 @@ fn cmd_ai_log(
         prompt_override(config, |ai| &ai.log_prompt),
         &context_text,
     );
-    let usda_search = usda_tools(settings);
+    let usda_search = usda_tools(config);
     let status = spinner::StatusLine::new(settings);
     let warn = |msg: &str| status.warn(msg);
     let food_lookup = food_lookup::FoodLookup::new(foods_dir).with_warn(&warn);
@@ -447,7 +462,7 @@ fn cmd_ai_food_new(
         prompt_override(config, |ai| &ai.food_new_prompt),
         &samples,
     );
-    let usda_search = usda_tools(settings);
+    let usda_search = usda_tools(config);
     let status = spinner::StatusLine::new(settings);
     let columns = config.columns()?;
 
@@ -520,7 +535,7 @@ fn cmd_ai_food_edit(
         prompt_override(config, |ai| &ai.food_edit_prompt),
         &context_text,
     );
-    let usda_search = usda_tools(settings);
+    let usda_search = usda_tools(config);
     let status = spinner::StatusLine::new(settings);
     let columns = config.columns()?;
 
@@ -849,26 +864,33 @@ mod tests {
         };
         let settings = resolve_settings(&config, &flags).unwrap();
         assert_eq!(settings.model, intake_ai::settings::DEFAULT_MODEL);
-        assert_eq!(settings.usda_api_key, None);
         assert!(!settings.trace_requests);
         assert!(!settings.trace_responses);
     }
 
     #[test]
-    fn test_resolve_settings_usda_key_from_env() {
-        let config = Config::default();
-        let flags = cli::AiFlags {
-            api_key: None,
-            model: None,
-            yes: false,
-            trace_requests: false,
-            trace_responses: false,
-            prompt_arg: None,
-        };
+    fn test_usda_key_from_config() {
+        let config: Config = toml::from_str("[ai]\nusda_api_key = \"k\"\n").unwrap();
+        assert_eq!(usda_key(&config), "k");
+        assert_eq!(usda_key(&Config::default()), "");
+    }
+
+    #[test]
+    fn test_usda_key_env_overrides_config() {
+        let config: Config = toml::from_str("[ai]\nusda_api_key = \"k\"\n").unwrap();
         std::env::set_var("INTAKE_AI_USDA_API_KEY", "usda-key");
-        let settings = resolve_settings(&config, &flags).unwrap();
+        let key = usda_key(&config);
         std::env::remove_var("INTAKE_AI_USDA_API_KEY");
-        assert_eq!(settings.usda_api_key.as_deref(), Some("usda-key"));
+        assert_eq!(key, "usda-key");
+    }
+
+    #[test]
+    fn test_usda_key_from_env() {
+        let config = Config::default();
+        std::env::set_var("INTAKE_AI_USDA_API_KEY", "usda-key");
+        let key = usda_key(&config);
+        std::env::remove_var("INTAKE_AI_USDA_API_KEY");
+        assert_eq!(key, "usda-key");
     }
 
     #[test]
