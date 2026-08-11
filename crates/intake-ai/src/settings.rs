@@ -1,68 +1,36 @@
-use serde::Deserialize;
-
-pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
-pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
 pub const DEFAULT_MAX_TOOL_CALLS: u32 = 20;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AiSettings {
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default = "default_model")]
+#[derive(Debug, Clone)]
+pub struct Settings {
+    pub api_key: Option<String>,
     pub model: String,
-    #[serde(default = "default_base_url")]
     pub base_url: String,
-    #[serde(default = "default_max_retries")]
     pub max_retries: u32,
-    #[serde(default = "default_max_tool_calls")]
     pub max_tool_calls: u32,
-    #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
-    #[serde(default)]
     pub trace_requests: bool,
-    #[serde(default)]
     pub trace_responses: bool,
-    #[serde(default)]
-    pub trace_colors: bool,
 }
 
-impl Default for AiSettings {
-    fn default() -> Self {
-        AiSettings {
-            api_key: String::new(),
-            model: default_model(),
-            base_url: default_base_url(),
-            max_retries: default_max_retries(),
-            max_tool_calls: default_max_tool_calls(),
-            timeout_secs: default_timeout_secs(),
+impl Settings {
+    pub fn new(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Settings {
+        Settings {
+            api_key,
+            model: model.into(),
+            base_url: base_url.into(),
+            max_retries: DEFAULT_MAX_RETRIES,
+            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
             trace_requests: false,
             trace_responses: false,
-            trace_colors: false,
         }
     }
-}
-
-fn default_model() -> String {
-    DEFAULT_MODEL.to_string()
-}
-
-fn default_base_url() -> String {
-    DEFAULT_BASE_URL.to_string()
-}
-
-fn default_max_retries() -> u32 {
-    DEFAULT_MAX_RETRIES
-}
-
-fn default_max_tool_calls() -> u32 {
-    DEFAULT_MAX_TOOL_CALLS
-}
-
-fn default_timeout_secs() -> u64 {
-    DEFAULT_TIMEOUT_SECS
 }
 
 #[cfg(test)]
@@ -70,59 +38,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_defaults() {
-        let s = AiSettings::default();
-        assert_eq!(s.model, DEFAULT_MODEL);
-        assert_eq!(s.base_url, DEFAULT_BASE_URL);
-        assert_eq!(s.max_retries, 3);
-        assert_eq!(s.max_tool_calls, 20);
-        assert_eq!(s.timeout_secs, 60);
-        assert!(!s.trace_requests);
-        assert!(!s.trace_responses);
-        assert!(!s.trace_colors);
-    }
-
-    #[test]
-    fn test_deserialize_with_defaults() {
-        let s: AiSettings = toml::from_str("").unwrap();
-        assert_eq!(s.model, DEFAULT_MODEL);
-        assert_eq!(s.base_url, DEFAULT_BASE_URL);
-        assert_eq!(s.max_retries, 3);
-        assert!(!s.trace_requests);
-        assert!(!s.trace_responses);
-        assert!(!s.trace_colors);
-    }
-
-    #[test]
-    fn test_deserialize_override() {
-        let s: AiSettings = toml::from_str(
-            "api_key = \"k\"\nmodel = \"deepseek\"\nbase_url = \"http://localhost:11434/v1\"\nmax_retries = 5\ntrace_requests = true\ntrace_responses = true\ntrace_colors = true\n",
-        )
-        .unwrap();
-        assert_eq!(s.api_key, "k");
-        assert_eq!(s.model, "deepseek");
+    fn test_new_fills_operational_defaults() {
+        let s = Settings::new("http://localhost:11434/v1", "llama3", Some("k".to_string()));
         assert_eq!(s.base_url, "http://localhost:11434/v1");
-        assert_eq!(s.max_retries, 5);
-        assert!(s.trace_requests);
-        assert!(s.trace_responses);
-        assert!(s.trace_colors);
-    }
-
-    #[test]
-    fn test_trace_toggles_independent() {
-        let s: AiSettings = toml::from_str("trace_requests = true\n").unwrap();
-        assert!(s.trace_requests);
+        assert_eq!(s.model, "llama3");
+        assert_eq!(s.api_key.as_deref(), Some("k"));
+        assert_eq!(s.max_retries, DEFAULT_MAX_RETRIES);
+        assert_eq!(s.max_tool_calls, DEFAULT_MAX_TOOL_CALLS);
+        assert_eq!(s.timeout_secs, DEFAULT_TIMEOUT_SECS);
+        assert!(!s.trace_requests);
         assert!(!s.trace_responses);
-        let s: AiSettings = toml::from_str("trace_responses = true\n").unwrap();
-        assert!(!s.trace_requests);
-        assert!(s.trace_responses);
-        let s: AiSettings = toml::from_str("trace_colors = true\n").unwrap();
-        assert!(s.trace_colors);
-        assert!(!s.trace_requests);
     }
 
     #[test]
-    fn test_unknown_field_rejected() {
-        assert!(toml::from_str::<AiSettings>("bogus = 1\n").is_err());
+    fn test_new_api_key_optional() {
+        let s = Settings::new("http://x", "m", None);
+        assert_eq!(s.api_key, None);
     }
 }

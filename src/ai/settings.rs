@@ -5,13 +5,22 @@ use serde::Deserialize;
 /// unset.
 pub const DEFAULT_USDA_TIMEOUT_SECS: u64 = 15;
 
-/// The `[ai]` config table: the generic `intake-ai` settings plus the
-/// intake-owned keys (`usda_api_key`, `usda_timeout_secs`, `history_days`,
-/// prompt overrides). Deserialization rejects unknown keys with a friendly
-/// message instead of the default serde one.
+/// The `[ai]` config table: every key is optional, spanning the generic
+/// `intake-ai` settings fields plus the intake-owned keys (`usda_api_key`,
+/// `usda_timeout_secs`, `history_days`, prompt overrides). Missing values
+/// are filled later, when the final `intake_ai::Settings` is resolved.
+/// Deserialization rejects unknown keys with a friendly message instead of
+/// the default serde one.
 #[derive(Debug)]
 pub(crate) struct AiConfig {
-    pub settings: intake_ai::settings::AiSettings,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub max_retries: Option<u32>,
+    pub max_tool_calls: Option<u32>,
+    pub timeout_secs: Option<u64>,
+    pub trace_requests: Option<bool>,
+    pub trace_responses: Option<bool>,
     pub usda_api_key: Option<String>,
     pub usda_timeout_secs: Option<u64>,
     pub history_days: Option<u32>,
@@ -38,9 +47,24 @@ const AI_CONFIG_KEYS: &[&str] = &[
 ];
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawAiConfig {
-    #[serde(flatten)]
-    settings: intake_ai::settings::AiSettings,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    max_retries: Option<u32>,
+    #[serde(default)]
+    max_tool_calls: Option<u32>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    trace_requests: Option<bool>,
+    #[serde(default)]
+    trace_responses: Option<bool>,
     #[serde(default)]
     usda_api_key: Option<String>,
     #[serde(default)]
@@ -67,7 +91,14 @@ impl<'de> Deserialize<'de> for AiConfig {
         }
         let raw = RawAiConfig::deserialize(&value).map_err(D::Error::custom)?;
         Ok(AiConfig {
-            settings: raw.settings,
+            api_key: raw.api_key,
+            model: raw.model,
+            base_url: raw.base_url,
+            max_retries: raw.max_retries,
+            max_tool_calls: raw.max_tool_calls,
+            timeout_secs: raw.timeout_secs,
+            trace_requests: raw.trace_requests,
+            trace_responses: raw.trace_responses,
             usda_api_key: raw.usda_api_key,
             usda_timeout_secs: raw.usda_timeout_secs,
             history_days: raw.history_days,
@@ -89,26 +120,50 @@ mod tests {
         )
         .unwrap();
         let ai = config.ai.unwrap();
-        assert_eq!(ai.settings.api_key, "k");
-        assert_eq!(ai.settings.model, "m");
-        assert_eq!(ai.settings.max_retries, 3);
+        assert_eq!(ai.api_key.as_deref(), Some("k"));
+        assert_eq!(ai.model.as_deref(), Some("m"));
+        assert_eq!(ai.max_retries, None);
         assert_eq!(ai.history_days, Some(7));
         assert_eq!(ai.log_prompt.as_deref(), Some("x"));
         assert_eq!(ai.food_new_prompt, None);
     }
 
     #[test]
-    fn test_ai_config_empty_table_uses_defaults() {
+    fn test_ai_config_empty_table_all_none() {
         let config: Config = toml::from_str("[ai]\n").unwrap();
         let ai = config.ai.unwrap();
-        assert_eq!(ai.settings.model, intake_ai::settings::DEFAULT_MODEL);
-        assert_eq!(ai.settings.base_url, intake_ai::settings::DEFAULT_BASE_URL);
+        assert_eq!(ai.model, None);
+        assert_eq!(ai.base_url, None);
         assert_eq!(ai.history_days, None);
+        assert_eq!(ai.log_prompt, None);
     }
 
     #[test]
     fn test_ai_config_unknown_key_rejected() {
         assert!(toml::from_str::<Config>("[ai]\nbogus = 1\n").is_err());
+    }
+
+    #[test]
+    fn test_ai_config_single_field_only() {
+        let config: Config = toml::from_str("[ai]\nmax_retries = 7\n").unwrap();
+        let ai = config.ai.unwrap();
+        assert_eq!(ai.max_retries, Some(7));
+        assert_eq!(ai.model, None);
+        assert_eq!(ai.base_url, None);
+        assert_eq!(ai.max_tool_calls, None);
+        assert_eq!(ai.timeout_secs, None);
+    }
+
+    #[test]
+    fn test_ai_config_trace_toggles_independent() {
+        let config: Config = toml::from_str("[ai]\ntrace_requests = true\n").unwrap();
+        let ai = config.ai.unwrap();
+        assert_eq!(ai.trace_requests, Some(true));
+        assert_eq!(ai.trace_responses, None);
+        let config: Config = toml::from_str("[ai]\ntrace_responses = true\n").unwrap();
+        let ai = config.ai.unwrap();
+        assert_eq!(ai.trace_requests, None);
+        assert_eq!(ai.trace_responses, Some(true));
     }
 
     #[test]

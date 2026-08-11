@@ -1,10 +1,8 @@
-use crate::settings::AiSettings;
-use crate::tools::{function_definitions, Tool};
+use crate::settings::Settings;
+use crate::tools::Tool;
 use serde_json::Value;
 use std::fmt;
-use std::io;
-use std::io::Write;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,11 +81,10 @@ pub enum LlmError {
     Http { status: u16, body: String },
     BadResponse(String),
     Transport(String),
-    Trace(String),
 }
 
 impl LlmError {
-    pub fn message(&self) -> String {
+    fn message(&self) -> String {
         match self {
             LlmError::Timeout => "LLM request timed out".to_string(),
             LlmError::Http { status, body } => {
@@ -101,14 +98,7 @@ impl LlmError {
             }
             LlmError::BadResponse(detail) => format!("invalid LLM response: {detail}"),
             LlmError::Transport(detail) => format!("LLM request failed: {detail}"),
-            LlmError::Trace(detail) => format!("failed to write trace output: {detail}"),
         }
-    }
-}
-
-impl From<io::Error> for LlmError {
-    fn from(e: io::Error) -> Self {
-        LlmError::Trace(e.to_string())
     }
 }
 
@@ -117,6 +107,8 @@ impl fmt::Display for LlmError {
         write!(f, "{}", self.message())
     }
 }
+
+impl std::error::Error for LlmError {}
 
 pub trait LlmBackend {
     fn complete(
@@ -127,23 +119,23 @@ pub trait LlmBackend {
 }
 
 pub struct OpenAiCompatible {
-    settings: AiSettings,
+    settings: Settings,
     agent: ureq::Agent,
     backoff: Duration,
 }
 
 /// Total attempts per API call on retryable HTTP statuses (429, 5xx). Fixed
-/// by design, separate from `AiSettings::max_retries`, which covers only
+/// by design, separate from `Settings::max_retries`, which covers only
 /// output-validation retries in the resolve loop (see the design doc).
 const MAX_HTTP_ATTEMPTS: u32 = 3;
 
 impl OpenAiCompatible {
-    pub fn new(settings: &AiSettings) -> OpenAiCompatible {
+    pub fn new(settings: &Settings) -> OpenAiCompatible {
         OpenAiCompatible::with_tuning(settings, Duration::from_millis(500), None)
     }
 
-    pub fn with_tuning(
-        settings: &AiSettings,
+    pub(crate) fn with_tuning(
+        settings: &Settings,
         backoff: Duration,
         timeout: Option<Duration>,
     ) -> OpenAiCompatible {
@@ -162,7 +154,7 @@ impl OpenAiCompatible {
             "messages": messages.iter().map(Message::to_api_json).collect::<Vec<_>>(),
         });
         if !tools.is_empty() {
-            body["tools"] = Value::Array(function_definitions(tools));
+            body["tools"] = Value::Array(tools.iter().map(|t| t.to_api_json()).collect());
         }
         body
     }
@@ -175,11 +167,8 @@ impl OpenAiCompatible {
         let body = self.request_body(messages, tools);
 
         let mut request = self.agent.post(&url);
-        if !self.settings.api_key.is_empty() {
-            request = request.set(
-                "Authorization",
-                &format!("Bearer {}", self.settings.api_key),
-            );
+        if let Some(key) = &self.settings.api_key {
+            request = request.set("Authorization", &format!("Bearer {key}"));
         }
 
         match request.send_json(body) {
@@ -280,88 +269,91 @@ fn parse_response(raw: &Value) -> Result<AssistantMessage, LlmError> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum AgentOutcome {
+pub(crate) enum AgentOutcome {
     Final(AssistantMessage),
     Exhausted(AssistantMessage),
 }
-
-/// A destination for trace output that may be shared between threads and
-/// re-acquired across calls. Implementations guarantee exclusive access to
-/// the underlying writer for the duration of `f`, so a caller can emit a
-/// multi-line dump that no other writer on the same sink can interleave
-/// with. Write failures inside `f` are returned to the caller, which
-/// decides whether to fail loudly or ignore them.
-pub trait TraceSink: Send + Sync {
-    fn with_writer(&self, f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<()>;
+/// A structured trace event emitted by the agent loop and the resolve loop.
+///
+/// The library owns the bookkeeping — each message enters the conversation
+/// exactly once, so observers get a full transcript without reimplementing
+/// dedup — and the consumer owns the presentation: brackets, colors, and
+/// destinations are all the observer's business.
+///
+/// Events are borrowed views of data the library keeps for its own use (the
+/// conversation, the response, the parse error), so emitting is copy-free:
+/// an observer either renders synchronously during `on_event` or copies what
+/// it wants to retain.
+#[derive(Debug, PartialEq)]
+pub enum TraceEvent<'a> {
+    /// The messages that newly entered the conversation this round. Never
+    /// the already-emitted prefix, so observers can bracket a block per
+    /// round and know the conversation grew.
+    MessagesSent(&'a [Message]),
+    /// One model response, exactly as the backend returned it.
+    Response(&'a AssistantMessage),
+    /// A parse/validation failure in the resolve loop's retry cycle.
+    ParseError(&'a str),
 }
 
-// Any mutex-wrapped writer: the shared case. Poisoned locks are recovered —
-// a panic mid-dump should not take down the next writer.
-impl<W: Write + Send> TraceSink for Mutex<W> {
-    fn with_writer(&self, f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<()> {
-        f(&mut *self.lock().unwrap_or_else(PoisonError::into_inner))
-    }
+/// A destination for trace events. Implementations decide how to render
+/// them — intake's observer formats the events into role-prefixed,
+/// color-coded stderr blocks — and may be shared between threads.
+///
+/// Observation is best-effort by design: `on_event` cannot fail, so a
+/// diagnostics hook can never abort the operation it is observing. An
+/// observer that needs to react to its own failures handles them inside
+/// itself (log, stash, panic) rather than returning them to the pipeline.
+pub trait TraceObserver: Send + Sync {
+    fn on_event(&self, event: &TraceEvent<'_>);
 }
 
-// Arc forwards, so `Arc<Mutex<...>>` and `Arc<dyn TraceSink>` both work.
-impl<T: TraceSink + ?Sized> TraceSink for Arc<T> {
-    fn with_writer(&self, f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<()> {
-        (**self).with_writer(f)
-    }
-}
-
-/// The default sink: raw stderr. `stderr()` returns a fresh handle per call,
-/// so no interior mutability is needed.
-struct StderrSink;
-
-impl TraceSink for StderrSink {
-    fn with_writer(&self, f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<()> {
-        f(&mut std::io::stderr())
-    }
-}
-
-/// Trace output routing: which events print, in what colors, and where.
-/// The sink is the destination — raw stderr unless replaced with
-/// [`Trace::with_sink`]; the flags gate what gets printed at all.
+/// Trace event routing: which events are emitted and where they go. The
+/// `requests` / `responses` flags gate what is emitted at all; the
+/// observer is the destination — without one, events are dropped.
 #[derive(Clone)]
-pub struct Trace {
-    pub requests: bool,
-    pub responses: bool,
-    pub colors: bool,
-    sink: Arc<dyn TraceSink>,
+pub(crate) struct Trace {
+    requests: bool,
+    responses: bool,
+    observer: Option<Arc<dyn TraceObserver>>,
     printed: usize,
 }
 
 impl Trace {
-    pub fn new(requests: bool, responses: bool, colors: bool) -> Trace {
+    pub(crate) fn new(requests: bool, responses: bool) -> Trace {
         Trace {
             requests,
             responses,
-            colors,
-            sink: Arc::new(StderrSink),
+            observer: None,
             printed: 0,
         }
     }
 
-    /// Routes trace output to `sink` instead of raw stderr. Callers that
-    /// share the destination with other writers (such as a progress line)
-    /// can inject a sink that serializes dumps with them.
-    pub fn with_sink(mut self, sink: Arc<dyn TraceSink>) -> Trace {
-        self.sink = sink;
+    /// Routes emitted events to `observer`. Callers that share the
+    /// destination with other writers (such as a status line) can inject
+    /// an observer that serializes rendering with them.
+    pub(crate) fn with_observer(mut self, observer: Arc<dyn TraceObserver>) -> Trace {
+        self.observer = Some(observer);
         self
     }
 
-    /// Runs `f` against the sink's writer while it is exclusively held, so
-    /// the whole dump is written atomically with respect to other sink users.
-    /// Write failures are passed through to the caller.
-    pub(crate) fn with_writer(
-        &self,
-        f: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.sink.with_writer(f)
+    /// Emits `event` when its gate is on and an observer is set. Nothing
+    /// propagates from the observer — see [`TraceObserver`].
+    pub(crate) fn emit(&self, event: &TraceEvent<'_>) {
+        let Some(observer) = &self.observer else {
+            return;
+        };
+        let enabled = match event {
+            TraceEvent::MessagesSent(_) => self.requests,
+            TraceEvent::Response(_) | TraceEvent::ParseError(_) => self.responses,
+        };
+        if !enabled {
+            return;
+        }
+        observer.on_event(event)
     }
 
-    fn new_messages<'a>(&mut self, messages: &'a [Message]) -> &'a [Message] {
+    pub(crate) fn new_messages<'a>(&mut self, messages: &'a [Message]) -> &'a [Message] {
         let start = self.printed.min(messages.len());
         self.printed = messages.len();
         &messages[start..]
@@ -373,7 +365,6 @@ impl fmt::Debug for Trace {
         f.debug_struct("Trace")
             .field("requests", &self.requests)
             .field("responses", &self.responses)
-            .field("colors", &self.colors)
             .finish_non_exhaustive()
     }
 }
@@ -389,108 +380,11 @@ fn execute_tool(tools: &[&dyn Tool], call: &ToolCall) -> String {
     }
 }
 
-const ANSI_RESET: &str = "\x1b[0m";
-const ANSI_BOLD_YELLOW: &str = "\x1b[1;33m";
-const ANSI_CYAN: &str = "\x1b[36m";
-const ANSI_GREEN: &str = "\x1b[32m";
-pub(crate) const ANSI_RED: &str = "\x1b[31m";
-
-pub(crate) fn paint(enabled: bool, text: &str, ansi: &str) -> String {
-    if enabled {
-        format!("{ansi}{text}{ANSI_RESET}")
-    } else {
-        text.to_string()
-    }
-}
-
-fn marker(enabled: bool, title: &str) -> String {
-    paint(enabled, title, ANSI_BOLD_YELLOW)
-}
-
-fn trace_message(msg: &AssistantMessage, trace: &Trace) -> io::Result<()> {
-    trace.with_writer(&mut |w| write_trace_message(w, msg, trace))
-}
-
-fn write_trace_message(
-    out: &mut dyn Write,
-    msg: &AssistantMessage,
-    trace: &Trace,
-) -> io::Result<()> {
-    if !trace.responses {
-        return Ok(());
-    }
-    writeln!(out, "{}", marker(trace.colors, "--- from model ---"))?;
-    if let Some(reasoning) = &msg.reasoning {
-        writeln!(
-            out,
-            "{}",
-            paint(
-                trace.colors,
-                &format!("[reasoning] {reasoning}"),
-                ANSI_GREEN
-            )
-        )?;
-    }
-    for call in &msg.tool_calls {
-        writeln!(
-            out,
-            "{}",
-            paint(
-                trace.colors,
-                &format!("[tool] {} {}", call.name, call.arguments),
-                ANSI_GREEN
-            )
-        )?;
-    }
-    if let Some(content) = &msg.content {
-        writeln!(out, "{}", paint(trace.colors, content, ANSI_GREEN))?;
-    }
-    writeln!(out, "{}", marker(trace.colors, "--- end from model ---"))?;
-    writeln!(out)
-}
-
-fn trace_messages(messages: &[Message], trace: &Trace) -> io::Result<()> {
-    trace.with_writer(&mut |w| write_trace_messages(w, messages, trace))
-}
-
-fn write_trace_messages(
-    out: &mut dyn Write,
-    messages: &[Message],
-    trace: &Trace,
-) -> io::Result<()> {
-    if !trace.requests {
-        return Ok(());
-    }
-    writeln!(out, "{}", marker(trace.colors, "--- to model ---"))?;
-    for message in messages {
-        let line = match message {
-            Message::System(content) => format!("[system] {content}"),
-            Message::User(content) => format!("[user] {content}"),
-            Message::Assistant(msg) => match &msg.content {
-                Some(content) => format!("[assistant] {content}"),
-                None => format!(
-                    "[assistant] (tool calls: {})",
-                    msg.tool_calls
-                        .iter()
-                        .map(|c| c.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            },
-            Message::Tool { call_id, content } => format!("[tool:{call_id}] {content}"),
-        };
-        writeln!(out, "{}", paint(trace.colors, &line, ANSI_CYAN))?;
-    }
-    writeln!(out, "{}", marker(trace.colors, "--- end to model ---"))?;
-    writeln!(out)
-}
-
 /// Drives the agent loop: sends the pending messages, executes any tool
 /// calls the model requests, and repeats until the model answers without
-/// tool calls (or the call budget is exhausted). Trace output is written
-/// through the `trace` sink; a write failure aborts the loop with
-/// [`LlmError::Trace`] rather than being swallowed.
-pub fn run_agent_loop(
+/// tool calls (or the call budget is exhausted). Trace events are emitted
+/// through `trace`; observation is best-effort and never affects the loop.
+pub(crate) fn run_agent_loop(
     backend: &dyn LlmBackend,
     messages: &mut Vec<Message>,
     tools: &[&dyn Tool],
@@ -500,9 +394,9 @@ pub fn run_agent_loop(
     let mut executions: u32 = 0;
     loop {
         let new = trace.new_messages(messages);
-        trace_messages(new, trace)?;
+        trace.emit(&TraceEvent::MessagesSent(new));
         let msg = backend.complete(messages, tools)?;
-        trace_message(&msg, trace)?;
+        trace.emit(&TraceEvent::Response(&msg));
         if msg.tool_calls.is_empty() {
             messages.push(Message::Assistant(msg.clone()));
             return Ok(AgentOutcome::Final(msg));
@@ -537,9 +431,9 @@ pub fn run_agent_loop(
                 "Tool call budget exhausted (max {max_tool_calls}) — produce your final answer with the data you have."
             )));
             let new = trace.new_messages(messages);
-            trace_messages(new, trace)?;
+            trace.emit(&TraceEvent::MessagesSent(new));
             let mut last = backend.complete(messages, tools)?;
-            trace_message(&last, trace)?;
+            trace.emit(&TraceEvent::Response(&last));
             last.tool_calls = Vec::new();
             messages.push(Message::Assistant(last.clone()));
             return Ok(AgentOutcome::Exhausted(last));
@@ -574,7 +468,7 @@ mod tests {
     }
 
     fn default_trace() -> Trace {
-        Trace::new(false, false, false)
+        Trace::new(false, false)
     }
 
     #[test]
@@ -914,7 +808,7 @@ mod tests {
             Message::System("system prompt".to_string()),
             Message::User("hi".to_string()),
         ];
-        let mut trace = Trace::new(true, true, false);
+        let mut trace = Trace::new(true, true);
         let outcome = run_agent_loop(&backend, &mut messages, &tools(), 20, &mut trace).unwrap();
         assert_eq!(outcome, AgentOutcome::Final(text("final answer")));
         assert_eq!(backend.record().len(), 2);
@@ -931,14 +825,14 @@ mod tests {
             Ok(text("final answer")),
         ]);
         let mut messages = vec![Message::User("hi".to_string())];
-        let mut trace = Trace::new(true, false, false);
+        let mut trace = Trace::new(true, false);
         run_agent_loop(&backend, &mut messages, &tools(), 20, &mut trace).unwrap();
         assert_eq!(backend.record().len(), 2);
     }
 
     #[test]
     fn test_trace_new_messages_only_once() {
-        let mut trace = Trace::new(true, false, false);
+        let mut trace = Trace::new(true, false);
         let mut messages = vec![Message::User("a".to_string())];
         let first = trace.new_messages(&messages);
         assert_eq!(first, &messages[..]);
@@ -958,121 +852,124 @@ mod tests {
         );
     }
 
-    fn capture_messages(messages: &[Message], trace: &Trace) -> String {
-        let mut out = Vec::new();
-        write_trace_messages(&mut out, messages, trace).unwrap();
-        String::from_utf8(out).unwrap()
-    }
-
-    fn capture_response(msg: &AssistantMessage, trace: &Trace) -> String {
-        let mut out = Vec::new();
-        write_trace_message(&mut out, msg, trace).unwrap();
-        String::from_utf8(out).unwrap()
+    #[test]
+    fn test_emit_without_observer_drops() {
+        let trace = Trace::new(true, true);
+        trace.emit(&TraceEvent::Response(&text("r")));
+        trace.emit(&TraceEvent::MessagesSent(&[]));
+        trace.emit(&TraceEvent::ParseError("bad"));
     }
 
     #[test]
-    fn test_trace_requests_role_prefixed_lines() {
-        let messages = [
-            Message::System("sys".to_string()),
-            Message::User("hi".to_string()),
-            Message::Assistant(AssistantMessage::with_tools(
+    fn test_emit_gates_events_by_toggle() {
+        let observer = Arc::new(crate::testing::RecordingObserver::new());
+        let trace =
+            Trace::new(true, false).with_observer(Arc::clone(&observer) as Arc<dyn TraceObserver>);
+        trace.emit(&TraceEvent::MessagesSent(&[Message::User("a".to_string())]));
+        trace.emit(&TraceEvent::Response(&text("r")));
+        trace.emit(&TraceEvent::ParseError("bad"));
+        let events = observer.events();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            crate::testing::OwnedTraceEvent::MessagesSent(_)
+        ));
+
+        let observer = Arc::new(crate::testing::RecordingObserver::new());
+        let trace =
+            Trace::new(false, true).with_observer(Arc::clone(&observer) as Arc<dyn TraceObserver>);
+        trace.emit(&TraceEvent::MessagesSent(&[]));
+        trace.emit(&TraceEvent::Response(&text("r")));
+        trace.emit(&TraceEvent::ParseError("bad"));
+        let events = observer.events();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            crate::testing::OwnedTraceEvent::Response(_)
+        ));
+        assert!(matches!(
+            &events[1],
+            crate::testing::OwnedTraceEvent::ParseError(_)
+        ));
+    }
+
+    #[test]
+    fn test_agent_loop_emits_conversation_transcript() {
+        let backend = ScriptedBackend::new(vec![
+            Ok(AssistantMessage::with_tools(
                 None,
-                vec![tc("c1", "usda_search", "{\"queries\":[\"rice\"]}")],
+                vec![tc("c1", "echo", "{\"q\":1}")],
             )),
-            Message::Tool {
-                call_id: "c1".to_string(),
-                content: "result".to_string(),
-            },
-        ];
-        let out = capture_messages(&messages, &Trace::new(true, false, false));
-        assert!(out.contains("--- to model ---"), "got: {out}");
-        assert!(out.contains("[system] sys"), "got: {out}");
-        assert!(out.contains("[user] hi"), "got: {out}");
-        assert!(
-            out.contains("[assistant] (tool calls: usda_search)"),
-            "got: {out}"
+            Ok(text("final answer")),
+        ]);
+        let observer = Arc::new(crate::testing::RecordingObserver::new());
+        let mut trace =
+            Trace::new(true, true).with_observer(Arc::clone(&observer) as Arc<dyn TraceObserver>);
+        let mut messages = vec![Message::User("hi".to_string())];
+        run_agent_loop(&backend, &mut messages, &tools(), 20, &mut trace).unwrap();
+        let events = observer.events();
+        assert_eq!(
+            events[0],
+            crate::testing::OwnedTraceEvent::MessagesSent(vec![Message::User("hi".to_string())])
         );
-        assert!(out.contains("[tool:c1] result"), "got: {out}");
-        assert!(out.contains("--- end to model ---"), "got: {out}");
-        assert!(!out.contains("from model"), "responses toggle off: {out}");
-        assert!(!out.contains("\x1b["), "no ANSI with colors off: {out}");
+        assert!(matches!(
+            &events[1],
+            crate::testing::OwnedTraceEvent::Response(m)
+                if m.content.is_none() && m.tool_calls.len() == 1
+        ));
+        assert!(matches!(
+            &events[2],
+            crate::testing::OwnedTraceEvent::MessagesSent(msgs)
+                if msgs.iter().any(|m| matches!(m, Message::Assistant(_)))
+                    && msgs.iter().any(|m| matches!(m, Message::Tool { .. }))
+        ));
+        assert!(
+            matches!(&events[3], crate::testing::OwnedTraceEvent::Response(m) if m.content.as_deref() == Some("final answer"))
+        );
     }
 
     #[test]
-    fn test_trace_requests_prints_only_new_messages() {
-        let mut trace = Trace::new(true, false, false);
-        let mut messages = vec![Message::User("a".to_string())];
-        let first = {
-            let new = trace.new_messages(&messages);
-            capture_messages(new, &trace)
-        };
-        assert!(first.contains("[user] a"), "got: {first}");
-        messages.push(Message::User("b".to_string()));
-        let second = {
-            let new = trace.new_messages(&messages);
-            capture_messages(new, &trace)
-        };
-        assert!(
-            !second.contains("[user] a"),
-            "old message reprinted: {second}"
-        );
-        assert!(second.contains("[user] b"), "got: {second}");
+    fn test_agent_loop_trace_requests_only_emits_no_responses() {
+        let backend = ScriptedBackend::new(vec![
+            Ok(AssistantMessage::with_tools(
+                None,
+                vec![tc("c1", "echo", "{\"q\":1}")],
+            )),
+            Ok(text("final answer")),
+        ]);
+        let observer = Arc::new(crate::testing::RecordingObserver::new());
+        let mut trace =
+            Trace::new(true, false).with_observer(Arc::clone(&observer) as Arc<dyn TraceObserver>);
+        let mut messages = vec![Message::User("hi".to_string())];
+        run_agent_loop(&backend, &mut messages, &tools(), 20, &mut trace).unwrap();
+        let events = observer.events();
+        assert!(events
+            .iter()
+            .all(|e| matches!(e, crate::testing::OwnedTraceEvent::MessagesSent(_))));
+        assert_eq!(events.len(), 2);
     }
 
     #[test]
-    fn test_trace_responses_reasoning_tools_and_output() {
-        let msg = AssistantMessage {
-            content: Some("final toml".to_string()),
-            tool_calls: vec![tc("c1", "usda_search", "{\"queries\":[\"rice\"]}")],
-            reasoning: Some("think step".to_string()),
-        };
-        let out = capture_response(&msg, &Trace::new(false, true, false));
-        assert!(out.contains("--- from model ---"), "got: {out}");
-        assert!(out.contains("[reasoning] think step"), "got: {out}");
-        assert!(
-            out.contains("[tool] usda_search {\"queries\":[\"rice\"]}"),
-            "got: {out}"
-        );
-        assert!(out.contains("final toml"), "got: {out}");
-        assert!(out.contains("--- end from model ---"), "got: {out}");
-        assert!(!out.contains("to model"), "requests toggle off: {out}");
-        assert!(!out.contains("\x1b["), "no ANSI with colors off: {out}");
-    }
-
-    #[test]
-    fn test_trace_toggles_independent() {
-        let msg = AssistantMessage::text("x");
-        assert!(
-            capture_response(&msg, &Trace::new(false, false, false)).is_empty(),
-            "all toggles off prints nothing"
-        );
-        assert!(!capture_response(&msg, &Trace::new(false, true, false)).is_empty());
-        let messages = [Message::User("x".to_string())];
-        assert!(
-            capture_messages(&messages, &Trace::new(false, true, false)).is_empty(),
-            "responses-only must not print requests"
-        );
-        assert!(!capture_messages(&messages, &Trace::new(true, false, false)).is_empty());
-    }
-
-    #[test]
-    fn test_trace_colors_markers_and_lines() {
-        let msg = AssistantMessage::text("x");
-        let out = capture_response(&msg, &Trace::new(false, true, true));
-        assert!(out.contains("\x1b[1;33m"), "bold yellow marker: {out}");
-        assert!(out.contains("\x1b[32m"), "green response line: {out}");
-        assert!(out.contains("\x1b[0m"), "reset: {out}");
-        let messages = [Message::User("x".to_string())];
-        let out = capture_messages(&messages, &Trace::new(true, false, true));
-        assert!(out.contains("\x1b[36m"), "cyan request line: {out}");
+    fn test_agent_loop_responses_only_emits_no_requests() {
+        let backend = ScriptedBackend::new(vec![Ok(text("done"))]);
+        let observer = Arc::new(crate::testing::RecordingObserver::new());
+        let mut trace =
+            Trace::new(false, true).with_observer(Arc::clone(&observer) as Arc<dyn TraceObserver>);
+        let mut messages = vec![Message::User("hi".to_string())];
+        run_agent_loop(&backend, &mut messages, &[], 20, &mut trace).unwrap();
+        let events = observer.events();
+        assert!(events
+            .iter()
+            .all(|e| matches!(e, crate::testing::OwnedTraceEvent::Response(_))));
+        assert_eq!(events.len(), 1);
     }
 
     #[test]
     fn test_function_definitions_shape() {
-        let defs = function_definitions(&[&EchoTool]);
-        assert_eq!(defs[0]["type"], "function");
-        assert_eq!(defs[0]["function"]["name"], "echo");
-        assert_eq!(defs[0]["function"]["parameters"]["type"], "object");
+        let def = EchoTool.to_api_json();
+        assert_eq!(def["type"], "function");
+        assert_eq!(def["function"]["name"], "echo");
+        assert_eq!(def["function"]["parameters"]["type"], "object");
     }
 
     fn serve_once(status: u16, body: String, tx: mpsc::Sender<()>) -> String {
@@ -1107,8 +1004,7 @@ mod tests {
             "{\"content\":\"works\",\"reasoning_content\":\"r\"}".to_string(),
             tx,
         );
-        let mut settings = AiSettings::default();
-        settings.base_url = base;
+        let settings = Settings::new(base, "m", None);
         let backend = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
         let msg = backend
             .complete(&[Message::User("hi".to_string())], &[])
@@ -1140,8 +1036,7 @@ mod tests {
                 let _ = stream.write_all(response.as_bytes());
             }
         });
-        let mut settings = AiSettings::default();
-        settings.base_url = format!("http://{addr}/v1");
+        let settings = Settings::new(format!("http://{addr}/v1"), "m", None);
         let backend = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
         let msg = backend
             .complete(&[Message::User("hi".to_string())], &[])
@@ -1163,8 +1058,7 @@ mod tests {
                 );
             }
         });
-        let mut settings = AiSettings::default();
-        settings.base_url = format!("http://{addr}/v1");
+        let settings = Settings::new(format!("http://{addr}/v1"), "m", None);
         let backend = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
         let err = backend
             .complete(&[Message::User("hi".to_string())], &[])
@@ -1183,8 +1077,7 @@ mod tests {
             thread::sleep(Duration::from_secs(5));
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
         });
-        let mut settings = AiSettings::default();
-        settings.base_url = format!("http://{addr}/v1");
+        let settings = Settings::new(format!("http://{addr}/v1"), "m", None);
         let backend = OpenAiCompatible::with_tuning(
             &settings,
             Duration::from_millis(1),
@@ -1208,36 +1101,5 @@ mod tests {
             body: "bad request".to_string(),
         };
         assert!(!err.message().contains("tool calling"));
-    }
-
-    struct FailingWriter;
-
-    impl Write for FailingWriter {
-        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-            Err(io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"))
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn test_agent_loop_trace_write_failure_aborts_with_trace_error() {
-        let backend = ScriptedBackend::new(vec![Ok(text("done"))]);
-        let sink: Arc<Mutex<FailingWriter>> = Arc::new(Mutex::new(FailingWriter));
-        let mut trace = Trace::new(true, false, false).with_sink(sink);
-        let mut messages = vec![Message::User("hi".to_string())];
-        let err = run_agent_loop(&backend, &mut messages, &[], 20, &mut trace).unwrap_err();
-        assert!(
-            matches!(err, LlmError::Trace(_)),
-            "trace write failure must surface as LlmError::Trace: {err:?}"
-        );
-        assert_eq!(err.message(), "failed to write trace output: pipe closed");
-        assert_eq!(
-            messages.len(),
-            1,
-            "no messages may be pushed after the failure"
-        );
     }
 }

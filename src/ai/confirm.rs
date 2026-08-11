@@ -1,4 +1,4 @@
-use intake_ai::confirm::{ConfirmDecision, ConfirmError, Confirmer};
+use intake_ai::confirm::{ConfirmDecision, Confirmer};
 use std::io::{BufRead, Write};
 
 /// The proposal text `cmd_ai_log`'s `present` emits when the applied ops
@@ -24,8 +24,10 @@ fn classify_ai(line: &str) -> Option<AiAnswer> {
 
 /// The three-way AI confirmer: prints the rendered proposal to stdout, then
 /// prompts `[y]es` / `[n]o` / `[f]eedback` on stderr. EOF on either prompt
-/// is a cancellation. Feedback reads an inline instruction and re-runs
-/// generation with the conversation continued.
+/// is a decline: the confirmer notes it on stderr and rejects, so the
+/// command treats it like any other non-affirmative answer. Feedback reads
+/// an inline instruction and re-runs generation with the conversation
+/// continued.
 pub(crate) struct AiConfirmer<'a> {
     writer: &'a mut dyn Write,
 }
@@ -36,12 +38,22 @@ impl<'a> AiConfirmer<'a> {
     }
 }
 
-fn io_confirm_err(e: std::io::Error) -> ConfirmError {
-    ConfirmError::Io(e.into())
+fn io_confirm_err(e: std::io::Error) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(e)
+}
+
+/// Closed stdin mid-prompt: warn on stderr that nothing was done, then
+/// decline so the command exits 0 like any other non-affirmative answer.
+fn stdin_closed() -> Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>> {
+    eprintln!("no confirmation received — nothing written; use `--yes` to skip confirmation");
+    Ok(ConfirmDecision::Reject)
 }
 
 impl Confirmer for AiConfirmer<'_> {
-    fn confirm(&mut self, rendered: &str) -> Result<ConfirmDecision, ConfirmError> {
+    fn confirm(
+        &mut self,
+        rendered: &str,
+    ) -> Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>> {
         self.writer
             .write_all(rendered.as_bytes())
             .map_err(io_confirm_err)?;
@@ -55,7 +67,7 @@ impl Confirmer for AiConfirmer<'_> {
             std::io::stderr().flush().ok();
             line.clear();
             if stdin.lock().read_line(&mut line).map_err(io_confirm_err)? == 0 {
-                return Err(ConfirmError::Cancelled);
+                return stdin_closed();
             }
             match classify_ai(&line) {
                 Some(AiAnswer::Yes) => return Ok(ConfirmDecision::Accept),
@@ -65,7 +77,7 @@ impl Confirmer for AiConfirmer<'_> {
                     std::io::stderr().flush().ok();
                     line.clear();
                     if stdin.lock().read_line(&mut line).map_err(io_confirm_err)? == 0 {
-                        return Err(ConfirmError::Cancelled);
+                        return stdin_closed();
                     }
                     let msg = line.trim();
                     if msg.is_empty() {
@@ -76,19 +88,6 @@ impl Confirmer for AiConfirmer<'_> {
                 None => {}
             }
         }
-    }
-}
-
-/// Accepts the proposal without rendering or prompting, for `--yes`.
-pub(crate) struct ConfirmAlways;
-
-impl Confirmer for ConfirmAlways {
-    fn confirm(&mut self, _rendered: &str) -> Result<ConfirmDecision, ConfirmError> {
-        Ok(ConfirmDecision::Accept)
-    }
-
-    fn present_before_confirm(&self) -> bool {
-        false
     }
 }
 
@@ -119,15 +118,5 @@ mod tests {
         for line in ["", "maybe", "yess", "x"] {
             assert_eq!(classify_ai(line), None, "line: {line:?}");
         }
-    }
-
-    #[test]
-    fn test_confirm_always_skips_present() {
-        let mut always = ConfirmAlways;
-        assert!(!always.present_before_confirm());
-        assert!(matches!(
-            always.confirm("anything").unwrap(),
-            ConfirmDecision::Accept
-        ));
     }
 }

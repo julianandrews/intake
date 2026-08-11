@@ -17,8 +17,7 @@ proposed change, and write it only after a three-way confirmation.
 The core of this — *route a request through an LLM, validate the structured
 output, get human confirmation, return the value* — is a reusable primitive and
 lives in a separate library crate, `intake-ai`, so it can be extracted and
-reused outside intake. The name deliberately acknowledges that the lib is
-currently owned by intake; it will be renamed as part of the eventual split-off.
+reused outside intake. The name fits: the crate takes in data from an AI.
 
 The system is intentionally provider-neutral: it speaks the OpenAI-compatible
 `/v1/chat/completions` API (works with OpenAI, Groq, Mistral, OpenRouter,
@@ -39,11 +38,16 @@ under `crates/`.
 **In `intake-ai`** — the generic primitive. Knows nothing about intake, food,
 or TOML:
 
-- `settings.rs` — `AiSettings` (api_key, model, base_url, max_retries,
-  max_tool_calls, timeout_secs, usda_api_key, usda_timeout_secs,
-  trace_requests, trace_responses — both bool, default false; see
-  "Tracing"), deriving `Deserialize`
-  so consumers map their config onto it directly.
+- `settings.rs` — `Settings` (model, base_url — both required; api_key
+  optional, for endpoints without auth; max_retries, max_tool_calls,
+  timeout_secs, trace_requests, trace_responses — both bool, default false;
+  see "Tracing"), a plain data type (no `Deserialize`) with no `Default`:
+  the endpoint fields are mandatory constructor args to
+  `Settings::new(base_url, model, api_key)`, which fills the operational
+  defaults (`DEFAULT_MAX_RETRIES` 3, `DEFAULT_MAX_TOOL_CALLS` 20,
+  `DEFAULT_TIMEOUT_SECS` 60, tracing off). The library stays
+  format-agnostic: it only takes the struct, and consumers decide how to
+  populate it and which provider to target.
 - `usda.rs` — the USDA FoodData Central-backed nutrition tool:
   `usda_search` (batched queries → candidate foods with per-100g macros).
   Hits `api.nal.usda.gov/fdc/v1` via `ureq` (blocking + rustls); no HTML
@@ -76,9 +80,9 @@ or TOML:
 - `confirm.rs` — the `Confirmer` trait
   (`Accept` / `Reject` / `Feedback(String)`), the loop's only terminal hook.
   Implementations live at the consumer: intake provides the terminal
-  `[y]es` / `[n]o` / `[f]eedback` prompt and the `ConfirmAlways`
-  implementation for `--yes`. Proposal *rendering* is a callback supplied by
-  the caller.
+  `[y]es` / `[n]o` / `[f]eedback` prompt. `--yes` auto-accept lives in the
+  pipeline itself (`ResolveContext::auto_accept`), skipping the render and
+  the confirmer. Proposal *rendering* is a callback supplied by the caller.
 
 The lib takes text in and returns the validated `T`; prompt capture
 (`$EDITOR` etc.) and confirmation UX are consumer concerns.
@@ -93,9 +97,9 @@ The lib takes text in and returns the validated `T`; prompt capture
   guidance comments; unchanged file aborts; clear error when no editor spawns
 - a non-gated `[y]es` / `[n]o` confirm helper (+ `--yes`) used by the plain
   `food new`/`food edit` path
-- the three-option terminal `Confirmer` (`[y]es` / `[n]o` / `[f]eedback`) and
-  `ConfirmAlways` for `--yes`, implementing the lib trait — AI-only, living
-  in the gated `src/ai/confirm.rs` (no cfg of its own). It reuses the same
+- the three-option terminal `Confirmer` (`[y]es` / `[n]o` / `[f]eedback`)
+  implementing the lib trait — AI-only, living in the gated `src/ai/confirm.rs`
+  (no cfg of its own). It reuses the same
   `y`/`yes`/`n`/`no` vocabulary as the y/n helper above, deliberately
   duplicated in its own tri-state classifier rather than composed: the
   vocabularies are tiny and stable, and the AI classifier's `f`/`feedback`
@@ -132,7 +136,7 @@ impl Resolver<'_> {
         user: &str,                      // the user's request prompt
         parse: impl Fn(&str) -> Result<T, String>,
         present: &dyn Fn(&T) -> String,  // render the proposal (intake's tables)
-    ) -> Result<T, ResolveError>          // Exhausted | Rejected | Cancelled | Io
+    ) -> Result<T, ResolveError>          // Exhausted | Rejected | Internal
 }
 ```
 
@@ -156,7 +160,8 @@ impl Resolver<'_> {
 Consequences:
 
 - Feedback rounds are **uncapped** — the user is the bound; Reject and Ctrl-C
-  are the exits. `--yes` short-circuits via `ConfirmAlways`.
+  are the exits. `--yes` short-circuits via `ResolveContext::auto_accept`,
+  returning the first resolved value without rendering or confirming.
 - The `Resolver` groups the stable deps (`ctx`, confirmer, system prompt), so a
   consumer constructs it once and reuses it across calls — the per-call
   `resolve` takes only the request-specific inputs. (Matters for the future
@@ -168,7 +173,7 @@ Consequences:
   foods; ops deserialize → validate → `apply_ops` for `ai log`.
 - The loop is unit-testable as a sequence: scripted fake backend + scripted
   confirmer cover retries, feedback, reject, and exhaustion without network.
-- `present` is skipped for `ConfirmAlways` (nothing renders under `--yes`);
+- `present` is skipped under `auto_accept` (nothing renders under `--yes`);
   the post-write reprint is the only display in that mode.
 - Worst-case cost per resolve round: `max_retries × (max_tool_calls + 2)`
   ≈ 66 LLM calls with defaults (3 × 22) — the +2 is the budget-exhausted
@@ -319,7 +324,7 @@ Semantics:
   re-requests with a fix hint ("smaller `servings`, or an `add-adhoc` op
   with explicit macros"), and retries exhausted → `Exhausted` with the
   raw output. Overflow never panics and never leaks out of the closure
-  as an `Io` error — it is the model's fault, so it must be fixable
+  as an `Internal` error — it is the model's fault, so it must be fixable
   through the retry loop.
 - An applied day with no entries and no `exercise_calories` deletes the day
   file instead of writing one — the same convention as `remove_entry`, with
@@ -575,17 +580,21 @@ passes the user prompt to `resolve` per call, and performs the write.
 
 Non-TTY invocation: confirmation reads stdin, so piped answers work —
 `echo y | intake ai log` accepts "y" (POSIX `rm -i` behavior). Closed
-stdin is `Cancelled`: exit 0 with a stderr hint (see "Exit codes"); the
-`[f]eedback` sub-prompt follows the same rule. Prompt capture never reads
-stdin — without `[prompt...]`/`--prompt` and without a usable editor it
-errors, it does not block.
+stdin is a decline: the confirmer prints a stderr hint and returns
+`Reject`, so it exits 0 like any other non-affirmative answer (see "Exit
+codes"); the `[f]eedback` sub-prompt follows the same rule. Prompt capture
+never reads stdin — without `[prompt...]`/`--prompt` and without a usable
+editor it errors, it does not block.
 
 ## Tracing
 
 Tracing is off by default and split into two independent toggles, each
 available as a config key (`[ai] trace_requests` / `[ai] trace_responses`)
 and a shared CLI flag (`--trace-requests` / `--trace-responses`); config
-and flags OR together:
+and flags OR together. The lib emits **structured events** — the agent loop
+and resolve loop report `MessagesSent`, `Response`, and `ParseError`
+events to a consumer-supplied observer (`TraceObserver`); intake's
+`src/ai/trace.rs` renders them, so all presentation lives outside the lib:
 
 - **`trace_requests`** — print the request messages sent to the model to
   **stderr**, each message exactly once, on the round it first enters the
@@ -605,8 +614,8 @@ and flags OR together:
 Blocks are always separated by a blank line. When the terminal supports
 color (per intake's usual `NO_COLOR` / `CLICOLOR_FORCE` / tty rules), the
 markers are bold yellow, request lines cyan, and response lines green —
-intake computes this itself (the lib's `trace_colors` setting is not
-accepted in the `[ai]` config table).
+intake computes this itself and passes it to its renderer; the lib carries
+no color setting.
 
 Neither toggle affects behavior; both only add stderr visibility. Nothing
 goes to stdout — proposal tables and the confirm dialog are unaffected.
@@ -659,26 +668,26 @@ prompt**; an error is >0.
 
 | Code | Meaning |
 |---|---|
-| 0 | Success — the change was written, **or** the user deliberately declined (`Reject`) / cancelled (`Cancelled`); a "Nothing written" line is printed so exit 0 is never a silent no-op |
-| 1 | Failure — `ResolveError::Exhausted` / `Io`, config and file errors (the existing anyhow `?` flow) |
+| 0 | Success — the change was written, **or** the user declined (`Reject`) — which covers EOF at the confirm prompt, since closed stdin is a decline; a "Nothing written" line is printed so exit 0 is never a silent no-op |
+| 1 | Failure — `ResolveError::Exhausted` / `Internal`, config and file errors (the existing anyhow `?` flow) |
 | 2 | Usage error — clap's default on argument-parse errors |
 | 130 | Ctrl-C — 128+SIGINT, delivered by the OS; no signal handler is installed, so the default death is kept |
 
-`Cancelled` is user-initiated and not an error: EOF at the confirm prompt
-(non-interactive stdin without `--yes`) and aborted editor capture both
-exit 0, the former with a stderr note ("no confirmation received —
-nothing written; use `--yes` to skip confirmation") so a script piping
-empty stdin isn't silently no-op'd. `--yes` is the script's guarantee,
-like `rm -f`. The same rule applies to the plain y/n confirm path
-(`food new` / `food edit`), so both confirmers behave identically.
+A decline is user-initiated and not an error: answering `n`, or EOF at the
+confirm prompt (non-interactive stdin without `--yes`), both exit 0 — EOF
+with a stderr note ("no confirmation received — nothing written; use
+`--yes` to skip confirmation") so a script piping empty stdin isn't
+silently no-op'd. `--yes` is the script's guarantee, like `rm -f`. The
+same rule applies to the plain y/n confirm path (`food new` / `food edit`),
+so both confirmers behave identically.
 
 ## Configuration
 
 ```toml
 [ai]
-api_key = "..."          # or INTAKE_AI_API_KEY / --api-key
-model = "gpt-4o-mini"    # or INTAKE_AI_MODEL / --model
-base_url = "..."         # optional; default https://api.openai.com/v1
+model = "..."            # required; or INTAKE_AI_MODEL / --model
+base_url = "..."         # required; any OpenAI-compatible endpoint; or INTAKE_AI_BASE_URL / --base-url
+api_key = "..."          # or INTAKE_AI_API_KEY / --api-key; optional for endpoints without auth
 max_retries = 3
 max_tool_calls = 20      # tool executions per resolve attempt; exhaustion → one "answer now" round
 timeout_secs = 60        # per LLM API call
@@ -695,15 +704,17 @@ food_edit_prompt = "..."
 - `Config` gets a `#[cfg(feature = "ai")]`-gated `ai: Option<AiConfig>` field
   (see Feature gating), so existing configs and tests are unaffected; the
   `[ai]` table deserializes directly into the intake-side `AiConfig` wrapper
-  (`src/ai/settings.rs`), which flattens `intake_ai::AiSettings` (no
-  field-by-field mapping) and adds the intake-owned keys (`log_prompt`,
-  `food_new_prompt`, `food_edit_prompt`, `history_days`).
+  (`src/ai/settings.rs`), which owns the schema (key allowlist, friendly
+  unknown-key errors) as an all-optional table, plus the intake-owned keys
+  (`log_prompt`, `food_new_prompt`, `food_edit_prompt`, `history_days`).
+  No provider defaults exist anywhere: `model` and `base_url` are required.
 - Resolution order matches `Config::resolve`: config file → env var → CLI flag.
   The merge happens in `ai` (`src/ai/mod.rs`): it combines the `[ai]` config
-  values, the
-   `INTAKE_AI_*` env vars, and the shared `ai` flags into the final
-   `AiSettings` before constructing a `Resolver` and calling `resolve`.
-   `usda_api_key` resolves config → env only — no CLI flag.
+  values, the `INTAKE_AI_*` env vars, and the shared `ai` flags into the
+  final `Settings` before constructing a `Resolver` and calling `resolve`.
+  `model` and `base_url` must resolve somewhere in that chain — a missing
+  value is a friendly error, not a default. `usda_api_key` resolves config →
+  env only — no CLI flag.
 - The API keys (LLM and USDA) are never logged or printed.
 - Timeouts: `timeout_secs` (default 60) bounds each LLM API call;
   `usda_timeout_secs` (default 15) bounds each `usda_search`
@@ -883,8 +894,8 @@ Per-command content:
 2. **AI integration** — `[features] default = ["ai"]`,
    `ai = ["dep:intake-ai", "dep:serde_json", "dep:similar"]`; `[ai]` config wiring, the
    feature-gated `ai` tree (`ai log`, `ai food new`, `ai food edit`) with the
-   Resolver + confirmation flow, the three-option terminal `Confirmer`
-   (+ `ConfirmAlways`, `#[cfg(feature = "ai")]`), per-command prompt
+    Resolver + confirmation flow, the three-option terminal `Confirmer`,
+    `--yes` auto-accept (`ResolveContext::auto_accept`), per-command prompt
     template files (`src/ai/prompts/*.md`), the `Tool` trait wiring
     (`usda_search` +
     batched `food_lookup` with per-command registration), the `DayLogOps`
@@ -914,8 +925,8 @@ Per-command content:
   `trace_requests` path prints role-prefixed lines for every message sent
   per round; the two toggles are independent (each exercisable alone).
 - `intake` unit: the three-option confirmer decision mapping (in the `ai` build);
-  exit-code mapping — reject and EOF-at-prompt cancel exit 0, `Exhausted`
-  and `Io` exit 1 (both confirmers);
+  exit-code mapping — decline and EOF-at-prompt (a decline) exit 0,
+  `Exhausted` and `Internal` exit 1 (both confirmers);
   `--yes` skips proposal rendering;
   `[ai]` config parsing and env/flag resolution;
   `write_day_checked` roundtrip;
@@ -924,7 +935,7 @@ Per-command content:
   `apply_ops` (add-food / add-adhoc / remove / replace; row out of
   range; duplicate and conflicting ops; additions append, replacements keep
   position; overflow — huge `servings` returns a retryable `Err(String)`,
-  never a panic or `Io`);   `food_lookup` matching (tiered integer scoring — exact, token overlap,
+  never a panic or `Internal`);   `food_lookup` matching (tiered integer scoring — exact, token overlap,
   bigram Dice; top-N ordering; batch mode — multiple
   queries in one call; empty result for unknown foods and for an empty
   foods dir); context assembly (totals line, history digest anchored to the
@@ -1018,6 +1029,5 @@ and corrected paths for the workspace layout.
   few embedded sample foods.
 - An optional `exercise_calories` op in `ai log` (v1: preserved structurally
   by `apply_ops`, unchangeable).
-- Renaming `intake-ai` (e.g. `resolve-ai`, `llm-resolve`) and publishing it to
-  crates.io as part of the split-off.
+- Publishing `intake-ai` to crates.io as part of the split-off.
 

@@ -1,8 +1,58 @@
-use crate::confirm::{ConfirmDecision, ConfirmError, Confirmer};
-use crate::llm::{AssistantMessage, LlmBackend, LlmError, Message};
+use crate::confirm::{ConfirmDecision, Confirmer};
+use crate::llm::{AssistantMessage, LlmBackend, LlmError, Message, TraceEvent, TraceObserver};
 use crate::tools::Tool;
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard};
+
+/// An owned form of [`TraceEvent`], for observers that retain events past
+/// the `on_event` call. [`RecordingObserver`] copies borrowed events into
+/// this on receipt, so event-level assertions don't depend on rendering.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OwnedTraceEvent {
+    MessagesSent(Vec<Message>),
+    Response(AssistantMessage),
+    ParseError(String),
+}
+
+/// Captures every [`TraceEvent`] a [`Trace`] emits, for event-level
+/// assertions that don't depend on rendering.
+///
+/// [`Trace`]: crate::llm::Trace
+pub struct RecordingObserver {
+    events: Mutex<Vec<OwnedTraceEvent>>,
+}
+
+impl RecordingObserver {
+    pub fn new() -> RecordingObserver {
+        RecordingObserver {
+            events: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn events(&self) -> Vec<OwnedTraceEvent> {
+        self.events.lock().expect("recording observer lock").clone()
+    }
+}
+
+impl Default for RecordingObserver {
+    fn default() -> Self {
+        RecordingObserver::new()
+    }
+}
+
+impl TraceObserver for RecordingObserver {
+    fn on_event(&self, event: &TraceEvent<'_>) {
+        let owned = match event {
+            TraceEvent::MessagesSent(messages) => OwnedTraceEvent::MessagesSent(messages.to_vec()),
+            TraceEvent::Response(msg) => OwnedTraceEvent::Response((*msg).clone()),
+            TraceEvent::ParseError(error) => OwnedTraceEvent::ParseError(error.to_string()),
+        };
+        self.events
+            .lock()
+            .expect("recording observer lock")
+            .push(owned);
+    }
+}
 
 pub struct ScriptedBackend {
     queue: Mutex<VecDeque<Result<AssistantMessage, LlmError>>>,
@@ -49,9 +99,8 @@ impl LlmBackend for ScriptedBackend {
 }
 
 pub struct ScriptedConfirmer {
-    queue: VecDeque<Result<ConfirmDecision, ConfirmError>>,
+    queue: VecDeque<Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>>>,
     rendered: Vec<String>,
-    present: bool,
 }
 
 impl ScriptedConfirmer {
@@ -59,21 +108,13 @@ impl ScriptedConfirmer {
         ScriptedConfirmer::results(decisions.into_iter().map(Ok).collect())
     }
 
-    pub fn results(results: Vec<Result<ConfirmDecision, ConfirmError>>) -> ScriptedConfirmer {
+    pub fn results(
+        results: Vec<Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>>>,
+    ) -> ScriptedConfirmer {
         ScriptedConfirmer {
             queue: results.into(),
             rendered: Vec::new(),
-            present: true,
         }
-    }
-
-    pub fn without_present(decisions: Vec<ConfirmDecision>) -> ScriptedConfirmer {
-        ScriptedConfirmer::new(decisions).skip_present()
-    }
-
-    fn skip_present(mut self) -> ScriptedConfirmer {
-        self.present = false;
-        self
     }
 
     pub fn rendered(&self) -> Vec<String> {
@@ -82,15 +123,14 @@ impl ScriptedConfirmer {
 }
 
 impl Confirmer for ScriptedConfirmer {
-    fn confirm(&mut self, rendered: &str) -> Result<ConfirmDecision, ConfirmError> {
+    fn confirm(
+        &mut self,
+        rendered: &str,
+    ) -> Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>> {
         self.rendered.push(rendered.to_string());
         self.queue
             .pop_front()
             .unwrap_or(Ok(ConfirmDecision::Reject))
-    }
-
-    fn present_before_confirm(&self) -> bool {
-        self.present
     }
 }
 

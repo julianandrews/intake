@@ -1,10 +1,10 @@
-use crate::confirm::{ConfirmDecision, ConfirmError, Confirmer};
+use crate::confirm::{ConfirmDecision, Confirmer};
 use crate::llm::{
-    run_agent_loop, AgentOutcome, AssistantMessage, LlmBackend, LlmError, Message, TraceSink,
+    run_agent_loop, AgentOutcome, AssistantMessage, LlmBackend, LlmError, Message, TraceEvent,
+    TraceObserver,
 };
-use crate::settings::AiSettings;
+use crate::settings::Settings;
 use crate::tools::Tool;
-use anyhow::Error as AnyhowError;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -14,24 +14,28 @@ pub enum ResolveError {
         raw_output: String,
     },
     Rejected,
-    Cancelled,
-    Io(AnyhowError),
+    /// An error from the pipeline's internals — the LLM backend or the
+    /// confirmer — boxed and passed through unchanged.
+    Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl From<LlmError> for ResolveError {
     fn from(e: LlmError) -> Self {
-        ResolveError::Io(AnyhowError::msg(e.message()))
+        ResolveError::Internal(Box::new(e))
     }
 }
 
 pub struct ResolveContext<'a> {
-    pub settings: &'a AiSettings,
+    pub settings: &'a Settings,
     pub backend: &'a dyn LlmBackend,
     pub tools: &'a [&'a dyn Tool],
-    /// Where trace dumps go; when None, raw stderr. Callers that share
-    /// stderr with other output (such as a progress line) can inject a sink
-    /// that serializes dumps with it.
-    pub trace_sink: Option<Arc<dyn TraceSink>>,
+    /// Where trace events go; when None, events are dropped. Callers that
+    /// share stderr with other output (such as a progress line) can inject
+    /// an observer that serializes rendering with it.
+    pub trace_observer: Option<Arc<dyn TraceObserver>>,
+    /// When true, the resolved value is returned without rendering the
+    /// proposal or consulting the confirmer.
+    pub auto_accept: bool,
 }
 
 pub struct Resolver<'ctx, 'a> {
@@ -40,7 +44,7 @@ pub struct Resolver<'ctx, 'a> {
     system: String,
 }
 
-pub fn fence_strip(s: &str) -> String {
+fn fence_strip(s: &str) -> String {
     let s = s.trim();
     if !s.starts_with("```") {
         return s.to_string();
@@ -72,10 +76,9 @@ impl<'ctx, 'a> Resolver<'ctx, 'a> {
 
     /// Resolves `user` into a `T`: runs the agent loop, parses the final
     /// answer with `parse`, and confirms with the confirmer, retrying on
-    /// parse failures up to `max_retries`. Trace output goes to the
-    /// context's sink; unlike [`crate::llm::run_agent_loop`], the internal
-    /// parse-error notes here are best-effort — a trace write failure
-    /// inside the retry loop is ignored, not propagated.
+    /// parse failures up to `max_retries`. Trace events go to the
+    /// context's observer; observers are infallible, so tracing never
+    /// affects the result.
     pub fn resolve<T>(
         &mut self,
         user: &str,
@@ -91,10 +94,9 @@ impl<'ctx, 'a> Resolver<'ctx, 'a> {
         let mut trace = crate::llm::Trace::new(
             self.ctx.settings.trace_requests,
             self.ctx.settings.trace_responses,
-            self.ctx.settings.trace_colors,
         );
-        if let Some(sink) = &self.ctx.trace_sink {
-            trace = trace.with_sink(Arc::clone(sink));
+        if let Some(observer) = &self.ctx.trace_observer {
+            trace = trace.with_observer(Arc::clone(observer));
         }
 
         loop {
@@ -126,19 +128,7 @@ impl<'ctx, 'a> Resolver<'ctx, 'a> {
                         });
                     }
                     retries_left -= 1;
-                    if trace.responses {
-                        let _ = trace.with_writer(&mut |w| {
-                            writeln!(
-                                w,
-                                "{}",
-                                crate::llm::paint(
-                                    trace.colors,
-                                    &format!("[parse error] {e}"),
-                                    crate::llm::ANSI_RED
-                                )
-                            )
-                        });
-                    }
+                    trace.emit(&TraceEvent::ParseError(&e));
                     let mut note = String::new();
                     if no_tools {
                         note = "\nTool calls are no longer available — produce your final answer from the data already gathered."
@@ -152,7 +142,7 @@ impl<'ctx, 'a> Resolver<'ctx, 'a> {
                 }
             };
 
-            if !self.confirm.present_before_confirm() {
+            if self.ctx.auto_accept {
                 return Ok(value);
             }
             let rendered = present(&value);
@@ -164,8 +154,7 @@ impl<'ctx, 'a> Resolver<'ctx, 'a> {
                     retries_left = self.ctx.settings.max_retries;
                     no_tools = false;
                 }
-                Err(ConfirmError::Cancelled) => return Err(ResolveError::Cancelled),
-                Err(ConfirmError::Io(e)) => return Err(ResolveError::Io(e)),
+                Err(e) => return Err(ResolveError::Internal(e)),
             }
         }
     }
@@ -176,17 +165,13 @@ mod tests {
     use super::*;
     use crate::confirm::ConfirmDecision;
     use crate::testing::{ScriptedBackend, ScriptedConfirmer};
-    use std::sync::Mutex;
 
-    fn settings() -> AiSettings {
-        let mut s = AiSettings::default();
-        s.max_retries = 3;
-        s.max_tool_calls = 20;
-        s
+    fn settings() -> Settings {
+        Settings::new("http://test/v1", "m", None)
     }
 
     fn with_resolver<F, T>(
-        settings: &AiSettings,
+        settings: &Settings,
         backend: &dyn LlmBackend,
         confirmer: &mut dyn Confirmer,
         tools: &[&dyn Tool],
@@ -199,14 +184,15 @@ mod tests {
             settings,
             backend,
             tools,
-            trace_sink: None,
+            trace_observer: None,
+            auto_accept: false,
         };
         let mut resolver = Resolver::new(&ctx, confirmer, "system".to_string());
         f(&mut resolver)
     }
 
     fn resolve_int(
-        settings: &AiSettings,
+        settings: &Settings,
         backend: &dyn LlmBackend,
         confirmer: &mut dyn Confirmer,
         tools: &[&dyn Tool],
@@ -352,20 +338,34 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_cancelled_maps_to_error() {
+    fn test_resolve_confirmer_error_maps_to_internal() {
         let backend = ScriptedBackend::new(vec![Ok(crate::llm::AssistantMessage::text("1"))]);
-        let mut confirmer = ScriptedConfirmer::results(vec![Err(ConfirmError::Cancelled)]);
+        let mut confirmer = ScriptedConfirmer::results(vec![Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "confirmation broke",
+        )))]);
         let s = settings();
         let err = resolve_int(&s, &backend, &mut confirmer, &[], "x").unwrap_err();
-        assert!(matches!(err, ResolveError::Cancelled));
+        let ResolveError::Internal(e) = err else {
+            panic!("expected Internal error");
+        };
+        assert!(e.to_string().contains("confirmation broke"));
     }
 
     #[test]
-    fn test_resolve_present_skipped_without_present() {
+    fn test_resolve_auto_accept_skips_confirmation() {
         let backend = ScriptedBackend::new(vec![Ok(crate::llm::AssistantMessage::text("1"))]);
-        let mut confirmer = ScriptedConfirmer::without_present(vec![ConfirmDecision::Reject]);
+        let mut confirmer = ScriptedConfirmer::new(vec![ConfirmDecision::Reject]);
         let s = settings();
-        let value = resolve_int(&s, &backend, &mut confirmer, &[], "x").unwrap();
+        let ctx = ResolveContext {
+            settings: &s,
+            backend: &backend,
+            tools: &[],
+            trace_observer: None,
+            auto_accept: true,
+        };
+        let mut resolver = Resolver::new(&ctx, &mut confirmer, "system".to_string());
+        let value = resolver.resolve("x", parse_int, &present).unwrap();
         assert_eq!(value, 1);
         assert!(confirmer.rendered().is_empty());
     }
@@ -452,17 +452,18 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_trace_requests_writes_to_sink() {
+    fn test_resolve_trace_requests_emits_messages_sent() {
         let backend = ScriptedBackend::new(vec![Ok(crate::llm::AssistantMessage::text("7"))]);
         let mut confirmer = ScriptedConfirmer::new(vec![ConfirmDecision::Accept]);
         let mut s = settings();
         s.trace_requests = true;
-        let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let observer = Arc::new(crate::testing::RecordingObserver::new());
         let ctx = ResolveContext {
             settings: &s,
             backend: &backend,
             tools: &[],
-            trace_sink: Some(buf.clone()),
+            trace_observer: Some(Arc::clone(&observer) as Arc<dyn crate::llm::TraceObserver>),
+            auto_accept: false,
         };
         let mut resolver = Resolver::new(&ctx, &mut confirmer, "system".to_string());
         let value = resolver
@@ -473,14 +474,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(value, 7);
-        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let events = observer.events();
+        let crate::testing::OwnedTraceEvent::MessagesSent(first) = &events[0] else {
+            panic!("first event must be MessagesSent: {events:?}");
+        };
         assert!(
-            out.contains("--- to model ---"),
-            "request trace must land in the sink: {out:?}"
+            first
+                .iter()
+                .any(|m| matches!(m, Message::System(s) if s == "system")),
+            "request trace must carry the system message: {events:?}"
         );
         assert!(
-            out.contains("--- end to model ---"),
-            "request trace must be complete in the sink: {out:?}"
+            events
+                .iter()
+                .all(|e| matches!(e, crate::testing::OwnedTraceEvent::MessagesSent(_))),
+            "responses toggle off, only MessagesSent expected: {events:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_trace_parse_error_emitted() {
+        let backend = ScriptedBackend::new(vec![
+            Ok(crate::llm::AssistantMessage::text("not a number")),
+            Ok(crate::llm::AssistantMessage::text("7")),
+        ]);
+        let mut confirmer = ScriptedConfirmer::new(vec![ConfirmDecision::Accept]);
+        let mut s = settings();
+        s.trace_responses = true;
+        let observer = Arc::new(crate::testing::RecordingObserver::new());
+        let ctx = ResolveContext {
+            settings: &s,
+            backend: &backend,
+            tools: &[],
+            trace_observer: Some(Arc::clone(&observer) as Arc<dyn crate::llm::TraceObserver>),
+            auto_accept: false,
+        };
+        let mut resolver = Resolver::new(&ctx, &mut confirmer, "system".to_string());
+        let value = resolver.resolve("x", parse_int, &present).unwrap();
+        assert_eq!(value, 7);
+        let events = observer.events();
+        assert!(
+            events.iter().any(
+                |e| matches!(e, crate::testing::OwnedTraceEvent::ParseError(e)
+                    if e.contains("invalid digit"))
+            ),
+            "parse error must be emitted as an event: {events:?}"
         );
     }
 
@@ -490,8 +528,8 @@ mod tests {
         let mut confirmer = ScriptedConfirmer::new(vec![ConfirmDecision::Accept]);
         let s = settings();
         let err = resolve_int(&s, &backend, &mut confirmer, &[], "x").unwrap_err();
-        let ResolveError::Io(e) = err else {
-            panic!("expected Io error");
+        let ResolveError::Internal(e) = err else {
+            panic!("expected Internal error");
         };
         assert!(e.to_string().contains("timed out"));
     }

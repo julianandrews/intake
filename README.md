@@ -104,16 +104,18 @@ Configure the provider in `~/.config/intake/config.toml`:
 
 ```toml
 [ai]
-api_key = "..."          # or INTAKE_AI_API_KEY / --api-key
-model = "gpt-4o-mini"    # or INTAKE_AI_MODEL / --model
-# base_url = "https://api.openai.com/v1"   # any OpenAI-compatible endpoint
+model = "..."            # required; or INTAKE_AI_MODEL / --model
+base_url = "..."         # required; any OpenAI-compatible endpoint; or INTAKE_AI_BASE_URL / --base-url
+api_key = "..."          # or INTAKE_AI_API_KEY / --api-key; optional for local endpoints without auth
 usda_api_key = "..."     # or INTAKE_AI_USDA_API_KEY (free at fdc.nal.usda.gov)
 history_days = 14        # ai log context window
 ```
 
 Settings resolve config file → environment → CLI flags (`--api-key`,
-`--model`, `--yes`, `--trace-requests`, `--trace-responses`, `--prompt`).
-Tracing is off by default; `--trace-requests` prints each message sent to
+`--model`, `--base-url`, `--yes`, `--trace-requests`, `--trace-responses`,
+`--prompt`). `model` and `base_url` are required — an `ai` command errors
+with a setup hint until both are set. Tracing is off by default;
+`--trace-requests` prints each message sent to
 the model once, on the round it first appears (stderr, in `--- to model ---`
 blocks), and `--trace-responses` prints the model's output in
 `--- from model ---` blocks (both

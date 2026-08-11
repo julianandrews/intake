@@ -7,13 +7,13 @@ mod ops;
 mod prompts;
 pub(crate) mod settings;
 mod spinner;
+mod trace;
 mod usda;
 mod write;
 
 use crate::amount::Calories;
 use crate::commands;
 use crate::config::Config;
-use crate::confirm::nothing_confirmed;
 use crate::editor;
 use crate::food::{self, FoodName};
 use crate::log;
@@ -21,11 +21,12 @@ use anyhow::{bail, Context, Result};
 use intake_ai::confirm::Confirmer;
 use intake_ai::llm::{LlmBackend, OpenAiCompatible};
 use intake_ai::pipeline::{ResolveContext, ResolveError, Resolver};
-use intake_ai::settings::AiSettings;
+use intake_ai::settings::Settings;
 use intake_ai::tools::Tool;
 use similar::{ChangeTag, TextDiff};
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) fn run(
@@ -53,7 +54,8 @@ pub(crate) fn run(
                 log_dir,
                 date,
                 &prompt,
-                |w| confirmer_for(w, flags.yes),
+                |w| Box::new(confirm::AiConfirmer::new(w)),
+                flags.yes,
             )
         }
         cli::AiCommands::Food {
@@ -74,7 +76,8 @@ pub(crate) fn run(
                 foods_dir,
                 &name,
                 &prompt,
-                |w| confirmer_for(w, flags.yes),
+                |w| Box::new(confirm::AiConfirmer::new(w)),
+                flags.yes,
             )
         }
         cli::AiCommands::Food {
@@ -95,28 +98,20 @@ pub(crate) fn run(
                 foods_dir,
                 &name,
                 &prompt,
-                |w| confirmer_for(w, flags.yes),
+                |w| Box::new(confirm::AiConfirmer::new(w)),
+                flags.yes,
             )
         }
     }
 }
 
-fn confirmer_for<'a>(writer: &'a mut dyn Write, yes: bool) -> Box<dyn Confirmer + 'a> {
-    if yes {
-        Box::new(confirm::ConfirmAlways)
-    } else {
-        Box::new(confirm::AiConfirmer::new(writer))
-    }
-}
-
-/// Whether the confirmer renders the proposal to the writer before the user
-/// decides: true for the interactive confirmer, false for `--yes`, which
-/// auto-accepts without presenting anything. After a successful write the
-/// commands branch on this — when the proposal was shown, a one-line
-/// confirmation suffices; when not, the affected table is reprinted as the
-/// only display.
-fn proposal_presented(confirmer: &dyn Confirmer) -> bool {
-    confirmer.present_before_confirm()
+/// Whether the proposal was rendered to the user before the value was
+/// confirmed: true when the interactive confirmation ran, false under
+/// `--yes` auto-accept. After a successful write the commands branch on
+/// this — when the proposal was shown, a one-line confirmation suffices;
+/// when not, the affected table is reprinted as the only display.
+fn proposal_presented(yes: bool) -> bool {
+    !yes
 }
 
 fn write_nothing(writer: &mut impl Write) -> Result<()> {
@@ -127,14 +122,13 @@ fn write_nothing(writer: &mut impl Write) -> Result<()> {
 fn handle_error(writer: &mut impl Write, err: ResolveError) -> Result<()> {
     match err {
         ResolveError::Rejected => write_nothing(writer),
-        ResolveError::Cancelled => nothing_confirmed(writer, "written"),
         ResolveError::Exhausted {
             last_error,
             raw_output,
         } => bail!(
             "AI could not produce valid output: {last_error}\n\nLast model output:\n{raw_output}"
         ),
-        ResolveError::Io(e) => Err(e),
+        ResolveError::Internal(e) => Err(anyhow::Error::msg(e)),
     }
 }
 
@@ -149,29 +143,55 @@ fn capture_prompt(prompt_words: &[String], inline: Option<&str>) -> Result<Optio
     editor::capture_via_editor(prefill, ".md")
 }
 
-fn resolve_settings(config: &Config, flags: &cli::AiFlags) -> Result<AiSettings> {
-    let from_config = config.ai.as_ref().map(|ai| ai.settings.clone());
-    let mut settings = from_config.unwrap_or_default();
-    if let Ok(value) = std::env::var("INTAKE_AI_API_KEY") {
-        if !value.is_empty() {
-            settings.api_key = value;
-        }
+fn resolve_settings(config: &Config, flags: &cli::AiFlags) -> Result<Settings> {
+    let ai = config.ai.as_ref();
+    let model = resolve_value(
+        ai.and_then(|ai| ai.model.clone()),
+        "INTAKE_AI_MODEL",
+        flags.model.clone(),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!("no model configured: set `[ai] model`, INTAKE_AI_MODEL, or --model")
+    })?;
+    let base_url = resolve_value(
+        ai.and_then(|ai| ai.base_url.clone()),
+        "INTAKE_AI_BASE_URL",
+        flags.base_url.clone(),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "no base_url configured: set `[ai] base_url`, INTAKE_AI_BASE_URL, or --base-url"
+        )
+    })?;
+    let api_key = resolve_value(
+        ai.and_then(|ai| ai.api_key.clone()),
+        "INTAKE_AI_API_KEY",
+        flags.api_key.clone(),
+    );
+    let mut settings = Settings::new(base_url, model, api_key);
+    if let Some(max_retries) = ai.and_then(|ai| ai.max_retries) {
+        settings.max_retries = max_retries;
     }
-    if let Ok(value) = std::env::var("INTAKE_AI_MODEL") {
-        if !value.is_empty() {
-            settings.model = value;
-        }
+    if let Some(max_tool_calls) = ai.and_then(|ai| ai.max_tool_calls) {
+        settings.max_tool_calls = max_tool_calls;
     }
-    if let Some(value) = &flags.api_key {
-        settings.api_key = value.clone();
+    if let Some(timeout_secs) = ai.and_then(|ai| ai.timeout_secs) {
+        settings.timeout_secs = timeout_secs;
     }
-    if let Some(value) = &flags.model {
-        settings.model = value.clone();
-    }
-    settings.trace_requests = settings.trace_requests || flags.trace_requests;
-    settings.trace_responses = settings.trace_responses || flags.trace_responses;
-    settings.trace_colors = crate::display::color_enabled();
+    settings.trace_requests =
+        ai.is_some_and(|ai| ai.trace_requests.unwrap_or(false)) || flags.trace_requests;
+    settings.trace_responses =
+        ai.is_some_and(|ai| ai.trace_responses.unwrap_or(false)) || flags.trace_responses;
     Ok(settings)
+}
+
+fn resolve_value(
+    from_config: Option<String>,
+    env_name: &str,
+    flag: Option<String>,
+) -> Option<String> {
+    flag.or_else(|| std::env::var(env_name).ok().filter(|v| !v.is_empty()))
+        .or(from_config)
 }
 
 fn prompt_override(
@@ -191,7 +211,7 @@ fn system_prompt(default: &str, override_prompt: Option<&str>, context: &str) ->
 }
 
 struct AiEnv<'a> {
-    settings: &'a AiSettings,
+    settings: &'a Settings,
     backend: &'a dyn LlmBackend,
     config: &'a Config,
 }
@@ -201,7 +221,7 @@ struct AiEnv<'a> {
 /// from the config file → env var → CLI flag resolution in
 /// [`resolve_settings`].
 struct AiSession {
-    settings: AiSettings,
+    settings: Settings,
     backend: OpenAiCompatible,
 }
 
@@ -325,6 +345,7 @@ fn resolve_session<T>(
     tools: &[&dyn Tool],
     status: &spinner::StatusLine,
     job: ResolveJob<'_, T>,
+    yes: bool,
 ) -> Result<T, ResolveError> {
     let backend = spinner::SpinnerBackend::new(env.backend, env.settings, status);
     let wrapped: Vec<spinner::StatusTool<'_>> = tools
@@ -337,12 +358,17 @@ fn resolve_session<T>(
         settings: env.settings,
         backend: &backend,
         tools: &wrapped,
-        trace_sink: Some(status.sink()),
+        trace_observer: Some(Arc::new(trace::TraceRenderer::new(
+            status.writer(),
+            crate::display::color_enabled(),
+        ))),
+        auto_accept: yes,
     };
     let mut resolver = Resolver::new(&ctx, &mut confirmer, job.system);
     resolver.resolve(job.prompt, job.parse, job.present)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_ai_log(
     writer: &mut impl Write,
     env: &AiEnv<'_>,
@@ -351,6 +377,7 @@ fn cmd_ai_log(
     date: chrono::NaiveDate,
     prompt: &str,
     make_confirmer: impl FnOnce(&mut dyn Write) -> Box<dyn Confirmer + '_>,
+    yes: bool,
 ) -> Result<()> {
     let settings = env.settings;
     let config = env.config;
@@ -392,7 +419,7 @@ fn cmd_ai_log(
 
     let (outcome, presented) = {
         let confirmer = make_confirmer(writer);
-        let presented = proposal_presented(confirmer.as_ref());
+        let presented = proposal_presented(yes);
         let tools: [&dyn Tool; 2] = [&food_lookup, &usda_search];
         let outcome = resolve_session(
             env,
@@ -405,6 +432,7 @@ fn cmd_ai_log(
                 parse: &parse,
                 present: &present,
             },
+            yes,
         );
         (outcome, presented)
     };
@@ -444,6 +472,7 @@ fn cmd_ai_food_new(
     name: &FoodName,
     prompt: &str,
     make_confirmer: impl FnOnce(&mut dyn Write) -> Box<dyn Confirmer + '_>,
+    yes: bool,
 ) -> Result<()> {
     let settings = env.settings;
     let config = env.config;
@@ -475,7 +504,7 @@ fn cmd_ai_food_new(
 
     let (outcome, presented) = {
         let confirmer = make_confirmer(writer);
-        let presented = proposal_presented(confirmer.as_ref());
+        let presented = proposal_presented(yes);
         let tools: [&dyn Tool; 1] = [&usda_search];
         let outcome = resolve_session(
             env,
@@ -488,6 +517,7 @@ fn cmd_ai_food_new(
                 parse: &parse,
                 present: &present,
             },
+            yes,
         );
         (outcome, presented)
     };
@@ -521,6 +551,7 @@ fn cmd_ai_food_edit(
     name: &FoodName,
     prompt: &str,
     make_confirmer: impl FnOnce(&mut dyn Write) -> Box<dyn Confirmer + '_>,
+    yes: bool,
 ) -> Result<()> {
     let settings = env.settings;
     let config = env.config;
@@ -551,7 +582,7 @@ fn cmd_ai_food_edit(
 
     let (outcome, presented) = {
         let confirmer = make_confirmer(writer);
-        let presented = proposal_presented(confirmer.as_ref());
+        let presented = proposal_presented(yes);
         let tools: [&dyn Tool; 1] = [&usda_search];
         let outcome = resolve_session(
             env,
@@ -564,6 +595,7 @@ fn cmd_ai_food_edit(
                 parse: &parse,
                 present: &present,
             },
+            yes,
         );
         (outcome, presented)
     };
@@ -606,7 +638,7 @@ fn cmd_ai_food_edit(
 mod tests {
     use super::*;
     use crate::amount::{Grams, Servings};
-    use intake_ai::confirm::{ConfirmDecision, ConfirmError};
+    use intake_ai::confirm::ConfirmDecision;
     use intake_ai::llm::{AssistantMessage, LlmError, Message};
     use std::str::FromStr;
     use std::sync::Mutex;
@@ -638,8 +670,7 @@ mod tests {
     }
 
     struct Scripted<'a> {
-        queue: Mutex<Vec<Result<ConfirmDecision, ConfirmError>>>,
-        present: bool,
+        queue: Mutex<Vec<Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>>>>,
         out: Option<&'a mut dyn Write>,
     }
 
@@ -647,15 +678,15 @@ mod tests {
         fn new(decisions: Vec<ConfirmDecision>) -> Scripted<'a> {
             Scripted {
                 queue: Mutex::new(decisions.into_iter().map(Ok).collect()),
-                present: true,
                 out: None,
             }
         }
 
-        fn results(results: Vec<Result<ConfirmDecision, ConfirmError>>) -> Scripted<'a> {
+        fn results(
+            results: Vec<Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>>>,
+        ) -> Scripted<'a> {
             Scripted {
                 queue: Mutex::new(results),
-                present: true,
                 out: None,
             }
         }
@@ -663,22 +694,16 @@ mod tests {
         fn with_writer(writer: &'a mut dyn Write, decisions: Vec<ConfirmDecision>) -> Scripted<'a> {
             Scripted {
                 queue: Mutex::new(decisions.into_iter().map(Ok).collect()),
-                present: true,
                 out: Some(writer),
-            }
-        }
-
-        fn skip_present(decisions: Vec<ConfirmDecision>) -> Scripted<'a> {
-            Scripted {
-                queue: Mutex::new(decisions.into_iter().map(Ok).collect()),
-                present: false,
-                out: None,
             }
         }
     }
 
     impl Confirmer for Scripted<'_> {
-        fn confirm(&mut self, rendered: &str) -> Result<ConfirmDecision, ConfirmError> {
+        fn confirm(
+            &mut self,
+            rendered: &str,
+        ) -> Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>> {
             if let Some(writer) = self.out.as_deref_mut() {
                 writer.write_all(rendered.as_bytes()).ok();
             }
@@ -689,18 +714,10 @@ mod tests {
                 queue.remove(0)
             }
         }
-
-        fn present_before_confirm(&self) -> bool {
-            self.present
-        }
     }
 
-    fn settings() -> AiSettings {
-        AiSettings {
-            max_retries: 3,
-            max_tool_calls: 20,
-            ..AiSettings::default()
-        }
+    fn settings() -> Settings {
+        Settings::new("http://test/v1", "m", None)
     }
 
     fn entry(title: &str, servings: &str, calories: &str) -> log::LogEntry {
@@ -829,12 +846,14 @@ mod tests {
 
     #[test]
     fn test_resolve_settings_merges_config_env_and_flags() {
-        let config: Config =
-            toml::from_str("[ai]\napi_key = \"cfg\"\nmodel = \"m1\"\ntrace_requests = true\n")
-                .unwrap();
+        let config: Config = toml::from_str(
+            "[ai]\napi_key = \"cfg\"\nmodel = \"m1\"\nbase_url = \"http://cfg/v1\"\ntrace_requests = true\n",
+        )
+        .unwrap();
         let flags = cli::AiFlags {
             api_key: Some("cli".to_string()),
             model: None,
+            base_url: None,
             yes: false,
             trace_requests: false,
             trace_responses: true,
@@ -842,28 +861,73 @@ mod tests {
         };
         std::env::set_var("INTAKE_AI_API_KEY", "env");
         std::env::set_var("INTAKE_AI_MODEL", "m2");
+        std::env::set_var("INTAKE_AI_BASE_URL", "http://env/v1");
         let settings = resolve_settings(&config, &flags).unwrap();
         std::env::remove_var("INTAKE_AI_API_KEY");
         std::env::remove_var("INTAKE_AI_MODEL");
-        assert_eq!(settings.api_key, "cli");
+        std::env::remove_var("INTAKE_AI_BASE_URL");
+        assert_eq!(settings.api_key.as_deref(), Some("cli"));
         assert_eq!(settings.model, "m2");
+        assert_eq!(settings.base_url, "http://env/v1");
         assert!(settings.trace_requests);
         assert!(settings.trace_responses);
     }
 
     #[test]
-    fn test_resolve_settings_defaults_without_config() {
+    fn test_resolve_settings_base_url_flag_wins() {
+        let config: Config =
+            toml::from_str("[ai]\nmodel = \"m\"\nbase_url = \"http://cfg/v1\"\n").unwrap();
+        let flags = cli::AiFlags {
+            api_key: None,
+            model: None,
+            base_url: Some("http://cli/v1".to_string()),
+            yes: false,
+            trace_requests: false,
+            trace_responses: false,
+            prompt_arg: None,
+        };
+        std::env::set_var("INTAKE_AI_BASE_URL", "http://env/v1");
+        let settings = resolve_settings(&config, &flags).unwrap();
+        std::env::remove_var("INTAKE_AI_BASE_URL");
+        assert_eq!(settings.base_url, "http://cli/v1");
+        assert_eq!(settings.model, "m");
+    }
+
+    #[test]
+    fn test_resolve_settings_requires_model_and_base_url() {
         let config = Config::default();
         let flags = cli::AiFlags {
             api_key: None,
             model: None,
+            base_url: None,
+            yes: false,
+            trace_requests: false,
+            trace_responses: false,
+            prompt_arg: None,
+        };
+        let err = resolve_settings(&config, &flags).unwrap_err().to_string();
+        assert!(err.contains("no model configured"), "got: {err}");
+    }
+
+    #[test]
+    fn test_resolve_settings_operational_defaults() {
+        let config = Config::default();
+        let flags = cli::AiFlags {
+            api_key: None,
+            model: Some("m".to_string()),
+            base_url: Some("http://x/v1".to_string()),
             yes: false,
             trace_requests: false,
             trace_responses: false,
             prompt_arg: None,
         };
         let settings = resolve_settings(&config, &flags).unwrap();
-        assert_eq!(settings.model, intake_ai::settings::DEFAULT_MODEL);
+        assert_eq!(settings.model, "m");
+        assert_eq!(settings.base_url, "http://x/v1");
+        assert_eq!(settings.api_key, None);
+        assert_eq!(settings.max_retries, 3);
+        assert_eq!(settings.max_tool_calls, 20);
+        assert_eq!(settings.timeout_secs, 60);
         assert!(!settings.trace_requests);
         assert!(!settings.trace_responses);
     }
@@ -917,6 +981,7 @@ mod tests {
             date,
             "add oatmeal",
             |w| Box::new(Scripted::with_writer(w, vec![ConfirmDecision::Accept])),
+            false,
         )
         .unwrap();
         let text = String::from_utf8_lossy(&out);
@@ -953,6 +1018,7 @@ mod tests {
             date,
             "no changes",
             |w| Box::new(Scripted::with_writer(w, vec![ConfirmDecision::Accept])),
+            false,
         )
         .unwrap();
         assert!(
@@ -965,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ai_log_skip_present_auto_accepts_and_writes() {
+    fn test_ai_log_yes_auto_accepts_and_writes() {
         let dir = foods_dir();
         let log_dir = tempfile::TempDir::new().unwrap();
         let date = chrono::NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
@@ -987,7 +1053,8 @@ mod tests {
             log_dir.path(),
             date,
             "add oatmeal",
-            |_| Box::new(Scripted::skip_present(vec![ConfirmDecision::Reject])),
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Reject])),
+            true,
         )
         .unwrap();
         let text = String::from_utf8_lossy(&out);
@@ -1024,6 +1091,7 @@ mod tests {
             date,
             "x",
             |_| Box::new(Scripted::new(vec![ConfirmDecision::Reject])),
+            false,
         )
         .unwrap();
         assert!(String::from_utf8_lossy(&out).contains("Nothing written"));
@@ -1031,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ai_log_cancelled_exits_ok_nothing_written() {
+    fn test_ai_log_confirmer_error_is_error() {
         let dir = foods_dir();
         let log_dir = tempfile::TempDir::new().unwrap();
         let date = chrono::NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
@@ -1046,17 +1114,23 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        cmd_ai_log(
+        let err = cmd_ai_log(
             &mut out,
             &env,
             dir.path(),
             log_dir.path(),
             date,
             "x",
-            |_| Box::new(Scripted::results(vec![Err(ConfirmError::Cancelled)])),
+            |_| {
+                Box::new(Scripted::results(vec![Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "confirmation broke",
+                )))]))
+            },
+            false,
         )
-        .unwrap();
-        assert!(String::from_utf8_lossy(&out).contains("Nothing written"));
+        .unwrap_err();
+        assert!(err.to_string().contains("confirmation broke"));
     }
 
     #[test]
@@ -1082,6 +1156,7 @@ mod tests {
             date,
             "no changes",
             |w| Box::new(Scripted::with_writer(w, vec![ConfirmDecision::Reject])),
+            false,
         )
         .unwrap();
         let text = String::from_utf8_lossy(&out);
@@ -1138,6 +1213,7 @@ mod tests {
                     ],
                 ))
             },
+            false,
         )
         .unwrap();
         let text = String::from_utf8_lossy(&out);
@@ -1168,9 +1244,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        cmd_ai_food_new(&mut out, &env, dir.path(), &name, "make it", |_| {
-            Box::new(Scripted::new(vec![ConfirmDecision::Reject]))
-        })
+        cmd_ai_food_new(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "make it",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Reject])),
+            false,
+        )
         .unwrap();
         assert!(String::from_utf8_lossy(&out).contains("Nothing written"));
         assert!(!name.file_path(dir.path()).exists());
@@ -1203,6 +1285,7 @@ mod tests {
             date,
             "x",
             |_| Box::new(Scripted::new(vec![ConfirmDecision::Reject])),
+            false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("could not produce valid output"));
@@ -1231,6 +1314,7 @@ mod tests {
             date,
             "x",
             |_| Box::new(Scripted::new(vec![ConfirmDecision::Reject])),
+            false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("timed out"));
@@ -1250,9 +1334,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        cmd_ai_food_new(&mut out, &env, dir.path(), &name, "make it", |_| {
-            Box::new(Scripted::new(vec![ConfirmDecision::Accept]))
-        })
+        cmd_ai_food_new(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "make it",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Accept])),
+            false,
+        )
         .unwrap();
         let text = String::from_utf8_lossy(&out);
         assert!(
@@ -1270,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ai_food_new_skip_present_renders_table() {
+    fn test_ai_food_new_yes_renders_table() {
         let dir = tempfile::TempDir::new().unwrap();
         let name = FoodName::from_str("my-food").unwrap();
         let toml = "title = \"My Food\"\nservings = 2\n\n[[ingredients]]\nname = \"Chicken\"\nquantity = \"200g\"\ncalories = 330\nprotein_g = 46\nfiber_g = 0\nfat_g = 6\ncarbs_g = 0\nalcohol_g = 0\n";
@@ -1283,9 +1373,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        cmd_ai_food_new(&mut out, &env, dir.path(), &name, "make it", |_| {
-            Box::new(Scripted::skip_present(vec![ConfirmDecision::Accept]))
-        })
+        cmd_ai_food_new(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "make it",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Accept])),
+            true,
+        )
         .unwrap();
         let text = String::from_utf8_lossy(&out);
         assert!(
@@ -1311,9 +1407,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        let err = cmd_ai_food_new(&mut out, &env, dir.path(), &name, "x", |_| {
-            Box::new(Scripted::new(vec![ConfirmDecision::Reject]))
-        })
+        let err = cmd_ai_food_new(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "x",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Reject])),
+            false,
+        )
         .unwrap_err();
         assert!(err.to_string().contains("already exists"));
         assert!(
@@ -1338,9 +1440,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        let err = cmd_ai_food_new(&mut out, &env, dir.path(), &name, "make it", |_| {
-            Box::new(Scripted::new(vec![ConfirmDecision::Accept]))
-        })
+        let err = cmd_ai_food_new(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "make it",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Accept])),
+            false,
+        )
         .unwrap_err();
         assert!(err.to_string().contains("already exists"), "got: {err}");
         assert_eq!(
@@ -1391,9 +1499,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        cmd_ai_food_edit(&mut out, &env, dir.path(), &name, "double it", |_| {
-            Box::new(Scripted::new(vec![ConfirmDecision::Accept]))
-        })
+        cmd_ai_food_edit(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "double it",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Accept])),
+            false,
+        )
         .unwrap();
         let text = String::from_utf8_lossy(&out);
         assert!(
@@ -1410,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ai_food_edit_skip_present_renders_table() {
+    fn test_ai_food_edit_yes_renders_table() {
         let dir = tempfile::TempDir::new().unwrap();
         let name = FoodName::from_str("my-food").unwrap();
         let original = "title = \"My Food\"\nservings = 2\n\n[[ingredients]]\nname = \"Chicken\"\ncalories = 330\nprotein_g = 46\nfiber_g = 0\nfat_g = 6\ncarbs_g = 0\nalcohol_g = 0\n";
@@ -1425,9 +1539,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        cmd_ai_food_edit(&mut out, &env, dir.path(), &name, "double it", |_| {
-            Box::new(Scripted::skip_present(vec![ConfirmDecision::Accept]))
-        })
+        cmd_ai_food_edit(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "double it",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Accept])),
+            true,
+        )
         .unwrap();
         let text = String::from_utf8_lossy(&out);
         assert!(
@@ -1455,9 +1575,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        let err = cmd_ai_food_edit(&mut out, &env, dir.path(), &name, "double it", |_| {
-            Box::new(Scripted::new(vec![ConfirmDecision::Accept]))
-        })
+        let err = cmd_ai_food_edit(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "double it",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Accept])),
+            false,
+        )
         .unwrap_err();
         assert!(err.to_string().contains("changed since this proposal"));
     }
@@ -1502,9 +1628,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        cmd_ai_food_edit(&mut out, &env, dir.path(), &name, "no change", |_| {
-            Box::new(Scripted::skip_present(vec![ConfirmDecision::Accept]))
-        })
+        cmd_ai_food_edit(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "no change",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Accept])),
+            true,
+        )
         .unwrap();
         assert!(String::from_utf8_lossy(&out).contains("No changes"));
         let loaded = food::load_food(&name.file_path(dir.path())).unwrap();
@@ -1529,9 +1661,15 @@ mod tests {
             backend: &backend,
             config: &config,
         };
-        let err = cmd_ai_food_new(&mut out, &env, dir.path(), &name, "x", |_| {
-            Box::new(Scripted::new(vec![ConfirmDecision::Reject]))
-        })
+        let err = cmd_ai_food_new(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "x",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Reject])),
+            false,
+        )
         .unwrap_err();
         assert!(err.to_string().contains("could not produce valid output"));
         assert!(!name.file_path(dir.path()).exists());

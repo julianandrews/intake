@@ -1,5 +1,3 @@
-use anyhow::Error as AnyhowError;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmDecision {
     Accept,
@@ -7,22 +5,16 @@ pub enum ConfirmDecision {
     Feedback(String),
 }
 
-#[derive(Debug)]
-pub enum ConfirmError {
-    Cancelled,
-    Io(AnyhowError),
-}
-
-impl From<AnyhowError> for ConfirmError {
-    fn from(e: AnyhowError) -> Self {
-        ConfirmError::Io(e)
-    }
-}
-
+/// Decides whether a resolved value is accepted.
+///
+/// The pipeline renders the resolved value and hands it to the confirmer,
+/// which returns a [`ConfirmDecision`]: `Accept` finishes the resolve,
+/// `Reject` aborts it, and `Feedback` supplies the user's comment and
+/// re-runs the loop. A confirmer that cannot reach a decision returns an
+/// error; the pipeline boxes it and passes it through unchanged.
 pub trait Confirmer {
-    fn confirm(&mut self, rendered: &str) -> Result<ConfirmDecision, ConfirmError>;
-
-    fn present_before_confirm(&self) -> bool {
-        true
-    }
+    fn confirm(
+        &mut self,
+        rendered: &str,
+    ) -> Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>>;
 }

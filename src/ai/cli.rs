@@ -54,6 +54,9 @@ pub(crate) struct AiFlags {
     /// Override the model
     #[arg(long)]
     pub(crate) model: Option<String>,
+    /// Override the base URL of the OpenAI-compatible endpoint
+    #[arg(long)]
+    pub(crate) base_url: Option<String>,
     /// Skip confirmation and accept the proposal
     #[arg(long)]
     pub(crate) yes: bool,
@@ -136,6 +139,8 @@ mod tests {
             "k",
             "--model",
             "m",
+            "--base-url",
+            "http://localhost:11434/v1",
             "--yes",
             "--trace-requests",
             "--trace-responses",
@@ -147,6 +152,7 @@ mod tests {
             }) => {
                 assert_eq!(flags.api_key.as_deref(), Some("k"));
                 assert_eq!(flags.model.as_deref(), Some("m"));
+                assert_eq!(flags.base_url.as_deref(), Some("http://localhost:11434/v1"));
                 assert!(flags.yes);
                 assert!(flags.trace_requests);
                 assert!(flags.trace_responses);

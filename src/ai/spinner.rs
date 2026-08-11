@@ -1,6 +1,6 @@
-use intake_ai::confirm::{ConfirmDecision, ConfirmError, Confirmer};
-use intake_ai::llm::{AssistantMessage, LlmBackend, LlmError, Message, TraceSink};
-use intake_ai::settings::AiSettings;
+use intake_ai::confirm::{ConfirmDecision, Confirmer};
+use intake_ai::llm::{AssistantMessage, LlmBackend, LlmError, Message};
+use intake_ai::settings::Settings;
 use intake_ai::tools::Tool;
 use serde_json::Value;
 #[cfg(test)]
@@ -26,7 +26,7 @@ fn frame(i: usize) -> &'static str {
 }
 
 /// Whether tracing takes over stderr, so the status line must stay off.
-fn trace_on(settings: &AiSettings) -> bool {
+fn trace_on(settings: &Settings) -> bool {
     settings.trace_requests || settings.trace_responses
 }
 
@@ -141,7 +141,7 @@ pub(crate) struct StatusLine {
 impl StatusLine {
     /// Creates a status line, animated only when stderr is a terminal and
     /// tracing is off (tracing takes over stderr).
-    pub(crate) fn new(settings: &AiSettings) -> StatusLine {
+    pub(crate) fn new(settings: &Settings) -> StatusLine {
         Self::with_tty(!trace_on(settings) && stderr_is_tty())
     }
 
@@ -246,11 +246,11 @@ impl StatusLine {
         )
     }
 
-    /// The session's write lock as a [`TraceSink`], so trace dumps serialize
-    /// with frames. Valid even when the line is inactive (per-call mode);
-    /// the underlying writer is plain stderr then.
-    pub(crate) fn sink(&self) -> Arc<dyn TraceSink> {
-        Arc::clone(&self.out) as Arc<dyn TraceSink>
+    /// The session's shared writer, so trace rendering serializes with
+    /// frames. Valid even when the line is inactive (per-call mode); the
+    /// underlying writer is plain stderr then.
+    pub(crate) fn writer(&self) -> Arc<Mutex<Box<dyn Write + Send>>> {
+        Arc::clone(&self.out)
     }
 
     /// Swaps the status text; the worker redraws the line on its next tick.
@@ -443,13 +443,12 @@ impl<'a> SpinnerConfirmer<'a> {
 }
 
 impl Confirmer for SpinnerConfirmer<'_> {
-    fn confirm(&mut self, rendered: &str) -> Result<ConfirmDecision, ConfirmError> {
+    fn confirm(
+        &mut self,
+        rendered: &str,
+    ) -> Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>> {
         self.status.pause();
         self.inner.confirm(rendered)
-    }
-
-    fn present_before_confirm(&self) -> bool {
-        self.inner.present_before_confirm()
     }
 }
 
@@ -472,7 +471,7 @@ pub(crate) struct SpinnerBackend<'a> {
 impl<'a> SpinnerBackend<'a> {
     pub(crate) fn new(
         inner: &'a dyn LlmBackend,
-        settings: &AiSettings,
+        settings: &Settings,
         status: &'a StatusLine,
     ) -> SpinnerBackend<'a> {
         SpinnerBackend {
@@ -508,6 +507,7 @@ impl LlmBackend for SpinnerBackend<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use intake_ai::llm::TraceObserver;
     use intake_ai::pipeline::{ResolveContext, Resolver};
     use std::sync::Mutex;
 
@@ -616,45 +616,44 @@ mod tests {
 
     struct FakeConfirmer {
         calls: Mutex<usize>,
-        present: bool,
         fail: bool,
     }
 
     impl FakeConfirmer {
-        fn new(present: bool) -> FakeConfirmer {
+        fn new() -> FakeConfirmer {
             FakeConfirmer {
                 calls: Mutex::new(0),
-                present,
                 fail: false,
             }
         }
 
-        fn failing(present: bool) -> FakeConfirmer {
+        fn failing() -> FakeConfirmer {
             FakeConfirmer {
                 calls: Mutex::new(0),
-                present,
                 fail: true,
             }
         }
     }
 
     impl Confirmer for FakeConfirmer {
-        fn confirm(&mut self, _rendered: &str) -> Result<ConfirmDecision, ConfirmError> {
+        fn confirm(
+            &mut self,
+            _rendered: &str,
+        ) -> Result<ConfirmDecision, Box<dyn std::error::Error + Send + Sync>> {
             *self.calls.lock().unwrap() += 1;
             if self.fail {
-                Err(ConfirmError::Cancelled)
+                Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "confirmation broke",
+                )))
             } else {
                 Ok(ConfirmDecision::Accept)
             }
         }
-
-        fn present_before_confirm(&self) -> bool {
-            self.present
-        }
     }
 
-    fn settings() -> AiSettings {
-        AiSettings::default()
+    fn settings() -> Settings {
+        Settings::new("http://test/v1", "m", None)
     }
 
     /// An active line whose frames land in an observable buffer.
@@ -668,13 +667,15 @@ mod tests {
     fn resolve_with(
         backend: &dyn LlmBackend,
         confirmer: &mut dyn Confirmer,
+        auto_accept: bool,
     ) -> Result<i64, intake_ai::pipeline::ResolveError> {
         let s = settings();
         let ctx = ResolveContext {
             settings: &s,
             backend,
             tools: &[],
-            trace_sink: None,
+            trace_observer: None,
+            auto_accept,
         };
         let mut resolver = Resolver::new(&ctx, confirmer, "system".to_string());
         resolver.resolve(
@@ -982,10 +983,9 @@ mod tests {
 
     #[test]
     fn test_confirmer_pauses_and_delegates() {
-        let confirmer = FakeConfirmer::new(true);
+        let confirmer = FakeConfirmer::new();
         let status = StatusLine::with_tty(true);
         let mut wrapped = SpinnerConfirmer::new(Box::new(confirmer), &status);
-        assert!(wrapped.present_before_confirm());
         assert!(matches!(
             wrapped.confirm("proposal").unwrap(),
             ConfirmDecision::Accept
@@ -996,13 +996,11 @@ mod tests {
 
     #[test]
     fn test_confirmer_error_propagates_and_line_stays_parked() {
-        let confirmer = FakeConfirmer::failing(true);
+        let confirmer = FakeConfirmer::failing();
         let status = StatusLine::with_tty(true);
         let mut wrapped = SpinnerConfirmer::new(Box::new(confirmer), &status);
-        assert!(matches!(
-            wrapped.confirm("proposal").unwrap_err(),
-            ConfirmError::Cancelled
-        ));
+        let err = wrapped.confirm("proposal").unwrap_err();
+        assert!(err.to_string().contains("confirmation broke"));
         assert!(
             status.paused(),
             "no resume without a further model round — drop cleans up"
@@ -1010,20 +1008,12 @@ mod tests {
     }
 
     #[test]
-    fn test_confirmer_delegates_present() {
-        let confirmer = FakeConfirmer::new(false);
-        let status = StatusLine::with_tty(true);
-        let wrapped = SpinnerConfirmer::new(Box::new(confirmer), &status);
-        assert!(!wrapped.present_before_confirm());
-    }
-
-    #[test]
     fn test_resolve_accept_parks_line_after_final_confirm() {
         let backend = FakeBackend::new(Ok(AssistantMessage::text("42")));
         let status = StatusLine::with_tty(true);
-        let confirmer = FakeConfirmer::new(true);
+        let confirmer = FakeConfirmer::new();
         let mut wrapped = SpinnerConfirmer::new(Box::new(confirmer), &status);
-        let value = resolve_with(&backend, &mut wrapped).unwrap();
+        let value = resolve_with(&backend, &mut wrapped, false).unwrap();
         assert_eq!(value, 42);
         assert!(
             status.paused(),
@@ -1032,12 +1022,12 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_no_present_never_pauses() {
+    fn test_resolve_auto_accept_never_pauses() {
         let backend = FakeBackend::new(Ok(AssistantMessage::text("7")));
         let status = StatusLine::with_tty(true);
-        let confirmer = FakeConfirmer::new(false);
+        let confirmer = FakeConfirmer::new();
         let mut wrapped = SpinnerConfirmer::new(Box::new(confirmer), &status);
-        let value = resolve_with(&backend, &mut wrapped).unwrap();
+        let value = resolve_with(&backend, &mut wrapped, true).unwrap();
         assert_eq!(value, 7);
         assert!(!status.paused());
     }
@@ -1200,18 +1190,30 @@ mod tests {
     }
 
     #[test]
-    fn test_sink_writes_serialize_with_frames() {
-        let (status, buf) = with_test_line();
-        let sink = status.sink();
-        // Simulate a trace dump that takes a while: the worker must not draw
-        // between its lines, or the erase would land mid-dump.
-        sink.with_writer(&mut |w| {
-            let _ = writeln!(w, "--- to model ---");
-            std::thread::sleep(Duration::from_millis(200));
-            let _ = writeln!(w, "--- end to model ---");
-            Ok(())
-        })
-        .unwrap();
+    fn test_trace_renderer_serializes_with_frames() {
+        // A writer that stalls on every write, so rendering a single event
+        // takes a while: the worker must not draw between the renderer's
+        // lines, or the erase would land mid-dump.
+        struct SlowWriter(TestSink);
+        impl Write for SlowWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                std::thread::sleep(Duration::from_millis(200));
+                self.0.write(bytes)
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0.flush()
+            }
+        }
+        let (writer, buf) = TestSink::new();
+        TEST_TTY.with(|c| c.set(true));
+        let out: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(SlowWriter(writer))));
+        let status = StatusLine::with_tty_and_clock_and_out(true, Arc::new(AtomicU64::new(0)), out);
+        let renderer = crate::ai::trace::TraceRenderer::new(status.writer(), false);
+        renderer.on_event(&intake_ai::llm::TraceEvent::MessagesSent(&[
+            intake_ai::llm::Message::User("x".to_string()),
+        ]));
         let text = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
         let start = text
             .find("--- to model ---")
