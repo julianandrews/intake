@@ -42,7 +42,7 @@ pub(crate) fn run(
             date,
             flags,
         } => {
-            let date = commands::resolve_log_date(date.date)?;
+            let date = commands::resolve_date(date.date, date.days_ago)?;
             let Some(prompt) = capture_prompt(&prompt, flags.prompt_arg.as_deref())? else {
                 return write_nothing(writer);
             };

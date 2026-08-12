@@ -21,39 +21,55 @@ Or for zsh: `intake completions zsh --install`
 ## Usage
 
 ```
-intake                                  Show today's log
-intake log <name> [servings] [--date D]     Log a food (macros from its file)
+intake [--date D | --days-ago N]            Show a day's totals (default: today)
+intake log <name> [servings] [--date D | --days-ago N]
+                                              Log a food (macros from its file)
 intake log "<name>" [servings] --calories N --protein N --fiber N --fat N --carbs N --alcohol N
-                                          Log an ad-hoc entry with inline macros
-intake day [date] [-d N]                Show a day's totals (default: today)
-intake summary [date] [-d N]            Multi-day summary of macros and deficit (default: last 7 days)
-intake exercise <calories>              Record exercise calories for today
-intake rm <n> [--date D]                Remove an entry from a day's log
-intake food list                        List all foods with per-serving values
-intake food show <name>                 Show food details with ingredients
-intake food new <name>                  Create a food in your editor
-intake food edit <name>                 Edit a food in your editor
-intake food rm <name>                   Delete a food (existing log entries are unaffected)
-intake ai log [prompt...] [--date D]    Edit a day's log with AI (ops-based)
-intake ai food new <name> [prompt...]   Create a recipe with AI
-intake ai food edit <name> [prompt...]  Edit a recipe with AI
-intake completions <shell>              Generate or install completion script
+                                              Log an ad-hoc entry with inline macros
+intake summary [--date D | --days-ago N] [--days N]
+                                              Multi-day summary of macros and deficit (default: last 7 days)
+intake exercise <calories> [--date D | --days-ago N]
+                                              Record exercise calories for a day (default: today)
+intake rm <n> [--date D | --days-ago N]       Remove an entry from a day's log
+intake food list                              List all foods with per-serving values
+intake food show <name>                       Show food details with ingredients
+intake food new <name>                        Create a food in your editor
+intake food edit <name>                       Edit a food in your editor
+intake food rm <name>                         Delete a food (existing log entries are unaffected)
+intake ai log [prompt...] [--date D | --days-ago N]
+                                              Edit a day's log with AI (ops-based)
+intake ai food new <name> [prompt...]         Create a recipe with AI
+intake ai food edit <name> [prompt...]        Edit a recipe with AI
+intake completions <shell>                    Generate or install completion script
 ```
+Flags like `--foods-dir` and `--log-dir` are root-level: accepted before
+the subcommand on every invocation.
+`--date D` and `--days-ago N` (or `-d N`) target a day the same way on every
+date-targeting command — bare `intake`, `log`, `exercise`, `rm`, `ai log`,
+and `summary` (where `--days-ago` positions the end of the window). Omitting
+both targets today; supplying both is an error. Date flags on a subcommand
+win over date flags on the bare command, and with a non-date command like
+`food` they are an error. For example, `intake --days-ago 1` shows
+yesterday, `intake log coffee -d 1` logs coffee to yesterday, and
+`intake --days-ago 1 log coffee` does the same with the flag before the
+command, and `intake exercise 300 -d 2` records exercise two days ago.
+`intake summary` shows one row per logged day (unlogged days in the window
+are skipped) with period totals and per-day averages; the averages and
+totals are over the logged days only, not the full window length. The
+Deficit column appears when `maintenance_calories` is configured.
 
-Flags like `--foods-dir` and `--log-dir` are available on every command.
-`intake day --days-ago N` (or `-d N`) shows the log from N days ago, e.g.
-`intake day -d 1` for yesterday. `intake log <name> --date D` logs to day D
-instead of today. `intake summary` shows one row per logged day (unlogged
-days in the window are skipped) with period totals and per-day averages;
-the averages and totals are over the logged days only, not the full window
-length. The Deficit column appears when `maintenance_calories` is configured.
-
-`intake day` numbers its rows (the `#` column); `intake rm <n> --date D`
+The day view numbers its rows (the `#` column); `intake rm <n> --date D`
 removes that entry (default: today's log) after a confirmation prompt,
 `--yes` skips it. Removing the last entry of a day that has no exercise
-calories deletes the day file itself, so `intake day` reports "No entries".
+calories deletes the day file itself, so the day view reports "No entries".
 
 Bare `intake` with no subcommand shows today's log.
+
+Changed: the `day` subcommand is gone — the day view is bare `intake`, and
+its old `[date]` positional and `-d` form are now `--date D` and `--days-ago
+N` on the target command. Also, `summary -d N` no longer sets the window
+length (that's `--days N`); `-d`/`--days-ago` is the window's end date,
+matching every other date-targeting command.
 
 ## Configuration
 
@@ -71,12 +87,12 @@ foods_dir = "/path/to/foods"
 log_dir = "/path/to/logs"
 ```
 
-`show_columns` controls which macro columns appear in `day`, `summary`,
-`food list`, and `food show` (values: `calories`, `protein`, `fiber`, `fat`,
-`carbs`, `alcohol`; default: all except `alcohol`; duplicate entries are
-rejected). Every macro accepts `min_<macro>` / `max_<macro>` targets — with
-both set, the `[min, max]` range is the green band: below min is yellow,
-above max is red. Targets scale with day progress.
+`show_columns` controls which macro columns appear in the day view,
+`summary`, `food list`, and `food show` (values: `calories`, `protein`,
+`fiber`, `fat`, `carbs`, `alcohol`; default: all except `alcohol`; duplicate
+entries are rejected). Every macro accepts `min_<macro>` / `max_<macro>`
+targets — with both set, the `[min, max]` range is the green band: below min
+is yellow, above max is red. Targets scale with day progress.
 
 Paths can also be set via `INTAKE_FOODS_DIR` and `INTAKE_LOG_DIR` environment
 variables, or `--foods-dir` / `--log-dir` CLI flags (CLI wins).

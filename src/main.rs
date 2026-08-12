@@ -26,8 +26,9 @@ fn main() -> Result<()> {
         command,
         foods_dir,
         log_dir,
+        date,
     } = Cli::parse();
     display::init_color();
     let config = Config::resolve(foods_dir, log_dir)?;
-    commands::run(command, &config)
+    commands::run(command, date, &config)
 }

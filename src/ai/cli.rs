@@ -1,4 +1,4 @@
-use crate::cli::LogDateArgs;
+use crate::cli::DateArgs;
 use crate::completion::complete_foods;
 use crate::food::FoodName;
 use clap::{Args, Subcommand};
@@ -11,7 +11,7 @@ pub(crate) enum AiCommands {
         /// Prompt for the edit (default: open $EDITOR)
         prompt: Vec<String>,
         #[command(flatten)]
-        date: LogDateArgs,
+        date: DateArgs,
         #[command(flatten)]
         flags: AiFlags,
     },
@@ -111,11 +111,28 @@ mod tests {
             }
             _ => panic!("expected Ai Log command"),
         }
+        assert_eq!(cli.date.date, None);
     }
 
     #[test]
-    fn test_ai_log_date_has_no_short_flag() {
-        assert!(Cli::try_parse_from(["intake", "ai", "log", "-d", "1"]).is_err());
+    fn test_ai_log_days_ago_short_flag_parses() {
+        let cli = Cli::try_parse_from(["intake", "ai", "log", "-d", "1"]).unwrap();
+        match cli.command {
+            Some(Commands::Ai {
+                command: AiCommands::Log { date, .. },
+            }) => {
+                assert_eq!(date.date, None);
+                assert_eq!(date.days_ago, Some(1));
+            }
+            _ => panic!("expected Ai Log command"),
+        }
+    }
+
+    #[test]
+    fn test_ai_food_rejects_date_args() {
+        assert!(
+            Cli::try_parse_from(["intake", "ai", "food", "new", "x", "--days-ago", "1"]).is_err()
+        );
     }
 
     #[test]

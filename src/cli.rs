@@ -22,7 +22,12 @@ const CLAP_STYLES: Styles = Styles::styled()
     .placeholder(AnsiColor::Green.on_default());
 
 #[derive(Parser)]
-#[command(name = "intake", color = clap::ColorChoice::Auto, styles = CLAP_STYLES)]
+#[command(
+    name = "intake",
+    about = "Show today's log (use --date or --days-ago for other days)",
+    color = clap::ColorChoice::Auto,
+    styles = CLAP_STYLES
+)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
@@ -34,14 +39,25 @@ pub(crate) struct Cli {
     /// Directory containing log files
     #[arg(long)]
     pub(crate) log_dir: Option<PathBuf>,
+
+    /// The shared target-date argument: accepted by the day view and every
+    /// date-targeting command (log, ai log, rm, exercise, summary).
+    #[command(flatten)]
+    pub(crate) date: DateArgs,
 }
 
-/// The shared log-date argument: logging commands target a day via `--date`.
-#[derive(Args)]
-pub(crate) struct LogDateArgs {
-    /// Date to log to (YYYY-MM-DD, default: today)
+/// The shared target-date arguments: `--date` or `--days-ago` target a day
+/// relative to today. Flattened into the root command (the day view) and
+/// every date-targeting command; date args on a subcommand win over the
+/// root's.
+#[derive(Args, Clone, Default)]
+pub(crate) struct DateArgs {
+    /// Date to target (YYYY-MM-DD, default: today)
     #[arg(long, add = ArgValueCandidates::new(complete_log_dates))]
     pub(crate) date: Option<String>,
+    /// Number of days before today to target (e.g. 1 = yesterday)
+    #[arg(long, short = 'd', conflicts_with = "date")]
+    pub(crate) days_ago: Option<u32>,
 }
 
 #[derive(Subcommand)]
@@ -73,40 +89,33 @@ pub(crate) enum Commands {
         #[arg(long)]
         alcohol: Option<Grams>,
         #[command(flatten)]
-        date: LogDateArgs,
-    },
-    /// Show a day's totals (default: today)
-    Day {
-        #[arg(add = ArgValueCandidates::new(complete_log_dates))]
-        date: Option<String>,
-        /// Number of days before today to show (e.g. 1 = yesterday)
-        #[arg(long, short = 'd', conflicts_with = "date")]
-        days_ago: Option<u32>,
+        date: DateArgs,
     },
     /// Show a multi-day summary of macros and deficit
     Summary {
-        /// End date (default: today)
-        #[arg(add = ArgValueCandidates::new(complete_log_dates))]
-        date: Option<String>,
         /// Number of days to look back (including the end date)
-        #[arg(long, short = 'd', default_value = "7")]
+        #[arg(long, default_value = "7")]
         days: u32,
+        #[command(flatten)]
+        date: DateArgs,
     },
-    /// Record exercise calories for today
+    /// Record exercise calories for a day
     Exercise {
         /// Calories burned
         calories: Calories,
+        #[command(flatten)]
+        date: DateArgs,
     },
     /// Remove an entry from a day's log
     Rm {
-        /// Entry number to remove (see the # column in `intake day`)
+        /// Entry number to remove (see the # column in the day view, `intake`)
         #[arg(value_parser = clap::value_parser!(u32).range(1..))]
         index: u32,
         /// Skip the confirmation prompt
         #[arg(long)]
         yes: bool,
         #[command(flatten)]
-        date: LogDateArgs,
+        date: DateArgs,
     },
     /// Manage foods
     Food {
@@ -212,6 +221,7 @@ mod tests {
                 assert_eq!(carbs, None);
                 assert_eq!(alcohol, None);
                 assert_eq!(date.date, None);
+                assert_eq!(date.days_ago, None);
             }
             _ => panic!("expected Log command"),
         }
@@ -232,14 +242,58 @@ mod tests {
         match cli.command {
             Some(Commands::Log { date, .. }) => {
                 assert_eq!(date.date, Some("2026-08-01".to_string()));
+                assert_eq!(date.days_ago, None);
             }
+            _ => panic!("expected Log command"),
+        }
+        assert_eq!(cli.date.date, None);
+    }
+
+    #[test]
+    fn test_log_days_ago_short_flag_parses() {
+        let cli = Cli::try_parse_from(["intake", "log", "coffee", "-d", "1"]).unwrap();
+        match cli.command {
+            Some(Commands::Log { date, .. }) => {
+                assert_eq!(date.date, None);
+                assert_eq!(date.days_ago, Some(1));
+            }
+            _ => panic!("expected Log command"),
+        }
+        assert_eq!(cli.date.days_ago, None);
+    }
+
+    #[test]
+    fn test_root_and_subcommand_date_args_parse_separately() {
+        let cli = Cli::try_parse_from(["intake", "-d", "1", "log", "coffee", "-d", "2"]).unwrap();
+        assert_eq!(cli.date.days_ago, Some(1));
+        match cli.command {
+            Some(Commands::Log { date, .. }) => assert_eq!(date.days_ago, Some(2)),
             _ => panic!("expected Log command"),
         }
     }
 
     #[test]
-    fn test_log_date_has_no_short_flag() {
-        assert!(Cli::try_parse_from(["intake", "log", "coffee", "-d", "1"]).is_err());
+    fn test_food_rejects_date_args() {
+        assert!(Cli::try_parse_from(["intake", "food", "list", "--days-ago", "1"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "food", "list", "--date", "2026-08-01"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "completions", "bash", "-d", "1"]).is_err());
+    }
+
+    #[test]
+    fn test_date_and_days_ago_conflict() {
+        assert!(
+            Cli::try_parse_from(["intake", "--date", "2026-08-01", "--days-ago", "2"]).is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "intake",
+            "log",
+            "coffee",
+            "--date",
+            "2026-08-01",
+            "--days-ago",
+            "2"
+        ])
+        .is_err());
     }
 
     #[test]
@@ -254,32 +308,37 @@ mod tests {
     }
 
     #[test]
-    fn test_day_days_ago_short_flag_parses() {
-        let cli = Cli::try_parse_from(["intake", "day", "-d", "2"]).unwrap();
-        match cli.command {
-            Some(Commands::Day { date, days_ago }) => {
-                assert_eq!(date, None);
-                assert_eq!(days_ago, Some(2));
-            }
-            _ => panic!("expected Day command"),
-        }
+    fn test_bare_intake_days_ago_parses() {
+        let cli = Cli::try_parse_from(["intake", "-d", "2"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.date.date, None);
+        assert_eq!(cli.date.days_ago, Some(2));
     }
 
     #[test]
-    fn test_day_date_and_days_ago_conflict() {
-        assert!(Cli::try_parse_from(["intake", "day", "2026-08-01", "--days-ago", "2"]).is_err());
-    }
-
-    #[test]
-    fn test_summary_days_short_flag_parses() {
-        let cli = Cli::try_parse_from(["intake", "summary", "-d", "5"]).unwrap();
+    fn test_summary_parses_days() {
+        let cli = Cli::try_parse_from(["intake", "summary", "--days", "5"]).unwrap();
         match cli.command {
-            Some(Commands::Summary { date, days }) => {
-                assert_eq!(date, None);
+            Some(Commands::Summary { days, date }) => {
                 assert_eq!(days, 5);
+                assert_eq!(date.date, None);
+                assert_eq!(date.days_ago, None);
             }
             _ => panic!("expected Summary command"),
         }
+    }
+
+    #[test]
+    fn test_summary_days_short_flag_is_days_ago() {
+        let cli = Cli::try_parse_from(["intake", "summary", "-d", "5"]).unwrap();
+        match cli.command {
+            Some(Commands::Summary { days, date }) => {
+                assert_eq!(days, 7);
+                assert_eq!(date.days_ago, Some(5));
+            }
+            _ => panic!("expected Summary command"),
+        }
+        assert_eq!(cli.date.days_ago, None);
     }
 
     #[test]
@@ -302,6 +361,12 @@ mod tests {
                 assert!(yes);
                 assert_eq!(date.date, Some("2026-08-01".to_string()));
             }
+            _ => panic!("expected Rm command"),
+        }
+
+        let cli = Cli::try_parse_from(["intake", "rm", "3", "--yes", "--days-ago", "1"]).unwrap();
+        match cli.command {
+            Some(Commands::Rm { date, .. }) => assert_eq!(date.days_ago, Some(1)),
             _ => panic!("expected Rm command"),
         }
     }

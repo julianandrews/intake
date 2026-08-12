@@ -191,8 +191,8 @@ pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: Calories
 /// between that read and this removal is an error instead of silently
 /// removing a different entry. Also errors if the day log doesn't exist or
 /// the index is out of range. If the removal leaves no entries and no
-/// exercise calories, the day file itself is deleted so `day` reports
-/// "no entries" instead of an empty table.
+/// exercise calories, the day file itself is deleted so the day view
+/// reports "no entries" instead of an empty table.
 pub fn remove_entry(
     log_dir: &Path,
     date: NaiveDate,

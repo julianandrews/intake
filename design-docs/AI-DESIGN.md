@@ -90,9 +90,10 @@ The lib takes text in and returns the validated `T`; prompt capture
 **Stays in `intake`** (the root package) — everything intake-specific:
 
 - clap surface: the existing command tree plus the `ai` tree and shared
-  flags; the shared `--date` arg (one `Args` definition, flattened into
-  `log` and `ai log`); `day` and `summary` own their date args (`[date]` +
-  `-d`)
+  flags; one shared target-date `Args` definition (`--date` / `--days-ago`),
+  flattened into the root and every date-targeting command so the day view,
+  `log`, `ai log`, `rm`, `exercise`, and `summary` all speak the same date
+  scheme — no positional dates anywhere
 - prompt capture: `$VISUAL` → `$EDITOR` → `nano` on a temp file with `#`
   guidance comments; unchanged file aborts; clear error when no editor spawns
 - a non-gated `[y]es` / `[n]o` confirm helper (+ `--yes`) used by the plain
@@ -194,7 +195,7 @@ The AI surface is a transparent prefix on the two write verbs it serves —
 non-AI forms:
 
 ```
-intake ai log [prompt...] [--date D]   # AI day editing (ops-based)
+intake ai log [prompt...] [--date D | --days-ago N]   # AI day editing (ops-based)
 intake ai food new <name> [prompt...]  # AI recipe generation
 intake ai food edit <name> [prompt...] # AI recipe editing (name completion)
 ```
@@ -216,15 +217,28 @@ silent zero macros.
 
 ### Date arguments
 
-- Logging commands (`log`, `ai log`) target a day via `--date D` — long form
-  only, no short flag. One shared clap `Args` definition is flattened into
-  both commands so they can't drift, with the log-date completion candidates
-  attached.
-- `--days-ago` is a display convenience and exists only on `day`:
-  `[date]` positional + `-d N` / `--days-ago N`. Supplying both `[date]` and
-  `-d N` is a usage error (clap `conflicts_with`).
-- `summary` keeps its own `[date]` + `-d N` / `--days N` (window) — a
-  semantically separate command with its own flags; no sharing.
+- One shared target-date `Args` struct (`DateArgs`) for every date-targeting
+  surface: bare `intake` (the day view), `log`, `ai log`, `rm`, `exercise`,
+  and `summary` (whose window end it positions). It is flattened — not
+  `global` — into the root command and each of those commands, so the
+  definition can't drift and every level parses its own copy of the flags.
+- `--date D` targets day D; `-d N` / `--days-ago N` targets N days before
+  today; omitting both targets today. Supplying both at the same level is a
+  usage error (clap `conflicts_with`). `--date` carries the log-date
+  completion candidates; there is no other short flag anywhere in the CLI,
+  so `-d` always means `--days-ago`.
+- Cross-level repetition is merged with later-wins: date args on a
+  subcommand override the root's wholesale, so `intake -d 1 log coffee` and
+  `intake log coffee -d 1` both target yesterday, and
+  `intake -d 1 log coffee --date D` targets D. The merge happens in
+  `commands::run` via `merged_date`; the root's args are the fallback, used
+  by the day view and by date-targeting commands whose own args are unset.
+- Non-date commands (`food`, `ai food`, `completions`) don't flatten
+  `DateArgs`: their own date flags are a clap parse error, and date flags on
+  the bare command combined with them are a runtime error
+  (`reject_root_date`).
+- `summary` keeps its own `--days N` (window length, default 7) — a
+  semantically separate flag, long-only.
 
 The AI commands, in full:
 
@@ -328,9 +342,9 @@ Semantics:
   through the retry loop.
 - An applied day with no entries and no `exercise_calories` deletes the day
   file instead of writing one — the same convention as `remove_entry`, with
-  the same directory sync — so `day` reports "No entries" rather than an
-  empty table. The row diff already shows every row removed, so the proposal
-  still states what will happen.
+  the same directory sync — so the day view reports "No entries" rather than
+  an empty table. The row diff already shows every row removed, so the
+  proposal still states what will happen.
 - `exercise_calories` is preserved by construction — `apply_ops` copies it
   through and no op can touch it (an explicit `exercise` op is future work).
 - The `ai log` parse closure is: deserialize `DayLogOps` → validate →

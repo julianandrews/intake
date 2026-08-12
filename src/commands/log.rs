@@ -14,9 +14,9 @@ use std::str::FromStr;
 pub(crate) fn cmd_exercise(
     writer: &mut impl Write,
     log_dir: &Path,
+    date: chrono::NaiveDate,
     calories: Calories,
 ) -> Result<()> {
-    let date = Local::now().date_naive();
     log::set_exercise_calories(log_dir, date, calories)?;
     writeln!(
         writer,
@@ -26,8 +26,8 @@ pub(crate) fn cmd_exercise(
     Ok(())
 }
 
-/// Remove entry `index` (1-based, as shown in the `#` column of `intake day`)
-/// from the day log for `date`, then show the updated day.
+/// Remove entry `index` (1-based, as shown in the `#` column of the day
+/// view, `intake`) from the day log for `date`, then show the updated day.
 pub(crate) fn cmd_rm(
     writer: &mut impl Write,
     log_dir: &Path,
