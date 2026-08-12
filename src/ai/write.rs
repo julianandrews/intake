@@ -5,6 +5,40 @@ use chrono::NaiveDate;
 use std::fs;
 use std::path::Path;
 
+/// A day log produced by `apply_ops` plus the count of add ops that were
+/// applied — the additions the day carries. The count lets the write path
+/// stamp exactly the added entries with timestamps; `apply_ops` itself stays
+/// pure.
+pub(crate) struct AppliedDay {
+    pub day: DayLog,
+    pub add_ops: usize,
+}
+
+/// Stamp the entries added by add ops with `now` (UTC). `apply_ops` appends
+/// all additions at the end, so they are exactly the trailing `add_ops`
+/// entries of the applied day. Existing entries — including rows rewritten
+/// by replace ops, which edit content rather than re-logging — keep their
+/// timestamps. Stamping happens at write time, after confirmation, so the
+/// stamp records when the write landed.
+pub(crate) fn stamp_added_entries(applied: AppliedDay, now: crate::log::Timestamp) -> AppliedDay {
+    let mut day = applied.day;
+    let k = applied.add_ops;
+    if k > 0 {
+        // `apply_ops` appends exactly one entry per add op, so the additions
+        // are the trailing `k` entries; assert the invariant rather than
+        // underflowing the slice start if it ever breaks.
+        debug_assert!(k <= day.entries.len());
+        let start = day.entries.len() - k;
+        for entry in &mut day.entries[start..] {
+            entry.timestamp = Some(now);
+        }
+    }
+    AppliedDay {
+        day,
+        add_ops: applied.add_ops,
+    }
+}
+
 /// Write `new` as the day log for `date`, but only if the current file still
 /// matches `expected` exactly (or both are absent). Runs inside the log
 /// directory lock, so the check and the write are atomic against concurrent
@@ -72,6 +106,7 @@ mod tests {
             fat_g: Grams::from_str(macros[3]).unwrap(),
             carbs_g: Grams::from_str(macros[4]).unwrap(),
             alcohol_g: Grams::from_str(macros[5]).unwrap(),
+            timestamp: None,
         }
     }
 
@@ -268,5 +303,63 @@ mod tests {
         assert!(rx.recv().unwrap().is_ok());
         thread.join().unwrap();
         Ok(())
+    }
+
+    fn now() -> crate::log::Timestamp {
+        crate::log::Timestamp::now()
+    }
+
+    fn applied(entries: Vec<crate::log::LogEntry>, add_ops: usize) -> AppliedDay {
+        AppliedDay {
+            day: DayLog {
+                entries,
+                exercise_calories: Calories::ZERO,
+            },
+            add_ops,
+        }
+    }
+
+    #[test]
+    fn test_stamp_added_entries_stamps_exactly_trailing_additions() {
+        let t0 = now();
+        let mut entries = vec![
+            entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+            entry("chili", "1.0", ["300", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+            entry("oatmeal", "1.0", ["200", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+            entry("apple", "1.0", ["52", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        ];
+        // A pre-existing timed row must keep its stamp untouched.
+        entries[0].timestamp = Some(t0);
+        let day = applied(entries, 2);
+        let t = now();
+        let stamped = stamp_added_entries(day, t);
+        assert_eq!(stamped.add_ops, 2);
+        assert_eq!(stamped.day.entries[0].timestamp, Some(t0));
+        assert_eq!(stamped.day.entries[1].timestamp, None);
+        assert_eq!(stamped.day.entries[2].timestamp, Some(t));
+        assert_eq!(stamped.day.entries[3].timestamp, Some(t));
+    }
+
+    #[test]
+    fn test_stamp_added_entries_no_ops_is_noop() {
+        let day = applied(
+            vec![entry(
+                "coffee",
+                "1.0",
+                ["12", "0.0", "0.0", "0.0", "0.0", "0.0"],
+            )],
+            0,
+        );
+        let t = now();
+        let stamped = stamp_added_entries(day, t);
+        assert_eq!(stamped.day.entries[0].timestamp, None);
+        assert_eq!(stamped.day.entries.len(), 1);
+    }
+
+    #[test]
+    fn test_stamp_added_entries_empty_day() {
+        let day = applied(vec![], 0);
+        let stamped = stamp_added_entries(day, now());
+        assert!(stamped.day.entries.is_empty());
     }
 }

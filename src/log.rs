@@ -1,11 +1,59 @@
 use crate::amount::{Calories, Grams, Macros, Servings};
+use crate::config::TimeFormat;
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::NaiveDate;
+use chrono::{DateTime, Local, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// A full RFC 3339 timestamp in UTC (`2026-08-12T21:45:03Z`), attached to a
+/// log entry. Optional per entry: legacy entries and entries written with
+/// `write_timestamps` off carry `None`. All construction — from the clock or
+/// from explicit `HH:MM` user input — happens in intake, never in the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Timestamp(DateTime<Utc>);
+
+impl Timestamp {
+    /// The current instant, captured once per command invocation. Truncated
+    /// to whole seconds — stored timestamps are RFC 3339 with seconds
+    /// precision, matching explicit `--time` / `retime` stamps.
+    pub fn now() -> Timestamp {
+        Timestamp(Utc::now().with_nanosecond(0).expect("second truncation"))
+    }
+
+    /// Interpret `time` of day on `date` as **local** time and convert to
+    /// UTC. An ambiguous or nonexistent local time (DST gap or fall-back) is
+    /// an error, never a guessed instant.
+    pub fn from_local(date: NaiveDate, time: NaiveTime) -> Result<Timestamp> {
+        let naive = date.and_time(time);
+        match Local.from_local_datetime(&naive) {
+            LocalResult::Single(dt) => Ok(Timestamp(dt.with_timezone(&Utc))),
+            LocalResult::Ambiguous(..) => bail!(
+                "ambiguous local time {} (DST fall-back) — pick a different time",
+                naive
+            ),
+            LocalResult::None => bail!("nonexistent local time {} (DST gap)", naive),
+        }
+    }
+
+    /// Format for display in the local timezone, per the configured format.
+    pub fn format(&self, format: TimeFormat) -> String {
+        let offset = Local.offset_from_utc_datetime(&self.0.naive_utc());
+        self.format_at(format, offset)
+    }
+
+    /// Format for display at an explicit offset; the display boundary
+    /// conversion (local timezone) is applied by the caller.
+    fn format_at(&self, format: TimeFormat, offset: chrono::FixedOffset) -> String {
+        let local = self.0.with_timezone(&offset);
+        match format {
+            TimeFormat::H24 => local.format("%H:%M").to_string(),
+            TimeFormat::H12 => local.format("%-I:%M %p").to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -18,6 +66,7 @@ pub struct LogEntry {
     pub fat_g: Grams,
     pub carbs_g: Grams,
     pub alcohol_g: Grams,
+    pub timestamp: Option<Timestamp>,
 }
 
 impl LogEntry {
@@ -247,6 +296,57 @@ pub fn remove_entry(
     Ok(removed)
 }
 
+/// Set the timestamp of the entry at 1-based `index` in the day log for
+/// `date`, holding the directory lock across the whole read-modify-write.
+///
+/// The entry at `index` must equal `expected` exactly — callers read the day
+/// log first (e.g. to show a confirmation), so a concurrent modification
+/// between that read and this write is an error instead of silently stamping
+/// a different entry. Also errors if the day log doesn't exist or the index
+/// is out of range. Returns the updated entry.
+pub fn set_entry_timestamp(
+    log_dir: &Path,
+    date: NaiveDate,
+    index: usize,
+    expected: &LogEntry,
+    timestamp: Timestamp,
+) -> Result<LogEntry> {
+    let _dir_lock = lock_log_dir(log_dir)?;
+    let path = log_path(log_dir, date);
+
+    let mut day_log: DayLog = if path.exists() {
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read log: {}", path.display()))?;
+        toml::from_str(&content)
+            .with_context(|| format!("failed to parse log: {}", path.display()))?
+    } else {
+        bail!("no entries for {}", date);
+    };
+
+    if index == 0 || index > day_log.entries.len() {
+        bail!(
+            "entry {} not found — day {} has {}",
+            index,
+            date,
+            entry_count_label(day_log.entries.len())
+        );
+    }
+
+    let found = &day_log.entries[index - 1];
+    if found != expected {
+        bail!(
+            "entry {} changed since it was listed — day {} was modified concurrently; nothing changed",
+            index,
+            date
+        );
+    }
+
+    day_log.entries[index - 1].timestamp = Some(timestamp);
+    write_day_locked(log_dir, date, &day_log)?;
+
+    Ok(day_log.entries[index - 1].clone())
+}
+
 /// "1 entry" or "N entries", for out-of-range error messages.
 pub(crate) fn entry_count_label(count: usize) -> String {
     if count == 1 {
@@ -292,6 +392,7 @@ mod tests {
             fat_g: Grams::from_str(macros[3]).unwrap(),
             carbs_g: Grams::from_str(macros[4]).unwrap(),
             alcohol_g: Grams::from_str(macros[5]).unwrap(),
+            timestamp: None,
         }
     }
 
@@ -842,6 +943,36 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_entry_rejects_timestamp_difference() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+
+        // Entry equality includes the timestamp: an expected entry whose
+        // only difference is the timestamp must be rejected, matching the
+        // design doc's "entry equality now includes the timestamp".
+        let expected = load_day(dir.path(), date)?
+            .expect("day should exist")
+            .entries[0]
+            .clone();
+        let mut changed = expected.clone();
+        changed.timestamp = Some(Timestamp::now());
+
+        let err = remove_entry(dir.path(), date, 1, &changed).unwrap_err();
+        assert!(err.to_string().contains("changed since it was listed"));
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].timestamp, None, "file must be untouched");
+
+        Ok(())
+    }
+
+    #[test]
     fn test_remove_entry_preserves_remaining_entries() -> Result<()> {
         let dir = tempfile::TempDir::new()?;
         let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
@@ -867,6 +998,264 @@ mod tests {
             Servings::from_str("1.0").unwrap()
         );
 
+        Ok(())
+    }
+
+    fn timestamp(utc: &str) -> Timestamp {
+        Timestamp(
+            DateTime::parse_from_rfc3339(utc)
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+    }
+
+    #[test]
+    fn test_timestamp_serializes_rfc3339_utc() {
+        // TOML serializes top-level values only inside tables, so go through
+        // a container — the real shape is a `LogEntry` field.
+        #[derive(Deserialize, Serialize)]
+        struct Holder {
+            ts: Option<Timestamp>,
+        }
+        let ts = timestamp("2026-08-12T21:45:03Z");
+        let serialized = toml::to_string(&Holder { ts: Some(ts) }).unwrap();
+        assert!(
+            serialized.contains("ts = \"2026-08-12T21:45:03Z\""),
+            "got: {serialized}"
+        );
+        let parsed: Holder = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.ts, Some(ts));
+    }
+
+    #[test]
+    fn test_timestamp_unparseable_rejected() {
+        assert!(toml::from_str::<Timestamp>("\"not a timestamp\"").is_err());
+        assert!(toml::from_str::<Timestamp>("\"2026-13-40T99:99:99Z\"").is_err());
+    }
+
+    #[test]
+    fn test_timestamp_format_at_fixed_offsets() {
+        let ts = timestamp("2026-08-12T14:05:00Z");
+        let utc = chrono::FixedOffset::east_opt(0).unwrap();
+        let east2 = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        let west5 = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        assert_eq!(ts.format_at(TimeFormat::H24, utc), "14:05");
+        assert_eq!(ts.format_at(TimeFormat::H24, east2), "16:05");
+        assert_eq!(ts.format_at(TimeFormat::H24, west5), "09:05");
+        assert_eq!(ts.format_at(TimeFormat::H12, east2), "4:05 PM");
+        assert_eq!(ts.format_at(TimeFormat::H12, west5), "9:05 AM");
+        assert_eq!(
+            timestamp("2026-08-12T00:30:00Z").format_at(TimeFormat::H12, east2),
+            "2:30 AM"
+        );
+    }
+
+    #[test]
+    fn test_timestamp_from_local_roundtrips_in_local_zone() -> Result<()> {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 11).unwrap();
+        let time = NaiveTime::from_hms_opt(14, 30, 0).unwrap();
+        let ts = Timestamp::from_local(date, time)?;
+        assert_eq!(
+            ts.0.with_timezone(&Local).naive_local().date(),
+            date,
+            "conversion must preserve the local date"
+        );
+        assert_eq!(ts.0.with_timezone(&Local).naive_local().time(), time);
+        // Display roundtrip: formatting at the same instant's local offset
+        // must reproduce the input, in any local timezone.
+        assert_eq!(ts.format(TimeFormat::H24), "14:30");
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_roundtrip_with_timestamp() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let mut e = entry(
+            "oatmeal",
+            "1.5",
+            ["200", "15.0", "5.0", "2.0", "30.0", "0.0"],
+        );
+        e.timestamp = Some(timestamp("2026-08-01T14:30:00Z"));
+        append_entry(dir.path(), date, &e)?;
+
+        let content =
+            std::fs::read_to_string(dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))))?;
+        assert!(
+            content.contains("timestamp = \"2026-08-01T14:30:00Z\""),
+            "got: {content}"
+        );
+
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert_eq!(loaded.entries[0].timestamp, Some(e.timestamp.unwrap()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_malformed_timestamp_rejected() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\ntimestamp = \"yesterday\"\n",
+        )?;
+        assert!(load_day(dir.path(), date).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_entry_absent_timestamp_is_none() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        // A legacy day file written before the timestamp feature: the field
+        // is absent entirely, so the entry must load with `None`.
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+        )?;
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert_eq!(loaded.entries[0].timestamp, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_entry_timestamp_sets_and_persists() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        append_entry(
+            dir.path(),
+            date,
+            &entry("chili", "1.0", ["300", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        let ts = Timestamp::from_local(date, NaiveTime::from_hms_opt(19, 45, 0).unwrap())?;
+        let updated = set_entry_timestamp(dir.path(), date, 2, &loaded.entries[1], ts)?;
+        assert_eq!(updated.timestamp, Some(ts));
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries[0].timestamp, None, "other entries untouched");
+        assert_eq!(loaded.entries[1].timestamp, Some(ts));
+
+        // Overwrite an existing timestamp.
+        let ts2 = Timestamp::from_local(date, NaiveTime::from_hms_opt(8, 0, 0).unwrap())?;
+        set_entry_timestamp(dir.path(), date, 2, &loaded.entries[1], ts2)?;
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries[1].timestamp, Some(ts2));
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_entry_timestamp_out_of_range_errors() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        let ts = Timestamp::from_local(date, NaiveTime::from_hms_opt(8, 0, 0).unwrap())?;
+
+        let err = set_entry_timestamp(dir.path(), date, 2, &loaded.entries[0], ts).unwrap_err();
+        assert!(err.to_string().contains("entry 2 not found"));
+        let err = set_entry_timestamp(dir.path(), date, 0, &loaded.entries[0], ts).unwrap_err();
+        assert!(err.to_string().contains("entry 0 not found"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_entry_timestamp_no_day_errors() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        let expected = entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]);
+        let ts = Timestamp::from_local(date, NaiveTime::from_hms_opt(8, 0, 0).unwrap())?;
+        let err = set_entry_timestamp(dir.path(), date, 1, &expected, ts).unwrap_err();
+        assert!(err.to_string().contains("no entries"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_entry_timestamp_rejects_changed_entry() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        append_entry(
+            dir.path(),
+            date,
+            &entry("chili", "1.0", ["300", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        append_entry(
+            dir.path(),
+            date,
+            &entry("oatmeal", "1.0", ["200", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+
+        // A concurrent removal shifts the confirmed index: the entry at
+        // index 2 is no longer the chili.
+        let expected = load_day(dir.path(), date)?
+            .expect("day should exist")
+            .entries[1]
+            .clone();
+        let entries = load_day(dir.path(), date)?.expect("day should exist");
+        remove_entry(dir.path(), date, 1, &entries.entries[0])?;
+
+        let ts = Timestamp::from_local(date, NaiveTime::from_hms_opt(8, 0, 0).unwrap())?;
+        let err = set_entry_timestamp(dir.path(), date, 2, &expected, ts).unwrap_err();
+        assert!(err.to_string().contains("changed since it was listed"));
+        assert!(err.to_string().contains("nothing changed"));
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.entries[0].title, "chili");
+        assert_eq!(loaded.entries[0].timestamp, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_entry_timestamp_waits_for_lock() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+
+        let dir_handle = std::fs::File::open(dir.path())?;
+        dir_handle.lock()?;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir_path = dir.path().to_path_buf();
+        let ts = Timestamp::from_local(date, NaiveTime::from_hms_opt(8, 0, 0).unwrap())?;
+        let entry = load_day(dir.path(), date)?
+            .expect("day should exist")
+            .entries[0]
+            .clone();
+        let thread = std::thread::spawn(move || {
+            let result = set_entry_timestamp(&dir_path, date, 1, &entry, ts);
+            tx.send(result).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            rx.try_recv().is_err(),
+            "set_entry_timestamp completed while the lock was held"
+        );
+
+        drop(dir_handle);
+
+        assert!(rx.recv().unwrap().is_ok());
+        thread.join().unwrap();
         Ok(())
     }
 }

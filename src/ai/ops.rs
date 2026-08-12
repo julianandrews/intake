@@ -88,6 +88,7 @@ fn food_entry(foods_dir: &Path, name: &str, servings: Servings) -> Result<log::L
         fat_g: ps.fat_g,
         carbs_g: ps.carbs_g,
         alcohol_g: ps.alcohol_g,
+        timestamp: None,
     })
 }
 
@@ -157,6 +158,7 @@ fn replace_entry(foods_dir: &Path, op: &DayLogOp) -> Result<log::LogEntry, Strin
                 fat_g: *fat_g,
                 carbs_g: *carbs_g,
                 alcohol_g: *alcohol_g,
+                timestamp: None,
             })
         }
         (Some(_), Some(_)) => {
@@ -203,6 +205,7 @@ pub fn apply_ops(
                     fat_g: *fat_g,
                     carbs_g: *carbs_g,
                     alcohol_g: *alcohol_g,
+                    timestamp: None,
                 });
             }
             DayLogOp::Remove { row } | DayLogOp::Replace { row, .. } => {
@@ -230,7 +233,12 @@ pub fn apply_ops(
             None => entries.push(entry.clone()),
             Some(DayLogOp::Remove { .. }) => {}
             Some(op @ DayLogOp::Replace { .. }) => {
-                entries.push(replace_entry(foods_dir, op).map_err(|e| format!("row {row}: {e}"))?);
+                let mut replaced =
+                    replace_entry(foods_dir, op).map_err(|e| format!("row {row}: {e}"))?;
+                // A replace edits an existing entry's content in place; it
+                // keeps the row's original timestamp rather than re-logging.
+                replaced.timestamp = entry.timestamp;
+                entries.push(replaced);
             }
             Some(_) => unreachable!(),
         }
@@ -276,6 +284,7 @@ mod tests {
             fat_g: grams("0"),
             carbs_g: grams("0"),
             alcohol_g: grams("0"),
+            timestamp: None,
         }
     }
 
@@ -437,6 +446,37 @@ mod tests {
         assert_eq!(applied.entries.len(), 2);
         assert_eq!(applied.entries[1].title, "Shake");
         assert_eq!(applied.entries[1].protein_g, grams("30"));
+    }
+
+    #[test]
+    fn test_replace_keeps_original_timestamp() {
+        let dir = foods_dir_with_oatmeal();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 8, 11).unwrap();
+        let ts =
+            log::Timestamp::from_local(date, chrono::NaiveTime::from_hms_opt(12, 30, 0).unwrap())
+                .unwrap();
+        let mut original = entry("coffee", "1", "12");
+        original.timestamp = Some(ts);
+        let day = day(vec![original]);
+        let ops =
+            parse_ops("[[ops]]\nkind = \"replace\"\nrow = 1\nname = \"oatmeal\"\nservings = 1\n");
+        let applied = apply_ops(&day, &ops, dir.path()).unwrap();
+        assert_entry_matches(&applied.entries[0], "Oatmeal", "1", "200");
+        assert_eq!(
+            applied.entries[0].timestamp,
+            Some(ts),
+            "a replace edits content in place and must keep the row's timestamp"
+        );
+    }
+
+    #[test]
+    fn test_replace_keeps_missing_timestamp_missing() {
+        let dir = foods_dir_with_oatmeal();
+        let day = day(vec![entry("coffee", "1", "12")]);
+        let ops =
+            parse_ops("[[ops]]\nkind = \"replace\"\nrow = 1\nname = \"oatmeal\"\nservings = 1\n");
+        let applied = apply_ops(&day, &ops, dir.path()).unwrap();
+        assert_eq!(applied.entries[0].timestamp, None);
     }
 
     #[test]

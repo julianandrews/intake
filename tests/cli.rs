@@ -1084,7 +1084,8 @@ fn test_adhoc_with_fat_carbs_alcohol() {
         .find(|l| l.contains("Beer and nuts"))
         .expect("adhoc row present");
     let cells: Vec<&str> = row.split_whitespace().collect();
-    assert_eq!(cells[cells.len() - 6], "2", "servings cell in row: {row}");
+    // Trailing cells: Servings, Time, Calories, Carbs, Fat, Protein, Fiber.
+    assert_eq!(cells[cells.len() - 7], "2", "servings cell in row: {row}");
     assert!(row.contains("500"), "calories in row: {row}");
     assert!(row.contains("18.0"), "fat in row: {row}");
     assert!(row.contains("40.0"), "carbs in row: {row}");
@@ -1098,10 +1099,12 @@ fn test_view_total_row_does_not_sum_servings() {
     let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
 
-    // 2 servings of Chili (100 cal) + 1 serving of Oatmeal (50 cal)
+    // 2 servings of Chili (100 cal) + 1 serving of Oatmeal (50 cal); the
+    // entries carry timestamps so the row tokenization includes the Time
+    // cell and never relies on empty-cell collapse.
     std::fs::write(
         dir.path().join("2026-08-02.toml"),
-        "exercise_calories = 0\n\n[[entries]]\nservings = 2.0\ncalories = 100.0\nprotein_g = 10.0\nfiber_g = 4.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Chili\"\n\n[[entries]]\nservings = 1.0\ncalories = 50.0\nprotein_g = 5.0\nfiber_g = 2.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Oatmeal\"\n",
+        "exercise_calories = 0\n\n[[entries]]\nservings = 2.0\ncalories = 100.0\nprotein_g = 10.0\nfiber_g = 4.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Chili\"\ntimestamp = \"2026-08-02T08:00:00Z\"\n\n[[entries]]\nservings = 1.0\ncalories = 50.0\nprotein_g = 5.0\nfiber_g = 2.0\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Oatmeal\"\ntimestamp = \"2026-08-02T12:00:00Z\"\n",
     )
     .unwrap();
 
@@ -2091,4 +2094,481 @@ fn test_rm_preserves_exercise() {
     assert!(!day_out.contains("Coffee"));
     assert!(day_out.contains("Exercise"));
     assert!(day_out.contains("300"));
+}
+
+fn write_config(config_dir: &Path, content: &str) {
+    let intake_config = config_dir.join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(intake_config.join("config.toml"), content).unwrap();
+}
+
+fn today_file(dir: &Path) -> String {
+    let today = chrono::Local::now().date_naive();
+    std::fs::read_to_string(dir.join(format!("{today}.toml"))).unwrap()
+}
+
+#[test]
+fn test_log_stamps_timestamp_by_default() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "log",
+        "coffee",
+    ]);
+    assert!(success, "log failed: {}", stdout);
+    assert!(
+        stdout.contains("Time"),
+        "day view must show the Time column: {stdout}"
+    );
+    let log_file = today_file(dir.path());
+    assert!(
+        log_file.contains("timestamp = \""),
+        "no stamp written: {log_file}"
+    );
+    assert!(
+        log_file.contains("Z\""),
+        "stamp must be a UTC RFC 3339 string: {log_file}"
+    );
+}
+
+#[test]
+fn test_log_time_flag_stamps_exact_time() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "log",
+            "coffee",
+            "--time",
+            "14:30",
+            "--date",
+            "2026-08-01",
+        ],
+        config_dir.path(),
+        // Deterministic local timezone: the stamp is 14:30 local on the
+        // target date, converted to UTC.
+        &[("TZ", "UTC")],
+    );
+    assert!(success, "log failed: {}", stdout);
+    assert!(
+        stdout.contains("14:30"),
+        "day view must show the time: {stdout}"
+    );
+    let log_file = std::fs::read_to_string(dir.path().join("2026-08-01.toml")).unwrap();
+    assert!(
+        log_file.contains("timestamp = \"2026-08-01T14:30:00Z\""),
+        "exact stamp missing: {log_file}"
+    );
+}
+
+#[test]
+fn test_write_timestamps_false_omits_stamp_and_time_flag_overrides() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    write_config(config_dir.path(), "write_timestamps = false\n");
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "log",
+            "coffee",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "log failed: {}", stdout);
+    let log_file = today_file(dir.path());
+    assert!(
+        !log_file.contains("timestamp"),
+        "toggle off must omit the stamp: {log_file}"
+    );
+
+    // Explicit --time always wins over the toggle.
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "log",
+            "oatmeal",
+            "--time",
+            "08:05",
+            "--date",
+            "2026-08-01",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "log failed: {}", stdout);
+    let log_file = std::fs::read_to_string(dir.path().join("2026-08-01.toml")).unwrap();
+    assert!(
+        log_file.contains("timestamp = \""),
+        "explicit --time must stamp despite the toggle: {log_file}"
+    );
+}
+
+#[test]
+fn test_retime_sets_timestamp() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+    write_day_log(dir.path(), "2026-08-02", "100", "10.0", "4.0", 0);
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "retime",
+            "1",
+            "09:15",
+            "--yes",
+            "--date",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+        &[("TZ", "UTC")],
+    );
+    assert!(success, "retime failed: {}", stdout);
+    assert!(stdout.contains("Set entry 1"), "got: {stdout}");
+    assert!(stdout.contains("to 09:15"), "got: {stdout}");
+    assert!(
+        stdout.contains("09:15"),
+        "updated day must show the time: {stdout}"
+    );
+
+    let log_file = std::fs::read_to_string(dir.path().join("2026-08-02.toml")).unwrap();
+    assert!(
+        log_file.contains("timestamp = \"2026-08-02T09:15:00Z\""),
+        "exact stamp missing: {log_file}"
+    );
+}
+
+#[test]
+fn test_retime_confirm_yes_and_no() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+    write_day_log(dir.path(), "2026-08-02", "100", "10.0", "4.0", 0);
+
+    let base = [
+        "--foods-dir",
+        fd_str.as_str(),
+        "--log-dir",
+        log_dir_str.as_str(),
+        "retime",
+        "1",
+        "09:15",
+        "--date",
+        "2026-08-02",
+    ];
+
+    let (stdout, success) = run_in_env_stdin(&base, config_dir.path(), &[("TZ", "UTC")], "y\n");
+    assert!(success, "confirm should exit 0: {}", stdout);
+    assert!(stdout.contains("Set entry 1"), "got: {stdout}");
+    let log_file = std::fs::read_to_string(dir.path().join("2026-08-02.toml")).unwrap();
+    assert!(
+        log_file.contains("timestamp"),
+        "stamp missing after yes: {log_file}"
+    );
+
+    // Decline: nothing changes, exit 0.
+    let (stdout, success) = run_in_env_stdin(&base, config_dir.path(), &[("TZ", "UTC")], "n\n");
+    assert!(success, "decline should exit 0: {}", stdout);
+    assert!(stdout.contains("Nothing changed"), "got: {stdout}");
+    let log_file = std::fs::read_to_string(dir.path().join("2026-08-02.toml")).unwrap();
+    assert!(
+        log_file.contains("timestamp"),
+        "stamp must survive the decline: {log_file}"
+    );
+}
+
+#[test]
+fn test_show_timestamp_config_hides_time_column() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    write_config(config_dir.path(), "show_timestamp = false\n");
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+    write_day_log(dir.path(), "2026-08-02", "100", "10.0", "4.0", 0);
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "--date",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "view failed: {}", stdout);
+    assert!(
+        !stdout.contains("Time"),
+        "Time column must be hidden: {stdout}"
+    );
+    assert!(stdout.contains("Servings"));
+}
+
+#[test]
+fn test_time_format_12h_renders_ampm() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    write_config(config_dir.path(), "time_format = \"12h\"\n");
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "log",
+            "coffee",
+            "--time",
+            "14:30",
+            "--date",
+            "2026-08-01",
+        ],
+        config_dir.path(),
+        &[("TZ", "UTC")],
+    );
+    assert!(success, "log failed: {}", stdout);
+    assert!(stdout.contains("2:30 PM"), "12h cell missing: {stdout}");
+    assert!(
+        !stdout.contains("14:30"),
+        "12h format must not show 24h time: {stdout}"
+    );
+}
+
+#[test]
+fn test_log_time_flag_with_days_ago_stamps_yesterday() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    // The design's headline workflow: log a meal from yesterday with its
+    // time of day. TZ=UTC keeps the local->UTC conversion deterministic.
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "log",
+            "coffee",
+            "--time",
+            "14:30",
+            "--days-ago",
+            "1",
+        ],
+        config_dir.path(),
+        &[("TZ", "UTC")],
+    );
+    assert!(success, "log failed: {}", stdout);
+    let date = stdout
+        .split_once("to ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .next()
+        .unwrap();
+    let file = std::fs::read_to_string(dir.path().join(format!("{date}.toml"))).unwrap();
+    assert!(
+        file.contains(&format!("timestamp = \"{date}T14:30:00Z\"")),
+        "{date} file: {file}"
+    );
+}
+
+#[test]
+fn test_retime_with_days_ago_targets_yesterday() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+    let yesterday = (chrono::Local::now().date_naive() - chrono::Days::new(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    write_day_log(dir.path(), &yesterday, "100", "10.0", "4.0", 0);
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "retime",
+            "1",
+            "09:15",
+            "--yes",
+            "--days-ago",
+            "1",
+        ],
+        config_dir.path(),
+        &[("TZ", "UTC")],
+    );
+    assert!(success, "retime failed: {}", stdout);
+    let file = std::fs::read_to_string(dir.path().join(format!("{yesterday}.toml"))).unwrap();
+    assert!(
+        file.contains(&format!("timestamp = \"{yesterday}T09:15:00Z\"")),
+        "{yesterday} file: {file}"
+    );
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    assert!(
+        !dir.path().join(format!("{today}.toml")).exists(),
+        "retime must target yesterday, not today"
+    );
+}
+
+#[test]
+fn test_retime_overwrites_existing_stamp() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "log",
+            "coffee",
+            "--time",
+            "08:05",
+            "--date",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+        &[("TZ", "UTC")],
+    );
+    assert!(success, "log failed: {}", stdout);
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "retime",
+            "1",
+            "09:15",
+            "--yes",
+            "--date",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+        &[("TZ", "UTC")],
+    );
+    assert!(success, "retime failed: {}", stdout);
+    assert!(stdout.contains("to 09:15"), "got: {stdout}");
+
+    let file = std::fs::read_to_string(dir.path().join("2026-08-02.toml")).unwrap();
+    assert!(
+        file.contains("timestamp = \"2026-08-02T09:15:00Z\""),
+        "overwrite missing: {file}"
+    );
+    assert!(
+        !file.contains("08:05"),
+        "old stamp must be replaced: {file}"
+    );
+}
+
+#[test]
+fn test_log_time_dst_gap_errors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    // 2026-03-08 02:30 does not exist in America/New_York (spring forward).
+    let (stdout, stderr, code) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "log",
+            "coffee",
+            "--time",
+            "02:30",
+            "--date",
+            "2026-03-08",
+        ],
+        config_dir.path(),
+        &[("TZ", "America/New_York")],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}");
+    assert!(
+        stderr.contains("nonexistent local time 2026-03-08 02:30:00 (DST gap)"),
+        "got: {stderr}"
+    );
+    assert!(
+        !dir.path().join("2026-03-08.toml").exists(),
+        "no day file may be written for an invalid time"
+    );
+}
+
+#[test]
+fn test_retime_dst_ambiguous_errors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+    write_day_log(dir.path(), "2026-11-01", "100", "10.0", "4.0", 0);
+
+    // 2026-11-01 01:30 is ambiguous in America/New_York (fall back).
+    let (stdout, stderr, code) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "retime",
+            "1",
+            "01:30",
+            "--yes",
+            "--date",
+            "2026-11-01",
+        ],
+        config_dir.path(),
+        &[("TZ", "America/New_York")],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}");
+    assert!(
+        stderr.contains("ambiguous local time 2026-11-01 01:30:00 (DST fall-back)"),
+        "got: {stderr}"
+    );
+    let file = std::fs::read_to_string(dir.path().join("2026-11-01.toml")).unwrap();
+    assert!(
+        !file.contains("timestamp"),
+        "the day file must be unchanged: {file}"
+    );
 }

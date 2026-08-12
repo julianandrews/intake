@@ -225,6 +225,7 @@ mod tests {
                 fat_g: Grams::from_str("2.0").unwrap(),
                 carbs_g: Grams::from_str("8.0").unwrap(),
                 alcohol_g: Grams::ZERO,
+                timestamp: None,
             }],
             exercise_calories: Calories::from_str(&exercise.to_string()).unwrap(),
         };

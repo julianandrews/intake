@@ -29,6 +29,7 @@ pub(crate) fn run(command: Option<Commands>, root_date: DateArgs, config: &Confi
             fat,
             carbs,
             alcohol,
+            time,
             date,
         }) => {
             let adhoc = calories.is_some()
@@ -56,6 +57,7 @@ pub(crate) fn run(command: Option<Commands>, root_date: DateArgs, config: &Confi
                     servings,
                     macros: &macros,
                     adhoc,
+                    time,
                 },
                 date,
                 config,
@@ -75,6 +77,16 @@ pub(crate) fn run(command: Option<Commands>, root_date: DateArgs, config: &Confi
             let merged = merged_date(&root_date, &date);
             let date = resolve_date(merged.date, merged.days_ago)?;
             log::cmd_rm(&mut stdout, &log_dir, date, index, yes, config)?;
+        }
+        Some(Commands::Retime {
+            index,
+            time,
+            yes,
+            date,
+        }) => {
+            let merged = merged_date(&root_date, &date);
+            let date = resolve_date(merged.date, merged.days_ago)?;
+            log::cmd_retime(&mut stdout, &log_dir, date, index, time, yes, config)?;
         }
         Some(Commands::Food { command }) => {
             reject_root_date(&root_date, "food")?;
@@ -147,7 +159,7 @@ fn reject_root_date(root: &DateArgs, name: &str) -> Result<()> {
     if root.date.is_some() || root.days_ago.is_some() {
         bail!(
             "--date/--days-ago target the day view (bare `intake`) or a date-targeting \
-             command (log, summary, exercise, rm, ai log); `{name}` doesn't take them"
+             command (log, summary, exercise, rm, retime, ai log); `{name}` doesn't take them"
         );
     }
     Ok(())

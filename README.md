@@ -22,15 +22,17 @@ Or for zsh: `intake completions zsh --install`
 
 ```
 intake [--date D | --days-ago N]            Show a day's totals (default: today)
-intake log <name> [servings] [--date D | --days-ago N]
+intake log <name> [servings] [--time HH:MM] [--date D | --days-ago N]
                                               Log a food (macros from its file)
-intake log "<name>" [servings] --calories N --protein N --fiber N --fat N --carbs N --alcohol N
+intake log "<name>" [servings] --calories N --protein N --fiber N --fat N --carbs N --alcohol N [--time HH:MM]
                                               Log an ad-hoc entry with inline macros
 intake summary [--date D | --days-ago N] [--days N]
                                               Multi-day summary of macros and deficit (default: last 7 days)
 intake exercise <calories> [--date D | --days-ago N]
                                               Record exercise calories for a day (default: today)
 intake rm <n> [--date D | --days-ago N]       Remove an entry from a day's log
+intake retime <n> <HH:MM> [--yes] [--date D | --days-ago N]
+                                              Set an entry's timestamp
 intake food list                              List all foods with per-serving values
 intake food show <name>                       Show food details with ingredients
 intake food new <name>                        Create a food in your editor
@@ -63,6 +65,15 @@ removes that entry (default: today's log) after a confirmation prompt,
 `--yes` skips it. Removing the last entry of a day that has no exercise
 calories deletes the day file itself, so the day view reports "No entries".
 
+Every entry carries a timestamp recording when it was logged (a full RFC
+3339 string in UTC, shown in the day view's Time column in local time).
+`intake log coffee --time 14:30 --days-ago 1` stamps the entry at 14:30 on
+the target date instead of now — handy when you can't log a meal until
+later; `intake retime 2 14:30` adjusts an entry that's already logged
+(1-based row number, confirmation prompt, `--yes` skips it). See the
+Configuration section for the `write_timestamps`, `show_timestamp`, and
+`time_format` keys.
+
 Bare `intake` with no subcommand shows today's log.
 
 Changed: the `day` subcommand is gone — the day view is bare `intake`, and
@@ -83,6 +94,9 @@ min_fat = 50.0
 max_fat = 90.0
 maintenance_calories = 2400
 show_columns = ["calories", "carbs", "fat", "protein", "fiber"]
+write_timestamps = true    # write a timestamp on new entries (default: true)
+show_timestamp = true      # Time column in the day view (default: true)
+time_format = "24h"        # "24h" → 14:05 (default) | "12h" → 2:05 PM
 foods_dir = "/path/to/foods"
 log_dir = "/path/to/logs"
 ```
@@ -93,6 +107,14 @@ log_dir = "/path/to/logs"
 entries are rejected). Every macro accepts `min_<macro>` / `max_<macro>`
 targets — with both set, the `[min, max]` range is the green band: below min
 is yellow, above max is red. Targets scale with day progress.
+
+`write_timestamps` controls whether new entries get a timestamp (default
+`true`); an explicit `--time` on `log` or the `retime` command always writes
+one, regardless of the flag. `show_timestamp` adds the Time column to the
+day view (default `true`); `time_format` selects 24-hour `HH:MM` (default)
+or 12-hour `h:mm AM/PM` rendering. Entries without timestamps (written
+before the feature, or with `write_timestamps = false`) show an empty Time
+cell.
 
 Paths can also be set via `INTAKE_FOODS_DIR` and `INTAKE_LOG_DIR` environment
 variables, or `--foods-dir` / `--log-dir` CLI flags (CLI wins).

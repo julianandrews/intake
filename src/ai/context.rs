@@ -204,6 +204,7 @@ mod tests {
             fat_g: grams("0"),
             carbs_g: grams("0"),
             alcohol_g: grams("0"),
+            timestamp: None,
         }
     }
 
@@ -231,6 +232,7 @@ mod tests {
             fat_g: grams("0.5"),
             carbs_g: grams("24.0"),
             alcohol_g: grams("0.0"),
+            timestamp: None,
         };
         assert_eq!(
             entry_line(&e),

@@ -200,6 +200,21 @@ fn test_ai_log_confirmed_proposal_writes_day() {
     let day = std::fs::read_to_string(log_dir.path().join("2026-08-10.toml")).unwrap();
     assert!(day.contains("title = \"Oatmeal\""), "day: {day}");
     assert!(day.contains("servings = 1"), "day: {day}");
+    // The added entry is stamped at write time (RFC 3339 UTC); the
+    // pre-existing coffee entry keeps no timestamp.
+    assert_eq!(
+        day.matches("timestamp = \"").count(),
+        1,
+        "exactly the added entry must carry a timestamp: {day}"
+    );
+    assert!(
+        day.contains("Z\""),
+        "stamp must be a UTC RFC 3339 string: {day}"
+    );
+    assert!(
+        day.contains("timestamp = \"20"),
+        "stamp must be a plausible year-20xx date: {day}"
+    );
 
     let bodies = fake.request_bodies();
     assert_eq!(bodies.len(), 1, "expected exactly one LLM request");

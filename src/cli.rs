@@ -15,6 +15,11 @@ fn non_blank_name(s: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+fn parse_time(s: &str) -> Result<chrono::NaiveTime, String> {
+    chrono::NaiveTime::parse_from_str(s, "%H:%M")
+        .map_err(|_| "time must be in HH:MM 24-hour format".to_string())
+}
+
 const CLAP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
     .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
@@ -88,6 +93,9 @@ pub(crate) enum Commands {
         /// Alcohol in grams (ad-hoc entry)
         #[arg(long)]
         alcohol: Option<Grams>,
+        /// Time of day to stamp the entry with (HH:MM, local) instead of now
+        #[arg(long, value_name = "HH:MM", value_parser = parse_time)]
+        time: Option<chrono::NaiveTime>,
         #[command(flatten)]
         date: DateArgs,
     },
@@ -111,6 +119,20 @@ pub(crate) enum Commands {
         /// Entry number to remove (see the # column in the day view, `intake`)
         #[arg(value_parser = clap::value_parser!(u32).range(1..))]
         index: u32,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        date: DateArgs,
+    },
+    /// Set an entry's timestamp
+    Retime {
+        /// Entry number to re-time (see the # column in the day view, `intake`)
+        #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+        index: u32,
+        /// New time of day (HH:MM, local)
+        #[arg(value_name = "HH:MM", value_parser = parse_time)]
+        time: chrono::NaiveTime,
         /// Skip the confirmation prompt
         #[arg(long)]
         yes: bool,
@@ -210,6 +232,7 @@ mod tests {
                 fat,
                 carbs,
                 alcohol,
+                time,
                 date,
             }) => {
                 assert_eq!(name, "coffee");
@@ -220,11 +243,99 @@ mod tests {
                 assert_eq!(fat, None);
                 assert_eq!(carbs, None);
                 assert_eq!(alcohol, None);
+                assert_eq!(time, None);
                 assert_eq!(date.date, None);
                 assert_eq!(date.days_ago, None);
             }
             _ => panic!("expected Log command"),
         }
+    }
+
+    #[test]
+    fn test_log_time_flag_parses() {
+        let cli = Cli::try_parse_from(["intake", "log", "coffee", "--time", "14:30"]).unwrap();
+        match cli.command {
+            Some(Commands::Log { time, date, .. }) => {
+                assert_eq!(
+                    time,
+                    Some(chrono::NaiveTime::from_hms_opt(14, 30, 0).unwrap())
+                );
+                assert_eq!(date.date, None);
+            }
+            _ => panic!("expected Log command"),
+        }
+
+        // Composes with the date flags.
+        let cli =
+            Cli::try_parse_from(["intake", "log", "coffee", "-d", "1", "--time", "08:05"]).unwrap();
+        match cli.command {
+            Some(Commands::Log { time, date, .. }) => {
+                assert_eq!(
+                    time,
+                    Some(chrono::NaiveTime::from_hms_opt(8, 5, 0).unwrap())
+                );
+                assert_eq!(date.days_ago, Some(1));
+            }
+            _ => panic!("expected Log command"),
+        }
+    }
+
+    #[test]
+    fn test_log_time_rejects_bad_format() {
+        assert!(Cli::try_parse_from(["intake", "log", "coffee", "--time", "3pm"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "log", "coffee", "--time", "14:30:45"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "log", "coffee", "--time", "25:00"]).is_err());
+    }
+
+    #[test]
+    fn test_retime_parses_index_time_yes_and_date() {
+        let cli = Cli::try_parse_from(["intake", "retime", "2", "14:30"]).unwrap();
+        match cli.command {
+            Some(Commands::Retime {
+                index,
+                time,
+                yes,
+                date,
+            }) => {
+                assert_eq!(index, 2);
+                assert_eq!(time, chrono::NaiveTime::from_hms_opt(14, 30, 0).unwrap());
+                assert!(!yes);
+                assert_eq!(date.date, None);
+            }
+            _ => panic!("expected Retime command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "intake",
+            "retime",
+            "3",
+            "08:05",
+            "--yes",
+            "--date",
+            "2026-08-01",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Retime {
+                index,
+                time,
+                yes,
+                date,
+            }) => {
+                assert_eq!(index, 3);
+                assert_eq!(time, chrono::NaiveTime::from_hms_opt(8, 5, 0).unwrap());
+                assert!(yes);
+                assert_eq!(date.date, Some("2026-08-01".to_string()));
+            }
+            _ => panic!("expected Retime command"),
+        }
+    }
+
+    #[test]
+    fn test_retime_rejects_zero_index_and_bad_time() {
+        assert!(Cli::try_parse_from(["intake", "retime", "0", "14:30"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "retime", "1", "half past"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "retime", "1"]).is_err());
     }
 
     #[test]

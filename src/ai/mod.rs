@@ -397,22 +397,33 @@ fn cmd_ai_log(
         entries: Vec::new(),
         exercise_calories: Calories::ZERO,
     });
-    let parse = |s: &str| -> Result<log::DayLog, String> {
+    let parse = |s: &str| -> Result<write::AppliedDay, String> {
         let day_ops: ops::DayLogOps = toml::from_str(s).map_err(|e| e.to_string())?;
-        ops::apply_ops(&base, &day_ops.ops, foods_dir)
+        let add_ops = day_ops
+            .ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    ops::DayLogOp::AddFood { .. } | ops::DayLogOp::AddAdhoc { .. }
+                )
+            })
+            .count();
+        let day = ops::apply_ops(&base, &day_ops.ops, foods_dir)?;
+        Ok(write::AppliedDay { day, add_ops })
     };
-    let present = |applied: &log::DayLog| -> String {
+    let present = |applied: &write::AppliedDay| -> String {
         let diff = row_diff(
             original
                 .as_ref()
                 .map(|d| d.entries.as_slice())
                 .unwrap_or(&[]),
-            &applied.entries,
+            &applied.day.entries,
         );
         if diff.is_empty() {
             return confirm::NO_CHANGES_PROPOSAL.to_string();
         }
-        let table = crate::commands::log::render_day(applied, date, config)
+        let table = crate::commands::log::render_day(&applied.day, date, config)
             .unwrap_or_else(|e| format!("(day table unavailable: {e})"));
         format!("{diff}\n\n{table}")
     };
@@ -440,16 +451,26 @@ fn cmd_ai_log(
     match outcome {
         Ok(applied) => {
             let changed = match &original {
-                Some(d) => d != &applied,
+                Some(d) => d != &applied.day,
                 None => {
-                    !(applied.entries.is_empty() && applied.exercise_calories == Calories::ZERO)
+                    !(applied.day.entries.is_empty()
+                        && applied.day.exercise_calories == Calories::ZERO)
                 }
             };
             if !changed {
                 writeln!(writer, "No changes")?;
                 return Ok(());
             }
-            write::write_day_checked(log_dir, date, original.as_ref(), applied)?;
+            // Stamp the added entries at write time, after confirmation, so
+            // the stamp records when the write landed. `write_timestamps`
+            // off leaves the additions untimed; `replace` ops keep their
+            // rows' original timestamps.
+            let applied = if config.write_timestamps() {
+                write::stamp_added_entries(applied, log::Timestamp::now())
+            } else {
+                applied
+            };
+            write::write_day_checked(log_dir, date, original.as_ref(), applied.day)?;
             if presented {
                 writeln!(writer, "Logged to {date}")?;
             } else {
@@ -643,6 +664,12 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Mutex;
 
+    /// Serializes tests that read or write the `INTAKE_AI_*` environment
+    /// variables: cargo runs tests in parallel threads within one process, so
+    /// one test's `std::env::set_var` / `remove_var` would otherwise race with
+    /// another test's `resolve_settings` / `usda_key` reads.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
     struct FakeBackend {
         queue: Mutex<Vec<Result<AssistantMessage, LlmError>>>,
     }
@@ -730,6 +757,7 @@ mod tests {
             fat_g: Grams::from_str("0").unwrap(),
             carbs_g: Grams::from_str("0").unwrap(),
             alcohol_g: Grams::from_str("0").unwrap(),
+            timestamp: None,
         }
     }
 
@@ -846,6 +874,7 @@ mod tests {
 
     #[test]
     fn test_resolve_settings_merges_config_env_and_flags() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config: Config = toml::from_str(
             "[ai]\napi_key = \"cfg\"\nmodel = \"m1\"\nbase_url = \"http://cfg/v1\"\ntrace_requests = true\n",
         )
@@ -875,6 +904,7 @@ mod tests {
 
     #[test]
     fn test_resolve_settings_base_url_flag_wins() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config: Config =
             toml::from_str("[ai]\nmodel = \"m\"\nbase_url = \"http://cfg/v1\"\n").unwrap();
         let flags = cli::AiFlags {
@@ -895,6 +925,7 @@ mod tests {
 
     #[test]
     fn test_resolve_settings_requires_model_and_base_url() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config = Config::default();
         let flags = cli::AiFlags {
             api_key: None,
@@ -911,6 +942,7 @@ mod tests {
 
     #[test]
     fn test_resolve_settings_operational_defaults() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config = Config::default();
         let flags = cli::AiFlags {
             api_key: None,
@@ -934,6 +966,7 @@ mod tests {
 
     #[test]
     fn test_usda_key_from_config() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config: Config = toml::from_str("[ai]\nusda_api_key = \"k\"\n").unwrap();
         assert_eq!(usda_key(&config), "k");
         assert_eq!(usda_key(&Config::default()), "");
@@ -941,6 +974,7 @@ mod tests {
 
     #[test]
     fn test_usda_key_env_overrides_config() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config: Config = toml::from_str("[ai]\nusda_api_key = \"k\"\n").unwrap();
         std::env::set_var("INTAKE_AI_USDA_API_KEY", "usda-key");
         let key = usda_key(&config);
@@ -950,6 +984,7 @@ mod tests {
 
     #[test]
     fn test_usda_key_from_env() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config = Config::default();
         std::env::set_var("INTAKE_AI_USDA_API_KEY", "usda-key");
         let key = usda_key(&config);
@@ -993,6 +1028,46 @@ mod tests {
         assert_eq!(loaded.entries.len(), 2);
         assert_eq!(loaded.entries[1].title, "Oatmeal");
         assert_eq!(loaded.entries[1].servings, Servings::from_str("2").unwrap());
+        // The pre-existing entry keeps no timestamp; the added entry is
+        // stamped at write time (the default `write_timestamps` is on).
+        assert_eq!(loaded.entries[0].timestamp, None);
+        assert!(loaded.entries[1].timestamp.is_some());
+    }
+
+    #[test]
+    fn test_ai_log_write_timestamps_off_leaves_additions_untimed() {
+        let dir = foods_dir();
+        let log_dir = tempfile::TempDir::new().unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+        write_day(log_dir.path(), date, vec![entry("coffee", "1", "12")]);
+        let ops = "[[ops]]\nkind = \"add-food\"\nname = \"oatmeal\"\nservings = 2\n";
+        let backend = FakeBackend::new(vec![Ok(AssistantMessage::text(ops))]);
+        let mut out = Vec::new();
+        let config: Config = toml::from_str("write_timestamps = false\n").unwrap();
+        let settings = settings();
+        let env = AiEnv {
+            settings: &settings,
+            backend: &backend,
+            config: &config,
+        };
+        cmd_ai_log(
+            &mut out,
+            &env,
+            dir.path(),
+            log_dir.path(),
+            date,
+            "add oatmeal",
+            |_| Box::new(Scripted::new(vec![ConfirmDecision::Accept])),
+            true,
+        )
+        .unwrap();
+        let loaded = log::load_day(log_dir.path(), date).unwrap().unwrap();
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].timestamp, None);
+        assert_eq!(
+            loaded.entries[1].timestamp, None,
+            "write_timestamps = false must leave ai log additions untimed"
+        );
     }
 
     #[test]

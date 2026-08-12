@@ -6,10 +6,13 @@ A CLI diet tracker written in Rust. Usage lives in `README.md` and `intake --hel
 
 Foods are templates for log entries: `log` loads a food file, computes its
 per-serving macros, and copies them (plus the food's title) into a new
-standalone log entry. Entries are flat — `title`, `servings`, and the six
-macros — with no reference back to the food file, so editing a food never
-changes existing log entries and logs render without reading the foods
-directory.
+standalone log entry. Entries are flat — `title`, `servings`, the six
+macros, and an optional `timestamp` (a full RFC 3339 string in UTC,
+recording when the entry was logged) — with no reference back to the food
+file, so editing a food never changes existing log entries and logs render
+without reading the foods directory. Timestamps are always constructed by
+intake — from the clock at write time, or from explicit `--time` / `retime`
+input (local time on the target date) — never by the AI model.
 
 ## Workspace
 

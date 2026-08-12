@@ -36,6 +36,17 @@ impl Column {
     }
 }
 
+/// The display format for the day view's Time column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum TimeFormat {
+    /// 24-hour, `HH:MM` zero-padded (e.g. `14:05`).
+    #[serde(rename = "24h")]
+    H24,
+    /// 12-hour, `h:mm AM/PM` (e.g. `2:05 PM`).
+    #[serde(rename = "12h")]
+    H12,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ColumnTarget {
     pub min: Option<Decimal>,
@@ -84,6 +95,9 @@ pub struct Config {
     pub max_carbs: Option<Decimal>,
     pub min_alcohol: Option<Decimal>,
     pub max_alcohol: Option<Decimal>,
+    pub write_timestamps: Option<bool>,
+    pub show_timestamp: Option<bool>,
+    pub time_format: Option<TimeFormat>,
     #[cfg(feature = "ai")]
     pub ai: Option<crate::ai::settings::AiConfig>,
 }
@@ -171,6 +185,23 @@ impl Config {
             }
         }
         Ok(columns.clone())
+    }
+
+    /// Whether new log entries get a timestamp on write (default: true).
+    /// An explicit `--time` / `retime` overrides this per invocation.
+    pub fn write_timestamps(&self) -> bool {
+        self.write_timestamps.unwrap_or(true)
+    }
+
+    /// Whether the day view shows the Time column (default: true).
+    pub fn show_timestamp(&self) -> bool {
+        self.show_timestamp.unwrap_or(true)
+    }
+
+    /// The display format for Time cells (default: 24-hour `HH:MM`). An
+    /// unknown `time_format` value is rejected at config parse.
+    pub fn time_format(&self) -> TimeFormat {
+        self.time_format.unwrap_or(TimeFormat::H24)
     }
 
     pub fn targets(&self) -> Result<DayTargets> {
@@ -346,6 +377,37 @@ mod tests {
     #[test]
     fn test_unknown_column_rejected() {
         assert!(toml::from_str::<Config>("show_columns = [\"bogus\"]\n").is_err());
+    }
+
+    #[test]
+    fn test_timestamp_config_defaults() {
+        let config = Config::default();
+        assert!(config.write_timestamps());
+        assert!(config.show_timestamp());
+        assert_eq!(config.time_format(), TimeFormat::H24);
+    }
+
+    #[test]
+    fn test_timestamp_config_flags_parse() {
+        let config: Config =
+            toml::from_str("write_timestamps = false\nshow_timestamp = false\n").unwrap();
+        assert!(!config.write_timestamps());
+        assert!(!config.show_timestamp());
+        assert_eq!(config.time_format(), TimeFormat::H24);
+    }
+
+    #[test]
+    fn test_time_format_12h_parses() {
+        let config: Config = toml::from_str("time_format = \"12h\"\n").unwrap();
+        assert_eq!(config.time_format(), TimeFormat::H12);
+    }
+
+    #[test]
+    fn test_time_format_unknown_rejected() {
+        let err = toml::from_str::<Config>("time_format = \"bogus\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("24h"), "got: {err}");
     }
 
     #[test]
