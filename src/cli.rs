@@ -101,9 +101,9 @@ pub(crate) enum Commands {
     },
     /// Show a multi-day summary of macros and deficit
     Summary {
-        /// Number of days to look back (including the end date)
-        #[arg(long, default_value = "7")]
-        days: u32,
+        /// Number of days to look back (including the end date; default: config summary_days, or 7)
+        #[arg(long)]
+        days: Option<u32>,
         #[command(flatten)]
         date: DateArgs,
     },
@@ -431,7 +431,7 @@ mod tests {
         let cli = Cli::try_parse_from(["intake", "summary", "--days", "5"]).unwrap();
         match cli.command {
             Some(Commands::Summary { days, date }) => {
-                assert_eq!(days, 5);
+                assert_eq!(days, Some(5));
                 assert_eq!(date.date, None);
                 assert_eq!(date.days_ago, None);
             }
@@ -444,7 +444,7 @@ mod tests {
         let cli = Cli::try_parse_from(["intake", "summary", "-d", "5"]).unwrap();
         match cli.command {
             Some(Commands::Summary { days, date }) => {
-                assert_eq!(days, 7);
+                assert_eq!(days, None);
                 assert_eq!(date.days_ago, Some(5));
             }
             _ => panic!("expected Summary command"),

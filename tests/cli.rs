@@ -1032,6 +1032,68 @@ fn test_summary_default_days_and_date() {
 }
 
 #[test]
+fn test_summary_days_from_config() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(intake_config.join("config.toml"), "summary_days = 3\n").unwrap();
+
+    // window ends 2026-08-03 and covers 08-01..08-03: 07-31 is outside it
+    write_day_log(dir.path(), "2026-07-31", "200", "10.0", "4.0", 0);
+    write_day_log(dir.path(), "2026-08-01", "300", "20.0", "8.0", 0);
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            fd_str.as_str(),
+            "--log-dir",
+            log_dir_str.as_str(),
+            "summary",
+            "--date",
+            "2026-08-03",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "summary failed: {}", stdout);
+    assert!(stdout.contains("Summary 2026-08-01 to 2026-08-01"));
+    assert!(stdout.contains("2026-08-01"));
+    assert!(!stdout.contains("2026-07-31"));
+}
+
+#[test]
+fn test_summary_cli_days_overrides_config() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(intake_config.join("config.toml"), "summary_days = 3\n").unwrap();
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            fd_str.as_str(),
+            "--log-dir",
+            log_dir_str.as_str(),
+            "summary",
+            "--date",
+            "2026-08-03",
+            "--days",
+            "5",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "summary failed: {}", stdout);
+    assert!(stdout.contains("No entries in the last 5 days (ending 2026-08-03)"));
+}
+
+#[test]
 fn test_adhoc_with_fat_carbs_alcohol() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();

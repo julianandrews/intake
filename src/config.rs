@@ -98,6 +98,7 @@ pub struct Config {
     pub write_timestamps: Option<bool>,
     pub show_timestamp: Option<bool>,
     pub time_format: Option<TimeFormat>,
+    pub summary_days: Option<u32>,
     #[cfg(feature = "ai")]
     pub ai: Option<crate::ai::settings::AiConfig>,
 }
@@ -202,6 +203,12 @@ impl Config {
     /// unknown `time_format` value is rejected at config parse.
     pub fn time_format(&self) -> TimeFormat {
         self.time_format.unwrap_or(TimeFormat::H24)
+    }
+
+    /// The default window length for `summary` (default: 7 days). An
+    /// explicit `--days` overrides this per invocation.
+    pub fn summary_days(&self) -> u32 {
+        self.summary_days.unwrap_or(7)
     }
 
     pub fn targets(&self) -> Result<DayTargets> {
@@ -408,6 +415,18 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("24h"), "got: {err}");
+    }
+
+    #[test]
+    fn test_summary_days_default() {
+        let config = Config::default();
+        assert_eq!(config.summary_days(), 7);
+    }
+
+    #[test]
+    fn test_summary_days_parses() {
+        let config: Config = toml::from_str("summary_days = 3\n").unwrap();
+        assert_eq!(config.summary_days(), 3);
     }
 
     #[test]

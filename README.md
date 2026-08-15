@@ -27,7 +27,7 @@ intake log <name> [servings] [--time HH:MM] [--date D | --days-ago N]
 intake log "<name>" [servings] --calories N --protein N --fiber N --fat N --carbs N --alcohol N [--time HH:MM]
                                               Log an ad-hoc entry with inline macros
 intake summary [--date D | --days-ago N] [--days N]
-                                              Multi-day summary of macros and deficit (default: last 7 days)
+                                              Multi-day summary of macros and deficit (default: config summary_days, or 7 days)
 intake exercise <calories> [--date D | --days-ago N]
                                               Record exercise calories for a day (default: today)
 intake rm <n> [--date D | --days-ago N]       Remove an entry from a day's log
@@ -58,7 +58,9 @@ command, and `intake exercise 300 -d 2` records exercise two days ago.
 `intake summary` shows one row per logged day (unlogged days in the window
 are skipped) with period totals and per-day averages; the averages and
 totals are over the logged days only, not the full window length. The
-Deficit column appears when `maintenance_calories` is configured.
+window defaults to 7 days, overridable with `summary_days` in config or
+`--days` on the command line (CLI wins). The Deficit column appears when
+`maintenance_calories` is configured.
 
 The day view numbers its rows (the `#` column); `intake rm <n> --date D`
 removes that entry (default: today's log) after a confirmation prompt,
@@ -93,6 +95,7 @@ min_fiber = 30.0
 min_fat = 50.0
 max_fat = 90.0
 maintenance_calories = 2400
+summary_days = 7          # default window length for summary (default: 7)
 show_columns = ["calories", "carbs", "fat", "protein", "fiber"]
 write_timestamps = true    # write a timestamp on new entries (default: true)
 show_timestamp = true      # Time column in the day view (default: true)

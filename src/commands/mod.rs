@@ -66,6 +66,7 @@ pub(crate) fn run(command: Option<Commands>, root_date: DateArgs, config: &Confi
         Some(Commands::Summary { days, date }) => {
             let merged = merged_date(&root_date, &date);
             let end = resolve_date(merged.date, merged.days_ago)?;
+            let days = days.unwrap_or_else(|| config.summary_days());
             summary::cmd_summary(&mut stdout, &log_dir, end, days, config)?;
         }
         Some(Commands::Exercise { calories, date }) => {
