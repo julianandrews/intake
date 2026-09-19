@@ -85,7 +85,10 @@ impl Per100g {
 }
 
 fn agent(timeout: Duration) -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(timeout).build()
+    ureq::AgentBuilder::new()
+        .user_agent(super::USER_AGENT)
+        .timeout(timeout)
+        .build()
 }
 
 fn no_key_error(tool: &str) -> String {
@@ -431,6 +434,12 @@ mod tests {
         );
         assert!(request.contains("api_key=key"), "got: {request}");
         assert!(request.contains("query=rice"), "got: {request}");
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains(&format!("user-agent: intake/{}", env!("CARGO_PKG_VERSION"))),
+            "got: {request}"
+        );
         assert_eq!(request.matches("dataType=").count(), 4, "got: {request}");
         for dt in [
             "dataType=Foundation",

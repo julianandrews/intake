@@ -41,25 +41,24 @@ or TOML:
 - `settings.rs` — `Settings` (model, base_url — both required; api_key
   optional, for endpoints without auth; max_retries, max_tool_calls,
   timeout_secs, trace_requests, trace_responses — both bool, default false;
-  see "Tracing"), a plain data type (no `Deserialize`) with no `Default`:
+  session_header — optional header name, see "Session header";
+  user_agent — defaults to `intake-ai/{version}`, consumers override, see
+  "User agent"; tracing defaults off, see "Tracing"), a plain data type
+  (no `Deserialize`) with no `Default`:
   the endpoint fields are mandatory constructor args to
   `Settings::new(base_url, model, api_key)`, which fills the operational
   defaults (`DEFAULT_MAX_RETRIES` 3, `DEFAULT_MAX_TOOL_CALLS` 20,
   `DEFAULT_TIMEOUT_SECS` 60, tracing off). The library stays
   format-agnostic: it only takes the struct, and consumers decide how to
   populate it and which provider to target.
-- `usda.rs` — the USDA FoodData Central-backed nutrition tool:
-  `usda_search` (batched queries → candidate foods with per-100g macros).
-  Hits `api.nal.usda.gov/fdc/v1` via `ureq` (blocking + rustls); no HTML
-  scraping — the API returns structured JSON. Exposed behind a small
-  `Tool` trait so the agent loop is generic.
 - `llm.rs` — `LlmBackend` trait; real impl does
   `POST {base_url}/chat/completions` via `ureq` (blocking + rustls); tests use
-  a scripted fake backend (no network). Responses are read for
+  a scripted fake backend (no network) plus local TCP servers for the real
+  backend's wire behavior (headers, retries, timeouts). Responses are read for
   `reasoning_content` / `reasoning` fields when the provider emits them
   (DeepSeek, OpenRouter, etc.). Agent loop: the caller registers the
-  tools it wants available (the lib ships the `usda_search`
-  tool); registered tools
+  tools it wants available (the lib defines only the `Tool` trait; intake
+  supplies `usda_search` and `food_lookup`); registered tools
   become function definitions; a response is final iff `tool_calls` is
   absent — while it is non-empty, all `tool_calls` in the response are
   executed in-process (each execution, successful or failed, counts against
@@ -113,7 +112,8 @@ The lib takes text in and returns the validated `T`; prompt capture
   describing `Food` / `DayLogOps`) embedded via `include_str!`
 - proposal rendering via the existing `display::Table` code
 - the `DayLogOps` schema with `apply_ops`, the batched `food_lookup` tool,
-  and per-command tool registration (see "Tools")
+  the `usda_search` tool (`src/ai/usda.rs`), and per-command tool
+  registration (see "Tools")
 - name validation + parse-time collision checks (shared by both `food new`
   paths; see "Name argument")
 - the actual writes: food files, and the checked day write
@@ -469,7 +469,8 @@ pub trait Tool {
 }
 ```
 
-- **`usda_search`** (ships with the lib): batched — `queries: [string]`;
+- **`usda_search`** (intake-side, like `food_lookup`; lives in
+  `src/ai/usda.rs`): batched — `queries: [string]`;
   per query, hits USDA `/foods/search` and returns up to five candidates as
   `FDC id | name | portion size (when FDC reports one — branded foods) |
   per-100g macros` lines (all six macros;
@@ -702,6 +703,7 @@ so both confirmers behave identically.
 model = "..."            # required; or INTAKE_AI_MODEL / --model
 base_url = "..."         # required; any OpenAI-compatible endpoint; or INTAKE_AI_BASE_URL / --base-url
 api_key = "..."          # or INTAKE_AI_API_KEY / --api-key; optional for endpoints without auth
+session_header = "..."   # optional; fresh random ID per run under this header name (e.g. "x-opencode-session")
 max_retries = 3
 max_tool_calls = 20      # tool executions per resolve attempt; exhaustion → one "answer now" round
 timeout_secs = 60        # per LLM API call
@@ -770,6 +772,42 @@ The API keys travel only where they must: the LLM key in the
 provider-neutral, so users who want the data to never leave their
 machine can point `base_url` at a local endpoint (Ollama, vLLM, etc.) —
 the same flow then runs fully offline.
+
+## Session header
+
+Some providers want a stable per-conversation marker on requests
+(OpenCode Go requires `x-opencode-session`, one ID per conversation, on
+every request). intake-ai implements this generically:
+
+- `Settings::session_header` is an optional header *name*; the library
+  knows nothing about the provider it targets.
+- When set to a valid HTTP field-name token, `OpenAiCompatible` draws one
+  random 128-bit ID (two draws from the thread-local OS seed behind
+  `RandomState`, formatted as hex — no new dependency) per backend
+  instance and sends it under the configured name on every request. A
+  backend instance is one `ai` command invocation, so each conversation
+  (the agent loop's requests and retries) shares one ID and consecutive
+  invocations get fresh IDs. Empty or malformed names are ignored — the
+  library never emits an invalid header line — and so are framing or
+  connection headers the HTTP client manages itself (`Content-Length`,
+  `Host`, `Connection`, ...), which would mis-frame or mis-route the
+  request if overridden.
+- The header is attached in `send_once` next to `Authorization`; the
+  USDA hop is untouched — it never targets the provider.
+- intake exposes the name as `[ai] session_header`; config-only, like
+  `max_retries` — the value is a constant, the ID varies per run.
+
+## User agent
+
+Every HTTP request identifies its client (RFC 9110 §10.1.5): the LLM
+backend and the USDA tool both send `intake/{version}` (compile-time from
+`CARGO_PKG_VERSION`) instead of the underlying library's default
+`ureq/...`. The generic library defaults `Settings::user_agent` to
+`intake-ai/{version}` for any other consumer; intake overrides it with its
+own identity in `resolve_settings`, unconditionally — a User-Agent is an
+identity, not a preference, so there is no `[ai] user_agent` config key
+(users may spoof whatever they like via a proxy, but the tool itself
+always tells the truth). No user-specific data ever appears in it.
 
 ## Feature gating
 

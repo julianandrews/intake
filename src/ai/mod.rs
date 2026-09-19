@@ -29,6 +29,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The User-Agent every intake request identifies itself with, for both
+/// the LLM backend and the USDA tool. Compile-time; no user data.
+pub(crate) const USER_AGENT: &str = concat!("intake/", env!("CARGO_PKG_VERSION"));
+
 pub(crate) fn run(
     writer: &mut impl Write,
     foods_dir: &Path,
@@ -169,6 +173,7 @@ fn resolve_settings(config: &Config, flags: &cli::AiFlags) -> Result<Settings> {
         flags.api_key.clone(),
     );
     let mut settings = Settings::new(base_url, model, api_key);
+    settings.user_agent = USER_AGENT.to_string();
     if let Some(max_retries) = ai.and_then(|ai| ai.max_retries) {
         settings.max_retries = max_retries;
     }
@@ -182,6 +187,9 @@ fn resolve_settings(config: &Config, flags: &cli::AiFlags) -> Result<Settings> {
         ai.is_some_and(|ai| ai.trace_requests.unwrap_or(false)) || flags.trace_requests;
     settings.trace_responses =
         ai.is_some_and(|ai| ai.trace_responses.unwrap_or(false)) || flags.trace_responses;
+    if let Some(session_header) = ai.and_then(|ai| ai.session_header.clone()) {
+        settings.session_header = Some(session_header);
+    }
     Ok(settings)
 }
 
@@ -957,11 +965,38 @@ mod tests {
         assert_eq!(settings.model, "m");
         assert_eq!(settings.base_url, "http://x/v1");
         assert_eq!(settings.api_key, None);
+        assert_eq!(
+            settings.user_agent,
+            format!("intake/{}", env!("CARGO_PKG_VERSION"))
+        );
         assert_eq!(settings.max_retries, 3);
         assert_eq!(settings.max_tool_calls, 20);
         assert_eq!(settings.timeout_secs, 60);
         assert!(!settings.trace_requests);
         assert!(!settings.trace_responses);
+        assert_eq!(settings.session_header, None);
+    }
+
+    #[test]
+    fn test_resolve_settings_session_header_from_config() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let config: Config =
+            toml::from_str("[ai]\nmodel = \"m\"\nbase_url = \"http://x/v1\"\nsession_header = \"x-opencode-session\"\n")
+                .unwrap();
+        let flags = cli::AiFlags {
+            api_key: None,
+            model: None,
+            base_url: None,
+            yes: false,
+            trace_requests: false,
+            trace_responses: false,
+            prompt_arg: None,
+        };
+        let settings = resolve_settings(&config, &flags).unwrap();
+        assert_eq!(
+            settings.session_header.as_deref(),
+            Some("x-opencode-session")
+        );
     }
 
     #[test]

@@ -12,6 +12,16 @@ pub struct Settings {
     pub timeout_secs: u64,
     pub trace_requests: bool,
     pub trace_responses: bool,
+    /// User-Agent sent on every LLM request. Defaults to
+    /// `intake-ai/{version}`; consumers override it with their own identity.
+    pub user_agent: String,
+    /// Header name under which a fresh random session ID is sent on every
+    /// LLM request (one ID per backend instance, i.e. per conversation).
+    /// Generic: the consumer decides the name (e.g. `x-opencode-session`).
+    /// Empty names, names that are not valid HTTP field-name tokens, and
+    /// framing/connection headers the HTTP client manages itself
+    /// (`Content-Length`, `Host`, ...) are ignored (no header is sent).
+    pub session_header: Option<String>,
 }
 
 impl Settings {
@@ -29,6 +39,8 @@ impl Settings {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
             trace_requests: false,
             trace_responses: false,
+            user_agent: format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+            session_header: None,
         }
     }
 }
@@ -48,6 +60,11 @@ mod tests {
         assert_eq!(s.timeout_secs, DEFAULT_TIMEOUT_SECS);
         assert!(!s.trace_requests);
         assert!(!s.trace_responses);
+        assert_eq!(
+            s.user_agent,
+            format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(s.session_header, None);
     }
 
     #[test]

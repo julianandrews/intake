@@ -122,7 +122,57 @@ pub struct OpenAiCompatible {
     settings: Settings,
     agent: ureq::Agent,
     backoff: Duration,
+    session_id: Option<String>,
 }
+
+/// A random 128-bit session identifier, formatted as hex. Two draws from
+/// the thread-local OS seed behind `RandomState` (the second is correlated
+/// with the first — one seed, not two independent ones — but still ~128
+/// bits of entropy): no extra dependency for a nonce-grade ID.
+fn random_session_id() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let a = RandomState::new().build_hasher().finish();
+    let b = RandomState::new().build_hasher().finish();
+    format!("{a:016x}{b:016x}")
+}
+
+/// RFC 9110 field-name token: alphanumerics plus `!#$%&'*+-.^_`|~`.
+fn is_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
+}
+
+/// Header names ureq manages itself; overriding them would mis-frame the
+/// request (`Content-Length`) or corrupt routing (`Host`), so they are
+/// never eligible as a session header. Lowercase; matched case-insensitively.
+const FRAMING_HEADERS: &[&str] = &[
+    "content-length",
+    "transfer-encoding",
+    "host",
+    "connection",
+    "keep-alive",
+    "upgrade",
+    "te",
+    "trailer",
+    "proxy-connection",
+];
 
 /// Total attempts per API call on retryable HTTP statuses (429, 5xx). Fixed
 /// by design, separate from `Settings::max_retries`, which covers only
@@ -140,11 +190,24 @@ impl OpenAiCompatible {
         timeout: Option<Duration>,
     ) -> OpenAiCompatible {
         let timeout = timeout.unwrap_or_else(|| Duration::from_secs(settings.timeout_secs));
-        let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+        let agent = ureq::AgentBuilder::new()
+            .user_agent(&settings.user_agent)
+            .timeout(timeout)
+            .build();
+        let session_id = settings
+            .session_header
+            .as_deref()
+            .filter(|name| {
+                !name.is_empty()
+                    && name.bytes().all(is_token_byte)
+                    && !FRAMING_HEADERS.iter().any(|h| h.eq_ignore_ascii_case(name))
+            })
+            .map(|_| random_session_id());
         OpenAiCompatible {
             settings: settings.clone(),
             agent,
             backoff,
+            session_id,
         }
     }
 
@@ -169,6 +232,9 @@ impl OpenAiCompatible {
         let mut request = self.agent.post(&url);
         if let Some(key) = &self.settings.api_key {
             request = request.set("Authorization", &format!("Bearer {key}"));
+        }
+        if let (Some(name), Some(id)) = (&self.settings.session_header, &self.session_id) {
+            request = request.set(name, id);
         }
 
         match request.send_json(body) {
@@ -996,6 +1062,47 @@ mod tests {
         format!("http://{addr}/v1")
     }
 
+    /// Like [`serve_once`], but sends the raw request text through `tx`
+    /// instead of a completion signal, so tests can assert on headers.
+    fn serve_once_capture(tx: mpsc::Sender<String>) -> String {
+        serve_n_capture(1, tx)
+    }
+
+    /// Serves `n` capture requests, one per accepted connection, sending
+    /// each raw request text through `tx`.
+    fn serve_n_capture(n: usize, tx: mpsc::Sender<String>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for _ in 0..n {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let read = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..read]).to_string();
+                let payload = "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    )
+                    .as_bytes(),
+                );
+                let _ = tx.send(request);
+            }
+        });
+        format!("http://{addr}/v1")
+    }
+
+    /// Bounds how long a test waits for a captured request, so a broken
+    /// server thread fails the test instead of hanging it.
+    const CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn recv_capture(rx: &mpsc::Receiver<String>) -> String {
+        rx.recv_timeout(CAPTURE_TIMEOUT)
+            .expect("no request captured")
+    }
+
     #[test]
     fn test_real_backend_parses_response() {
         let (tx, rx) = mpsc::channel();
@@ -1087,6 +1194,179 @@ mod tests {
             .complete(&[Message::User("hi".to_string())], &[])
             .unwrap_err();
         assert!(matches!(err, LlmError::Timeout));
+    }
+
+    #[test]
+    fn test_is_token_byte_matches_rfc_9110_tchar() {
+        for b in b"!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" {
+            assert!(is_token_byte(*b), "tchar {b:#04x} rejected");
+        }
+        for b in b"()<>@,;:\\\"/[]?={} \t" {
+            assert!(!is_token_byte(*b), "separator {b:#04x} accepted");
+        }
+        for b in [0x00, 0x01, 0x1f, 0x7f, 0x80, 0xff] {
+            assert!(!is_token_byte(b), "control/non-ASCII {b:#04x} accepted");
+        }
+    }
+
+    #[test]
+    fn test_framing_header_names_ignored() {
+        for name in ["Content-Length", "Host", "transfer-encoding", "Connection"] {
+            let (tx, rx) = mpsc::channel();
+            let base = serve_once_capture(tx);
+            let mut settings = Settings::new(base, "m", None);
+            settings.session_header = Some(name.to_string());
+            let backend = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
+            backend
+                .complete(&[Message::User("hi".to_string())], &[])
+                .unwrap();
+            let request = recv_capture(&rx);
+            let lower = request.to_ascii_lowercase();
+            let needle = format!("{}: ", name.to_ascii_lowercase());
+            let injected = lower
+                .lines()
+                .any(|l| l.starts_with(&needle) && l.len() == needle.len() + 32);
+            assert!(
+                !injected,
+                "name {name:?} produced session header: {request}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_session_header_by_default() {
+        let (tx, rx) = mpsc::channel();
+        let base = serve_once_capture(tx);
+        let settings = Settings::new(base, "m", None);
+        let backend = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
+        backend
+            .complete(&[Message::User("hi".to_string())], &[])
+            .unwrap();
+        let request = recv_capture(&rx);
+        assert!(
+            request.contains("POST /v1/chat/completions"),
+            "capture empty or unexpected: {request}"
+        );
+        assert!(
+            !request.to_ascii_lowercase().contains("x-opencode-session"),
+            "got: {request}"
+        );
+    }
+
+    #[test]
+    fn test_user_agent_sent_on_requests() {
+        let (tx, rx) = mpsc::channel();
+        let base = serve_once_capture(tx);
+        let mut settings = Settings::new(base, "m", None);
+        settings.user_agent = "intake/0.1.0".to_string();
+        let backend = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
+        backend
+            .complete(&[Message::User("hi".to_string())], &[])
+            .unwrap();
+        let request = recv_capture(&rx);
+        let line = request
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+            .unwrap_or_else(|| panic!("user-agent missing: {request}"));
+        assert_eq!(
+            line.to_ascii_lowercase(),
+            "user-agent: intake/0.1.0",
+            "got: {request}"
+        );
+    }
+
+    #[test]
+    fn test_session_header_sent_under_configured_name() {
+        let (tx, rx) = mpsc::channel();
+        let base = serve_once_capture(tx);
+        let mut settings = Settings::new(base, "m", None);
+        settings.session_header = Some("x-opencode-session".to_string());
+        let backend = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
+        backend
+            .complete(&[Message::User("hi".to_string())], &[])
+            .unwrap();
+        let request = recv_capture(&rx);
+        let line = request
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("x-opencode-session:"))
+            .unwrap_or_else(|| panic!("header missing: {request}"));
+        assert_eq!(line.len(), "x-opencode-session: ".len() + 32);
+        assert!(line
+            .bytes()
+            .skip("x-opencode-session: ".len())
+            .all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_invalid_session_header_names_ignored() {
+        for name in ["", "bad name", "x\ninjected"] {
+            let (tx, rx) = mpsc::channel();
+            let base = serve_once_capture(tx);
+            let mut settings = Settings::new(base, "m", None);
+            settings.session_header = Some(name.to_string());
+            let backend = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
+            backend
+                .complete(&[Message::User("hi".to_string())], &[])
+                .unwrap();
+            let request = recv_capture(&rx);
+            assert!(
+                request.contains("POST /v1/chat/completions"),
+                "capture empty or unexpected: {request}"
+            );
+            assert!(
+                !request.to_ascii_lowercase().contains("x-opencode-session"),
+                "name {name:?} produced header: {request}"
+            );
+            if !name.is_empty() {
+                assert!(!request.contains(name), "name {name:?} leaked: {request}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_session_id_stable_across_requests_in_one_backend() {
+        let (tx, rx) = mpsc::channel();
+        let base = serve_n_capture(2, tx);
+        let mut settings = Settings::new(base, "m", None);
+        settings.session_header = Some("x-opencode-session".to_string());
+        let backend = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
+        for _ in 0..2 {
+            backend
+                .complete(&[Message::User("hi".to_string())], &[])
+                .unwrap();
+        }
+        let extract = |request: String| {
+            request
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("x-opencode-session:"))
+                .expect("header missing")
+                .to_string()
+        };
+        assert_eq!(extract(recv_capture(&rx)), extract(recv_capture(&rx)));
+    }
+
+    #[test]
+    fn test_session_ids_distinct_across_backends() {
+        let (tx, rx) = mpsc::channel();
+        let base = serve_n_capture(2, tx);
+        let mut settings = Settings::new(base, "m", None);
+        settings.session_header = Some("x-opencode-session".to_string());
+        let first = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
+        let second = OpenAiCompatible::with_tuning(&settings, Duration::from_millis(1), None);
+        first
+            .complete(&[Message::User("hi".to_string())], &[])
+            .unwrap();
+        second
+            .complete(&[Message::User("hi".to_string())], &[])
+            .unwrap();
+        let extract = |request: String| {
+            request
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("x-opencode-session:"))
+                .expect("header missing")
+                .to_string()
+        };
+        assert_ne!(extract(recv_capture(&rx)), extract(recv_capture(&rx)));
     }
 
     #[test]

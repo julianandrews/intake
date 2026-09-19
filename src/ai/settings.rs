@@ -21,6 +21,7 @@ pub(crate) struct AiConfig {
     pub timeout_secs: Option<u64>,
     pub trace_requests: Option<bool>,
     pub trace_responses: Option<bool>,
+    pub session_header: Option<String>,
     pub usda_api_key: Option<String>,
     pub usda_timeout_secs: Option<u64>,
     pub history_days: Option<u32>,
@@ -40,6 +41,7 @@ const AI_CONFIG_KEYS: &[&str] = &[
     "usda_timeout_secs",
     "trace_requests",
     "trace_responses",
+    "session_header",
     "history_days",
     "log_prompt",
     "food_new_prompt",
@@ -65,6 +67,8 @@ struct RawAiConfig {
     trace_requests: Option<bool>,
     #[serde(default)]
     trace_responses: Option<bool>,
+    #[serde(default)]
+    session_header: Option<String>,
     #[serde(default)]
     usda_api_key: Option<String>,
     #[serde(default)]
@@ -99,6 +103,7 @@ impl<'de> Deserialize<'de> for AiConfig {
             timeout_secs: raw.timeout_secs,
             trace_requests: raw.trace_requests,
             trace_responses: raw.trace_responses,
+            session_header: raw.session_header,
             usda_api_key: raw.usda_api_key,
             usda_timeout_secs: raw.usda_timeout_secs,
             history_days: raw.history_days,
@@ -152,6 +157,15 @@ mod tests {
         assert_eq!(ai.base_url, None);
         assert_eq!(ai.max_tool_calls, None);
         assert_eq!(ai.timeout_secs, None);
+    }
+
+    #[test]
+    fn test_ai_config_session_header_parses() {
+        let config: Config =
+            toml::from_str("[ai]\nsession_header = \"x-opencode-session\"\n").unwrap();
+        let ai = config.ai.unwrap();
+        assert_eq!(ai.session_header.as_deref(), Some("x-opencode-session"));
+        assert_eq!(ai.api_key, None);
     }
 
     #[test]

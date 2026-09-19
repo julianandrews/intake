@@ -148,6 +148,7 @@ Configure the provider in `~/.config/intake/config.toml`:
 model = "..."            # required; or INTAKE_AI_MODEL / --model
 base_url = "..."         # required; any OpenAI-compatible endpoint; or INTAKE_AI_BASE_URL / --base-url
 api_key = "..."          # or INTAKE_AI_API_KEY / --api-key; optional for local endpoints without auth
+session_header = "..."   # optional; send a fresh random ID per run under this header (e.g. "x-opencode-session")
 usda_api_key = "..."     # or INTAKE_AI_USDA_API_KEY (free at fdc.nal.usda.gov)
 history_days = 14        # ai log context window
 ```
@@ -161,7 +162,11 @@ the model once, on the round it first appears (stderr, in `--- to model ---`
 blocks), and `--trace-responses` prints the model's output in
 `--- from model ---` blocks (both
 also settable as `[ai] trace_requests` / `[ai] trace_responses`; blocks are
-colorized when the terminal supports it). Without a
+colorized when the terminal supports it). With `[ai] session_header` set,
+every request carries a fresh random ID under that header name — one per
+`ai` invocation, shared across the whole conversation — for providers that
+want a session marker (e.g. `x-opencode-session` on OpenCode Go). Every
+request identifies itself as `intake/{version}`. Without a
 `usda_api_key` the USDA tools error with a
 setup hint; pointing `base_url` at a local endpoint (Ollama, vLLM, ...)
 keeps the whole flow offline. Running an `ai` command sends the prompt,
