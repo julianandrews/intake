@@ -1,4 +1,4 @@
-use crate::amount::{round_away, Calories, Macros};
+use crate::amount::{round_away, Calories, Kilograms, Macros};
 use crate::config::{Column, ColumnTarget};
 use crate::food::Ingredient;
 use anyhow::{anyhow, Result};
@@ -402,6 +402,16 @@ pub fn servings_cell(servings: Decimal) -> String {
     }
 }
 
+/// A weight value in the configured unit, rounded to 0.1 at the display
+/// boundary (half away from zero, like the macro cells).
+pub fn weight_cell(unit: crate::config::WeightUnit, kg: Kilograms) -> String {
+    let value = match unit {
+        crate::config::WeightUnit::Kg => kg.to_decimal(),
+        crate::config::WeightUnit::Lbs => kg.to_lbs(),
+    };
+    rescale(round_away(value, 1), 1).to_string()
+}
+
 pub fn render_day_summary(
     exercise_calories: Calories,
     maintenance_calories: Option<Calories>,
@@ -452,7 +462,7 @@ pub fn render_day_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DayTargets;
+    use crate::config::{DayTargets, WeightUnit};
     use std::str::FromStr;
 
     #[test]
@@ -807,6 +817,19 @@ mod tests {
         assert_eq!(servings_cell(Decimal::from_str("2.0").unwrap()), "2");
         assert_eq!(servings_cell(Decimal::from_str("1.5").unwrap()), "1.5");
         assert_eq!(servings_cell(Decimal::from_str("1.25").unwrap()), "1.3");
+    }
+
+    #[test]
+    fn test_weight_cell_rounds_at_display_boundary() {
+        let kg = |s: &str| Kilograms::from_str(s).unwrap();
+        assert_eq!(weight_cell(WeightUnit::Kg, kg("75.5")), "75.5");
+        assert_eq!(weight_cell(WeightUnit::Kg, kg("75.55")), "75.6");
+        assert_eq!(weight_cell(WeightUnit::Kg, kg("75.549")), "75.5");
+        assert_eq!(weight_cell(WeightUnit::Kg, Kilograms::ZERO), "0.0");
+        // 106.050 kg → 233.800229... lbs → 233.8; 68.039 kg → 150.0002... → 150.0.
+        assert_eq!(weight_cell(WeightUnit::Lbs, kg("106.050")), "233.8");
+        assert_eq!(weight_cell(WeightUnit::Lbs, kg("68.039")), "150.0");
+        assert_eq!(weight_cell(WeightUnit::Lbs, kg("75.5")), "166.4");
     }
 
     #[test]

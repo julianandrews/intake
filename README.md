@@ -30,6 +30,10 @@ intake summary [--date D | --days-ago N] [--days N]
                                               Multi-day summary of macros and deficit (default: config summary_days, or 7 days)
 intake exercise <calories> [--date D | --days-ago N]
                                               Record exercise calories for a day (default: today)
+intake weight <value> [--time HH:MM] [--date D | --days-ago N]
+                                              Record a body weight (default: today)
+intake weight rm <n> [--yes] [--date D | --days-ago N]
+                                              Remove a weigh-in from a day's log
 intake rm <n> [--date D | --days-ago N]       Remove an entry from a day's log
 intake retime <n> <HH:MM> [--yes] [--date D | --days-ago N]
                                               Set an entry's timestamp
@@ -47,14 +51,15 @@ intake completions <shell>                    Generate or install completion scr
 Flags like `--foods-dir` and `--log-dir` are root-level: accepted before
 the subcommand on every invocation.
 `--date D` and `--days-ago N` (or `-d N`) target a day the same way on every
-date-targeting command — bare `intake`, `log`, `exercise`, `rm`, `ai log`,
-and `summary` (where `--days-ago` positions the end of the window). Omitting
-both targets today; supplying both is an error. Date flags on a subcommand
-win over date flags on the bare command, and with a non-date command like
-`food` they are an error. For example, `intake --days-ago 1` shows
-yesterday, `intake log coffee -d 1` logs coffee to yesterday, and
-`intake --days-ago 1 log coffee` does the same with the flag before the
-command, and `intake exercise 300 -d 2` records exercise two days ago.
+date-targeting command — bare `intake`, `log`, `exercise`, `weight`, `rm`,
+`ai log`, and `summary` (where `--days-ago` positions the end of the
+window). Omitting both targets today; supplying both is an error. Date flags
+on a subcommand win over date flags on the bare command, and with a
+non-date command like `food` they are an error. For example,
+`intake --days-ago 1` shows yesterday, `intake log coffee -d 1` logs coffee
+to yesterday, and `intake --days-ago 1 log coffee` does the same with the
+flag before the command, and `intake exercise 300 -d 2` records exercise two
+days ago.
 `intake summary` shows one row per logged day (unlogged days in the window
 are skipped) with period totals and per-day averages; the averages and
 totals are over the logged days only, not the full window length. The
@@ -75,6 +80,14 @@ later; `intake retime 2 14:30` adjusts an entry that's already logged
 (1-based row number, confirmation prompt, `--yes` skips it). See the
 Configuration section for the `write_timestamps`, `show_timestamp`, and
 `time_format` keys.
+
+`intake weight <value>` records a body weight the same way — stamped now by
+default, `--time HH:MM` stamps the given local time on the target date
+instead. Weights are stored in the day log in kilograms, multiple per day;
+the day view shows them under a `Weights:` footer section (numbered 1-based,
+unit per the `weight_unit` config key), and `intake weight rm <n> --yes`
+removes one. A day file with only weights survives an entry `rm`; removing
+the last weigh-in of an otherwise-empty day deletes the day file.
 
 Bare `intake` with no subcommand shows today's log.
 
@@ -100,6 +113,7 @@ show_columns = ["calories", "carbs", "fat", "protein", "fiber"]
 write_timestamps = true    # write a timestamp on new entries (default: true)
 show_timestamp = true      # Time column in the day view (default: true)
 time_format = "24h"        # "24h" → 14:05 (default) | "12h" → 2:05 PM
+weight_unit = "kg"         # unit for weight input/display: "kg" (default) | "lbs"
 foods_dir = "/path/to/foods"
 log_dir = "/path/to/logs"
 ```
@@ -118,6 +132,12 @@ day view (default `true`); `time_format` selects 24-hour `HH:MM` (default)
 or 12-hour `h:mm AM/PM` rendering. Entries without timestamps (written
 before the feature, or with `write_timestamps = false`) show an empty Time
 cell.
+
+`weight_unit` selects the unit `weight` values are entered and displayed in:
+`"kg"` (default) or `"lbs"`. Weights are stored canonically in kilograms
+(conversion is exact — 1 lb = 0.45359237 kg), so changing the key later only
+affects input and display, never the stored values. Weight timestamps are
+always written — the `write_timestamps` toggle doesn't apply to them.
 
 Paths can also be set via `INTAKE_FOODS_DIR` and `INTAKE_LOG_DIR` environment
 variables, or `--foods-dir` / `--log-dir` CLI flags (CLI wins).

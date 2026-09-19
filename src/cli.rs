@@ -5,7 +5,9 @@ use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, Parser, Subcommand};
 use clap_complete::engine::ArgValueCandidates;
 use clap_complete::Shell;
+use rust_decimal::Decimal;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 fn non_blank_name(s: &str) -> Result<String, String> {
     let trimmed = s.trim();
@@ -18,6 +20,17 @@ fn non_blank_name(s: &str) -> Result<String, String> {
 fn parse_time(s: &str) -> Result<chrono::NaiveTime, String> {
     chrono::NaiveTime::parse_from_str(s, "%H:%M")
         .map_err(|_| "time must be in HH:MM 24-hour format".to_string())
+}
+
+/// A raw weight value, interpreted in the configured unit (`weight_unit`)
+/// at command time — the config isn't available during argument parsing.
+fn parse_weight(s: &str) -> Result<Decimal, String> {
+    let value = Decimal::from_str(s)
+        .map_err(|_| "weight must be a non-negative decimal number".to_string())?;
+    if value.is_sign_negative() {
+        return Err("weight must be non-negative".to_string());
+    }
+    Ok(value)
 }
 
 const CLAP_STYLES: Styles = Styles::styled()
@@ -139,6 +152,20 @@ pub(crate) enum Commands {
         #[command(flatten)]
         date: DateArgs,
     },
+    /// Record a body weight, or remove one with `rm`
+    #[command(subcommand_precedence_over_arg = true)]
+    Weight {
+        /// Weight in the configured unit (kg or lbs)
+        #[arg(value_name = "VALUE", value_parser = parse_weight)]
+        value: Option<Decimal>,
+        /// Time of day to stamp the weight with (HH:MM, local) instead of now
+        #[arg(long, value_name = "HH:MM", value_parser = parse_time)]
+        time: Option<chrono::NaiveTime>,
+        #[command(subcommand)]
+        command: Option<WeightCommands>,
+        #[command(flatten)]
+        date: DateArgs,
+    },
     /// Manage foods
     Food {
         #[command(subcommand)]
@@ -157,6 +184,24 @@ pub(crate) enum Commands {
         /// Install to the standard completion directory for the shell
         #[arg(long)]
         install: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum WeightCommands {
+    /// Remove a weigh-in from a day's log
+    Rm {
+        /// Weight number to remove (see the Weights section in the day view, `intake`)
+        #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+        index: u32,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+        /// Accepted and rejected with an error: `--time` applies to recording a weight, not `weight rm`
+        #[arg(long, value_name = "HH:MM", value_parser = parse_time)]
+        time: Option<chrono::NaiveTime>,
+        #[command(flatten)]
+        date: DateArgs,
     },
 }
 
@@ -566,5 +611,165 @@ mod tests {
         assert!(Cli::try_parse_from(["intake", "food", "new", ".."]).is_err());
         assert!(Cli::try_parse_from(["intake", "food", "show", "."]).is_err());
         assert!(Cli::try_parse_from(["intake", "food", "new", "coffee"]).is_ok());
+    }
+
+    #[test]
+    fn test_weight_value_parses() {
+        let cli = Cli::try_parse_from(["intake", "weight", "75.5"]).unwrap();
+        match cli.command {
+            Some(Commands::Weight {
+                value,
+                time,
+                command,
+                date,
+            }) => {
+                assert_eq!(value, Some(Decimal::from_str("75.5").unwrap()));
+                assert_eq!(time, None);
+                assert!(command.is_none());
+                assert_eq!(date.date, None);
+                assert_eq!(date.days_ago, None);
+            }
+            _ => panic!("expected Weight command"),
+        }
+    }
+
+    #[test]
+    fn test_weight_time_and_date_parse() {
+        let cli = Cli::try_parse_from([
+            "intake",
+            "weight",
+            "75.5",
+            "--time",
+            "08:00",
+            "--date",
+            "2026-08-01",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Weight {
+                value,
+                time,
+                command,
+                date,
+            }) => {
+                assert_eq!(value, Some(Decimal::from_str("75.5").unwrap()));
+                assert_eq!(
+                    time,
+                    Some(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap())
+                );
+                assert!(command.is_none());
+                assert_eq!(date.date, Some("2026-08-01".to_string()));
+            }
+            _ => panic!("expected Weight command"),
+        }
+    }
+
+    #[test]
+    fn test_weight_rejects_negative_and_bad_value() {
+        assert!(Cli::try_parse_from(["intake", "weight", "-1"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "weight", "abc"]).is_err());
+        assert!(Cli::try_parse_from(["intake", "weight", ""]).is_err());
+    }
+
+    #[test]
+    fn test_weight_rm_parses() {
+        let cli = Cli::try_parse_from(["intake", "weight", "rm", "2"]).unwrap();
+        match cli.command {
+            Some(Commands::Weight { value, command, .. }) => {
+                assert_eq!(value, None);
+                assert!(matches!(command, Some(WeightCommands::Rm { index: 2, .. })));
+            }
+            _ => panic!("expected Weight command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "intake",
+            "weight",
+            "rm",
+            "1",
+            "--yes",
+            "--date",
+            "2026-08-01",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Weight {
+                command:
+                    Some(WeightCommands::Rm {
+                        index,
+                        yes,
+                        time,
+                        date,
+                    }),
+                ..
+            }) => {
+                assert_eq!(index, 1);
+                assert!(yes);
+                assert_eq!(time, None);
+                assert_eq!(date.date, Some("2026-08-01".to_string()));
+            }
+            _ => panic!("expected Weight Rm command"),
+        }
+    }
+
+    #[test]
+    fn test_weight_rm_accepts_time_to_reject_it() {
+        // `--time` parses on `weight rm` (before or after the subcommand) so
+        // both positions fail the same way in the command layer.
+        let cli = Cli::try_parse_from(["intake", "weight", "rm", "1", "--time", "08:00"]).unwrap();
+        match cli.command {
+            Some(Commands::Weight {
+                command: Some(WeightCommands::Rm { time, .. }),
+                ..
+            }) => assert_eq!(
+                time,
+                Some(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap())
+            ),
+            _ => panic!("expected Weight Rm command"),
+        }
+
+        let cli = Cli::try_parse_from(["intake", "weight", "--time", "08:00", "rm", "1"]).unwrap();
+        match cli.command {
+            Some(Commands::Weight { time, command, .. }) => {
+                assert_eq!(
+                    time,
+                    Some(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap())
+                );
+                assert!(matches!(command, Some(WeightCommands::Rm { index: 1, .. })));
+            }
+            _ => panic!("expected Weight command"),
+        }
+    }
+
+    #[test]
+    fn test_weight_rm_rejects_zero_index() {
+        assert!(Cli::try_parse_from(["intake", "weight", "rm", "0"]).is_err());
+    }
+
+    #[test]
+    fn test_weight_value_and_rm_together_parse() {
+        // Both are accepted by clap (the positional wins on value); the
+        // command layer rejects the combination.
+        let cli = Cli::try_parse_from(["intake", "weight", "75.5", "rm", "1"]).unwrap();
+        match cli.command {
+            Some(Commands::Weight { value, command, .. }) => {
+                assert_eq!(value, Some(Decimal::from_str("75.5").unwrap()));
+                assert!(matches!(command, Some(WeightCommands::Rm { index: 1, .. })));
+            }
+            _ => panic!("expected Weight command"),
+        }
+    }
+
+    #[test]
+    fn test_weight_without_value_or_rm_parses() {
+        // Parses with both empty; the command layer reports the usage error.
+        let cli = Cli::try_parse_from(["intake", "weight"]).unwrap();
+        match cli.command {
+            Some(Commands::Weight { value, command, .. }) => {
+                assert_eq!(value, None);
+                assert!(command.is_none());
+            }
+            _ => panic!("expected Weight command"),
+        }
     }
 }

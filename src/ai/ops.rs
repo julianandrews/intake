@@ -262,6 +262,7 @@ pub fn apply_ops(
     Ok(log::DayLog {
         entries,
         exercise_calories: day.exercise_calories,
+        weights: day.weights.clone(),
     })
 }
 
@@ -292,6 +293,7 @@ mod tests {
         log::DayLog {
             entries,
             exercise_calories: Calories::from_str("300").unwrap(),
+            weights: Vec::new(),
         }
     }
 

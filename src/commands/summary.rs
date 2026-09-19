@@ -228,6 +228,7 @@ mod tests {
                 timestamp: None,
             }],
             exercise_calories: Calories::from_str(&exercise.to_string()).unwrap(),
+            weights: Vec::new(),
         };
         let content = toml::to_string(&day_log).unwrap();
         std::fs::write(dir.join(format!("{}.toml", date)), content).unwrap();

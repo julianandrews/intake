@@ -404,6 +404,7 @@ fn cmd_ai_log(
     let base = original.clone().unwrap_or(log::DayLog {
         entries: Vec::new(),
         exercise_calories: Calories::ZERO,
+        weights: Vec::new(),
     });
     let parse = |s: &str| -> Result<write::AppliedDay, String> {
         let day_ops: ops::DayLogOps = toml::from_str(s).map_err(|e| e.to_string())?;
@@ -460,10 +461,7 @@ fn cmd_ai_log(
         Ok(applied) => {
             let changed = match &original {
                 Some(d) => d != &applied.day,
-                None => {
-                    !(applied.day.entries.is_empty()
-                        && applied.day.exercise_calories == Calories::ZERO)
-                }
+                None => !log::day_is_empty(&applied.day),
             };
             if !changed {
                 writeln!(writer, "No changes")?;
@@ -773,6 +771,7 @@ mod tests {
         let day = log::DayLog {
             entries,
             exercise_calories: crate::amount::Calories::ZERO,
+            weights: Vec::new(),
         };
         std::fs::write(
             dir.join(format!("{}.toml", date.format("%Y-%m-%d"))),

@@ -1,4 +1,4 @@
-use crate::amount::{Calories, Grams, Macros, Servings};
+use crate::amount::{Calories, Grams, Kilograms, Macros, Servings};
 use crate::config::TimeFormat;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Local, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
@@ -69,6 +69,17 @@ pub struct LogEntry {
     pub timestamp: Option<Timestamp>,
 }
 
+/// A body weight measurement: canonical kilograms plus a full RFC 3339
+/// timestamp in UTC. Unlike [`LogEntry`], the timestamp is required — an
+/// unstamped weight is useless for tracking — and it is always constructed
+/// by intake, never by the model.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeightEntry {
+    pub kg: Kilograms,
+    pub timestamp: Timestamp,
+}
+
 impl LogEntry {
     pub fn total_calories(&self) -> Result<Calories> {
         self.calories
@@ -124,6 +135,11 @@ impl LogEntry {
 pub struct DayLog {
     pub entries: Vec<LogEntry>,
     pub exercise_calories: Calories,
+    /// Body weight measurements for the day. `#[serde(default)]` keeps
+    /// pre-weight day files loading; `skip_serializing_if` keeps empty lists
+    /// out of rewritten files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weights: Vec<WeightEntry>,
 }
 
 pub(crate) fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
@@ -184,6 +200,7 @@ where
         DayLog {
             entries: Vec::new(),
             exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
         }
     };
 
@@ -194,6 +211,10 @@ where
 
 pub fn append_entry(log_dir: &Path, date: NaiveDate, entry: &LogEntry) -> Result<()> {
     update_day(log_dir, date, |day| day.entries.push(entry.clone()))
+}
+
+pub fn append_weight(log_dir: &Path, date: NaiveDate, entry: &WeightEntry) -> Result<()> {
+    update_day(log_dir, date, |day| day.weights.push(entry.clone()))
 }
 
 pub fn list_log_dates(log_dir: &Path) -> Result<Vec<String>> {
@@ -280,7 +301,7 @@ pub fn remove_entry(
 
     let mut day_log = day_log;
     let removed = day_log.entries.remove(index - 1);
-    if day_log.entries.is_empty() && day_log.exercise_calories == Calories::ZERO {
+    if day_is_empty(&day_log) {
         fs::remove_file(&path)
             .with_context(|| format!("failed to remove log: {}", path.display()))?;
         // Sync the directory so the unlink is durable, matching the sync
@@ -354,6 +375,87 @@ pub(crate) fn entry_count_label(count: usize) -> String {
     } else {
         format!("{} entries", count)
     }
+}
+
+/// "1 weight" or "N weights", for out-of-range error messages.
+pub(crate) fn weight_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 weight".to_string()
+    } else {
+        format!("{} weights", count)
+    }
+}
+
+/// Whether the day holds nothing at all — no entries, no exercise, no
+/// weights. An empty day file is deleted rather than kept around. Shared
+/// with the AI write path, which must not delete a day that still holds
+/// weights.
+pub(crate) fn day_is_empty(day_log: &DayLog) -> bool {
+    day_log.entries.is_empty()
+        && day_log.exercise_calories == Calories::ZERO
+        && day_log.weights.is_empty()
+}
+
+/// Remove the weight at 1-based `index` from the day log for `date`, holding
+/// the directory lock across the whole read-modify-write.
+///
+/// Mirrors `remove_entry`: the weight at `index` must equal `expected`
+/// exactly, so a concurrent modification between the caller's read and this
+/// removal is an error instead of silently removing a different weigh-in.
+/// Also errors if the day log doesn't exist or the index is out of range. If
+/// the removal leaves the day empty (no entries, no exercise, no weights),
+/// the day file itself is deleted.
+pub fn remove_weight(
+    log_dir: &Path,
+    date: NaiveDate,
+    index: usize,
+    expected: &WeightEntry,
+) -> Result<WeightEntry> {
+    let dir_lock = lock_log_dir(log_dir)?;
+    let path = log_path(log_dir, date);
+
+    let mut day_log: DayLog = if path.exists() {
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read log: {}", path.display()))?;
+        toml::from_str(&content)
+            .with_context(|| format!("failed to parse log: {}", path.display()))?
+    } else {
+        bail!("no weights for {}", date);
+    };
+
+    if index == 0 || index > day_log.weights.len() {
+        bail!(
+            "weight {} not found — day {} has {}",
+            index,
+            date,
+            weight_count_label(day_log.weights.len())
+        );
+    }
+
+    let found = &day_log.weights[index - 1];
+    if found != expected {
+        bail!(
+            "weight {} changed since it was listed — day {} was modified concurrently; nothing removed",
+            index,
+            date
+        );
+    }
+
+    let removed = day_log.weights.remove(index - 1);
+    if day_is_empty(&day_log) {
+        fs::remove_file(&path)
+            .with_context(|| format!("failed to remove log: {}", path.display()))?;
+        // Sync the directory so the unlink is durable, matching the sync
+        // before the atomic rename in write_day_locked: a crash must not
+        // resurrect a weight the user was told was removed.
+        dir_lock
+            .sync_all()
+            .with_context(|| format!("failed to sync log directory: {}", log_dir.display()))?;
+    } else {
+        write_day_locked(log_dir, date, &day_log)?;
+    }
+
+    Ok(removed)
 }
 
 pub(crate) fn day_net_and_deficit(
@@ -1256,6 +1358,277 @@ mod tests {
 
         assert!(rx.recv().unwrap().is_ok());
         thread.join().unwrap();
+        Ok(())
+    }
+
+    fn weight(kg: &str, ts: &str) -> WeightEntry {
+        WeightEntry {
+            kg: Kilograms::from_str(kg).unwrap(),
+            timestamp: timestamp(ts),
+        }
+    }
+
+    #[test]
+    fn test_append_weight_roundtrip() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        append_weight(dir.path(), date, &weight("75.5", "2026-08-01T08:00:00Z"))?;
+
+        let content =
+            std::fs::read_to_string(dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))))?;
+        assert!(
+            content.contains("[[weights]]") && content.contains("kg = 75.5"),
+            "got: {content}"
+        );
+        assert!(
+            content.contains("timestamp = \"2026-08-01T08:00:00Z\""),
+            "got: {content}"
+        );
+
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert_eq!(loaded.weights.len(), 1);
+        assert_eq!(loaded.weights[0], weight("75.5", "2026-08-01T08:00:00Z"));
+        assert!(loaded.entries.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_append_weight_multiple_keeps_order() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        append_weight(dir.path(), date, &weight("75.5", "2026-08-01T08:00:00Z"))?;
+        append_weight(dir.path(), date, &weight("75.4", "2026-08-01T20:00:00Z"))?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert_eq!(loaded.weights.len(), 2);
+        assert_eq!(loaded.weights[0].kg, Kilograms::from_str("75.5").unwrap());
+        assert_eq!(loaded.weights[1].kg, Kilograms::from_str("75.4").unwrap());
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_weights_not_serialized() -> Result<()> {
+        // A rewritten day file with no weights must not gain a `weights` key.
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        let content =
+            std::fs::read_to_string(dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))))?;
+        assert!(!content.contains("weights"), "got: {content}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_day_without_weights_loads() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+        )?;
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert!(loaded.weights.is_empty());
+        assert_eq!(loaded.entries.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_weight_malformed_fields_rejected() -> Result<()> {
+        for bad in [
+            "[[weights]]\nkg = -1\ntimestamp = \"2026-08-01T08:00:00Z\"\n",
+            "[[weights]]\nkg = 75.5\ntimestamp = \"yesterday\"\n",
+            "[[weights]]\nkg = 75.5\n",
+        ] {
+            let dir = tempfile::TempDir::new()?;
+            let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+            std::fs::write(
+                dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+                format!("exercise_calories = 0\n{bad}"),
+            )?;
+            assert!(load_day(dir.path(), date).is_err(), "must reject: {bad}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_append_weight_waits_for_lock() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+
+        let dir_handle = std::fs::File::open(dir.path())?;
+        dir_handle.lock()?;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir_path = dir.path().to_path_buf();
+        let w = weight("75.5", "2026-08-09T08:00:00Z");
+        let thread = std::thread::spawn(move || {
+            let result = append_weight(&dir_path, date, &w);
+            tx.send(result).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            rx.try_recv().is_err(),
+            "append_weight completed while the lock was held"
+        );
+
+        drop(dir_handle);
+
+        assert!(rx.recv().unwrap().is_ok());
+        thread.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_weight_middle() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_weight(dir.path(), date, &weight("75.5", "2026-08-05T08:00:00Z"))?;
+        append_weight(dir.path(), date, &weight("75.4", "2026-08-05T12:00:00Z"))?;
+        append_weight(dir.path(), date, &weight("75.3", "2026-08-05T20:00:00Z"))?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        let removed = remove_weight(dir.path(), date, 2, &loaded.weights[1])?;
+        assert_eq!(removed.kg, Kilograms::from_str("75.4").unwrap());
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.weights.len(), 2);
+        assert_eq!(loaded.weights[0].kg, Kilograms::from_str("75.5").unwrap());
+        assert_eq!(loaded.weights[1].kg, Kilograms::from_str("75.3").unwrap());
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_weight_last_removes_day_file() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_weight(dir.path(), date, &weight("75.5", "2026-08-05T08:00:00Z"))?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        remove_weight(dir.path(), date, 1, &loaded.weights[0])?;
+        assert!(
+            load_day(dir.path(), date)?.is_none(),
+            "empty day file should be removed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_weight_keeps_day_file_with_entries() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        append_weight(dir.path(), date, &weight("75.5", "2026-08-05T08:00:00Z"))?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        remove_weight(dir.path(), date, 1, &loaded.weights[0])?;
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert!(loaded.weights.is_empty());
+        assert_eq!(loaded.entries.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_entry_keeps_day_file_with_weights() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        append_weight(dir.path(), date, &weight("75.5", "2026-08-05T08:00:00Z"))?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        remove_entry(dir.path(), date, 1, &loaded.entries[0])?;
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert!(loaded.entries.is_empty());
+        assert_eq!(loaded.weights.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_weight_out_of_range_errors() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_weight(dir.path(), date, &weight("75.5", "2026-08-05T08:00:00Z"))?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        let err = remove_weight(dir.path(), date, 2, &loaded.weights[0]).unwrap_err();
+        assert!(err.to_string().contains("weight 2 not found"));
+        assert!(err.to_string().contains("has 1 weight"));
+
+        let err = remove_weight(dir.path(), date, 0, &loaded.weights[0]).unwrap_err();
+        assert!(err.to_string().contains("weight 0 not found"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_weight_no_day_errors() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        let expected = weight("75.5", "2026-08-05T08:00:00Z");
+        let err = remove_weight(dir.path(), date, 1, &expected).unwrap_err();
+        assert!(err.to_string().contains("no weights"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_weight_rejects_changed_entry() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_weight(dir.path(), date, &weight("75.5", "2026-08-05T08:00:00Z"))?;
+        append_weight(dir.path(), date, &weight("75.4", "2026-08-05T12:00:00Z"))?;
+        append_weight(dir.path(), date, &weight("75.3", "2026-08-05T20:00:00Z"))?;
+
+        // A concurrent removal of the first weight shifts the confirmed
+        // index: the weight at index 2 is no longer the second one.
+        let expected = load_day(dir.path(), date)?
+            .expect("day should exist")
+            .weights[1]
+            .clone();
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        remove_weight(dir.path(), date, 1, &loaded.weights[0])?;
+
+        let err = remove_weight(dir.path(), date, 2, &expected).unwrap_err();
+        assert!(err.to_string().contains("changed since it was listed"));
+        assert!(err.to_string().contains("nothing removed"));
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.weights.len(), 2);
+        assert_eq!(loaded.weights[0].kg, Kilograms::from_str("75.4").unwrap());
+        assert_eq!(loaded.weights[1].kg, Kilograms::from_str("75.3").unwrap());
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_weight_rejects_modified_entry() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        append_weight(dir.path(), date, &weight("75.5", "2026-08-05T08:00:00Z"))?;
+
+        let expected = load_day(dir.path(), date)?
+            .expect("day should exist")
+            .weights[0]
+            .clone();
+        let mut changed = expected.clone();
+        changed.kg = Kilograms::from_str("75.4").unwrap();
+
+        let err = remove_weight(dir.path(), date, 1, &changed).unwrap_err();
+        assert!(err.to_string().contains("changed since it was listed"));
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert_eq!(loaded.weights.len(), 1);
+        assert_eq!(loaded.weights[0].kg, Kilograms::from_str("75.5").unwrap());
         Ok(())
     }
 }

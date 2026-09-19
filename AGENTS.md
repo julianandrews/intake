@@ -14,6 +14,13 @@ without reading the foods directory. Timestamps are always constructed by
 intake — from the clock at write time, or from explicit `--time` / `retime`
 input (local time on the target date) — never by the AI model.
 
+Day files also carry `weights`: a list of body-weight measurements, each a
+canonical `kg` value plus a required RFC 3339 `timestamp` (same construction
+rules as entry timestamps; `write_timestamps` doesn't apply). The `weight`
+command records and `weight rm` removes them; entries and weights are
+independent — `rm` / `retime` never touch weights and `ai log` ignores
+them.
+
 ## Workspace
 
 `intake` is a Cargo workspace. The binary lives at the root; `intake-ai` is

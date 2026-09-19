@@ -125,6 +125,7 @@ pub fn day_context(
     let empty = log::DayLog {
         entries: Vec::new(),
         exercise_calories: Calories::ZERO,
+        weights: Vec::new(),
     };
     let day = day.unwrap_or(&empty);
 
@@ -212,6 +213,7 @@ mod tests {
         log::DayLog {
             entries,
             exercise_calories: Calories::from_str("0").unwrap(),
+            weights: Vec::new(),
         }
     }
 
@@ -245,6 +247,7 @@ mod tests {
         let d = log::DayLog {
             entries: vec![entry("coffee", "2", "100"), entry("chili", "1", "300")],
             exercise_calories: Calories::from_str("200").unwrap(),
+            weights: Vec::new(),
         };
         let config = Config::default();
         let line = totals_line(&d, &config).unwrap();

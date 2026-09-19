@@ -1,8 +1,8 @@
 use crate::amount::{Calories, Grams, Macros};
-use crate::cli::{Cli, Commands, DateArgs, FoodCommands};
+use crate::cli::{Cli, Commands, DateArgs, FoodCommands, WeightCommands};
 use crate::completion;
 use crate::config::Config;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
 use clap::CommandFactory;
 
@@ -89,6 +89,39 @@ pub(crate) fn run(command: Option<Commands>, root_date: DateArgs, config: &Confi
             let date = resolve_date(merged.date, merged.days_ago)?;
             log::cmd_retime(&mut stdout, &log_dir, date, index, time, yes, config)?;
         }
+        Some(Commands::Weight {
+            value,
+            time,
+            command,
+            date,
+        }) => {
+            let merged = merged_date(&root_date, &date);
+            match command {
+                None => {
+                    let value = value.ok_or_else(|| {
+                        anyhow!("weight requires a value, or use `weight rm <n>`")
+                    })?;
+                    let date = resolve_date(merged.date, merged.days_ago)?;
+                    log::cmd_weight(&mut stdout, &log_dir, date, value, time, config)?;
+                }
+                Some(WeightCommands::Rm {
+                    index,
+                    yes,
+                    time: rm_time,
+                    date,
+                }) => {
+                    if value.is_some() {
+                        bail!("cannot record a weight value with `weight rm`");
+                    }
+                    if time.is_some() || rm_time.is_some() {
+                        bail!("--time applies to recording a weight, not `weight rm`");
+                    }
+                    let merged = merged_date(&merged, &date);
+                    let date = resolve_date(merged.date, merged.days_ago)?;
+                    log::cmd_weight_rm(&mut stdout, &log_dir, date, index, yes, config)?;
+                }
+            }
+        }
         Some(Commands::Food { command }) => {
             reject_root_date(&root_date, "food")?;
             match command {
@@ -160,7 +193,7 @@ fn reject_root_date(root: &DateArgs, name: &str) -> Result<()> {
     if root.date.is_some() || root.days_ago.is_some() {
         bail!(
             "--date/--days-ago target the day view (bare `intake`) or a date-targeting \
-             command (log, summary, exercise, rm, retime, ai log); `{name}` doesn't take them"
+             command (log, summary, exercise, rm, retime, weight, ai log); `{name}` doesn't take them"
         );
     }
     Ok(())

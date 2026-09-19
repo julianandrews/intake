@@ -232,6 +232,13 @@ decimal_type!(
     |d: Decimal| !d.is_sign_negative()
 );
 
+decimal_type!(
+    Kilograms,
+    "a non-negative decimal number",
+    |v: f64| v >= 0.0,
+    |d: Decimal| !d.is_sign_negative()
+);
+
 impl Grams {
     /// Zero grams.
     pub const ZERO: Grams = Grams(Decimal::ZERO);
@@ -245,6 +252,31 @@ impl Servings {
 impl Calories {
     /// Zero calories.
     pub const ZERO: Calories = Calories(Decimal::ZERO);
+}
+
+impl Kilograms {
+    /// Zero kilograms.
+    pub const ZERO: Kilograms = Kilograms(Decimal::ZERO);
+
+    /// One international avoirdupois pound in kilograms, exact by
+    /// definition.
+    pub const KILOGRAMS_PER_POUND: Decimal = Decimal::from_parts(45_359_237, 0, 0, false, 8);
+
+    /// Interpret a value in pounds as kilograms: multiply by the exact
+    /// conversion factor and round to storage precision. Errors on overflow.
+    pub fn from_lbs(lbs: Decimal) -> Result<Kilograms, String> {
+        let kg = lbs
+            .checked_mul(Kilograms::KILOGRAMS_PER_POUND)
+            .ok_or_else(|| format!("{lbs} lbs overflows the kilograms conversion"))?;
+        Kilograms::from_decimal(kg)
+    }
+
+    /// The exact value in pounds (a `Decimal`; the caller rounds at the
+    /// display boundary). Cannot fail: the divisor is the nonzero constant
+    /// factor above.
+    pub fn to_lbs(self) -> Decimal {
+        self.0 / Kilograms::KILOGRAMS_PER_POUND
+    }
 }
 
 /// The six macros: calories plus five masses in grams.
@@ -484,6 +516,61 @@ mod tests {
         assert_eq!(g("107.5").round_dp_away(0), g("108"));
         assert_eq!(g("106.5").round_dp_away(0), g("107"));
         assert_eq!(g("106.5").round_dp(0), g("106"));
+    }
+
+    fn kg(s: &str) -> Kilograms {
+        Kilograms::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn test_kilograms_reject_negative_and_round() {
+        assert!(Kilograms::from_str("-0.1").is_err());
+        assert!(Kilograms::from_f64(-1.0).is_err());
+        assert!(Kilograms::try_from(Decimal::new(-1, 0)).is_err());
+        assert_eq!(Kilograms::from_str("75.5").unwrap(), kg("75.5"));
+        assert_eq!(Kilograms::from_str("0").unwrap(), Kilograms::ZERO);
+        assert_eq!(Kilograms::from_f64(75.5555).unwrap(), kg("75.556"));
+    }
+
+    #[test]
+    fn test_kilograms_from_lbs_exact() {
+        // 233.8 lbs → 106.049896106 kg exact → stored at 0.001.
+        assert_eq!(
+            Kilograms::from_lbs(Decimal::from_str("233.8").unwrap()).unwrap(),
+            kg("106.050")
+        );
+        // 150 lbs → 68.0388555 kg → stored 68.039.
+        assert_eq!(
+            Kilograms::from_lbs(Decimal::from_str("150").unwrap()).unwrap(),
+            kg("68.039")
+        );
+        // Zero pounds is zero kilograms.
+        assert_eq!(Kilograms::from_lbs(Decimal::ZERO).unwrap(), Kilograms::ZERO);
+    }
+
+    #[test]
+    fn test_kilograms_to_lbs_round_trips_at_display_precision() {
+        // Stored 106.050 kg → 233.800229... lbs → rounds to 233.8 at 0.1.
+        let lbs = kg("106.050").to_lbs();
+        assert_eq!(round_away(lbs, 1), Decimal::from_str("233.8").unwrap());
+        let lbs = kg("68.039").to_lbs();
+        assert_eq!(round_away(lbs, 1), Decimal::from_str("150.0").unwrap());
+        // Exact round trip at 0.1 display precision for any 0.1-unit input:
+        // the storage error (≤ 0.0005 kg ≈ 0.0011 lbs) is ~100× below the
+        // 0.1 quantum.
+        for lbs in ["100", "150.5", "199.9", "233.8", "310.2"] {
+            let dec = Decimal::from_str(lbs).unwrap();
+            let back = Kilograms::from_lbs(dec).unwrap().to_lbs();
+            assert_eq!(round_away(back, 1), dec, "round trip failed for {lbs} lbs");
+        }
+    }
+
+    #[test]
+    fn test_kilograms_from_lbs_never_overflows() {
+        // Multiplying by a factor below 1 can only shrink the value, so even
+        // the largest decimal converts cleanly (the checked math is
+        // defensive, not load-bearing).
+        assert!(Kilograms::from_lbs(Decimal::MAX).is_ok());
     }
 
     #[derive(Serialize, Deserialize)]

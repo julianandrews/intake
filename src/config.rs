@@ -1,4 +1,4 @@
-use crate::amount::Calories;
+use crate::amount::{Calories, Kilograms};
 use anyhow::{bail, Context, Result};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -45,6 +45,37 @@ pub enum TimeFormat {
     /// 12-hour, `h:mm AM/PM` (e.g. `2:05 PM`).
     #[serde(rename = "12h")]
     H12,
+}
+
+/// The unit weights are entered and displayed in. Storage is always
+/// kilograms; this only selects input interpretation and display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum WeightUnit {
+    /// Kilograms.
+    #[serde(rename = "kg")]
+    Kg,
+    /// International avoirdupois pounds.
+    #[serde(rename = "lbs")]
+    Lbs,
+}
+
+impl WeightUnit {
+    /// Interpret a raw decimal weight value in this unit as kilograms,
+    /// rounding to storage precision at the input boundary.
+    pub fn parse(self, value: Decimal) -> Result<Kilograms, String> {
+        match self {
+            WeightUnit::Kg => Kilograms::from_decimal(value),
+            WeightUnit::Lbs => Kilograms::from_lbs(value),
+        }
+    }
+
+    /// The unit's label for display.
+    pub fn label(self) -> &'static str {
+        match self {
+            WeightUnit::Kg => "kg",
+            WeightUnit::Lbs => "lbs",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -98,6 +129,7 @@ pub struct Config {
     pub write_timestamps: Option<bool>,
     pub show_timestamp: Option<bool>,
     pub time_format: Option<TimeFormat>,
+    pub weight_unit: Option<WeightUnit>,
     pub summary_days: Option<u32>,
     #[cfg(feature = "ai")]
     pub ai: Option<crate::ai::settings::AiConfig>,
@@ -205,6 +237,12 @@ impl Config {
         self.time_format.unwrap_or(TimeFormat::H24)
     }
 
+    /// The unit weights are entered and displayed in (default: kg). An
+    /// unknown `weight_unit` value is rejected at config parse.
+    pub fn weight_unit(&self) -> WeightUnit {
+        self.weight_unit.unwrap_or(WeightUnit::Kg)
+    }
+
     /// The default window length for `summary` (default: 7 days). An
     /// explicit `--days` overrides this per invocation.
     pub fn summary_days(&self) -> u32 {
@@ -280,6 +318,7 @@ impl Config {
 mod tests {
     use super::*;
     use rust_decimal::Decimal;
+    use std::str::FromStr;
 
     #[test]
     fn test_columns_default_excludes_alcohol() {
@@ -415,6 +454,46 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("24h"), "got: {err}");
+    }
+
+    #[test]
+    fn test_weight_unit_default_is_kg() {
+        let config = Config::default();
+        assert_eq!(config.weight_unit(), WeightUnit::Kg);
+        assert_eq!(config.weight_unit().label(), "kg");
+    }
+
+    #[test]
+    fn test_weight_unit_lbs_parses() {
+        let config: Config = toml::from_str("weight_unit = \"lbs\"\n").unwrap();
+        assert_eq!(config.weight_unit(), WeightUnit::Lbs);
+        assert_eq!(config.weight_unit().label(), "lbs");
+    }
+
+    #[test]
+    fn test_weight_unit_unknown_rejected() {
+        let err = toml::from_str::<Config>("weight_unit = \"stones\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("kg"), "got: {err}");
+    }
+
+    #[test]
+    fn test_weight_unit_parse_interprets_input() {
+        // kg input passes through (rounded to storage precision).
+        assert_eq!(
+            WeightUnit::Kg
+                .parse(Decimal::from_str("75.5").unwrap())
+                .unwrap(),
+            Kilograms::from_str("75.5").unwrap()
+        );
+        // lbs input converts at the input boundary.
+        assert_eq!(
+            WeightUnit::Lbs
+                .parse(Decimal::from_str("233.8").unwrap())
+                .unwrap(),
+            Kilograms::from_str("106.050").unwrap()
+        );
     }
 
     #[test]

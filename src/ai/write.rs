@@ -1,5 +1,4 @@
-use crate::amount::Calories;
-use crate::log::{lock_log_dir, log_path, write_day_locked, DayLog};
+use crate::log::{day_is_empty, lock_log_dir, log_path, write_day_locked, DayLog};
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use std::fs;
@@ -43,9 +42,10 @@ pub(crate) fn stamp_added_entries(applied: AppliedDay, now: crate::log::Timestam
 /// matches `expected` exactly (or both are absent). Runs inside the log
 /// directory lock, so the check and the write are atomic against concurrent
 /// writers — a day changed since the caller's context was built aborts
-/// instead of being overwritten. An applied day with no entries and no
-/// exercise calories deletes the day file instead of writing one, matching
-/// [`crate::log::remove_entry`].
+/// instead of being overwritten. An applied day with nothing at all — no
+/// entries, no exercise calories, no weights — deletes the day file instead
+/// of writing one, matching [`crate::log::remove_entry`]. A day that still
+/// holds weights must persist, even if the AI cleared every entry.
 pub(crate) fn write_day_checked(
     log_dir: &Path,
     date: NaiveDate,
@@ -73,7 +73,7 @@ pub(crate) fn write_day_checked(
         );
     }
 
-    if new.entries.is_empty() && new.exercise_calories == Calories::ZERO {
+    if day_is_empty(&new) {
         if current.is_some() {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to remove log: {}", path.display()))?;
@@ -122,6 +122,7 @@ mod tests {
                 ["12", "0.0", "0.0", "0.0", "0.0", "0.0"],
             )],
             exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
         };
         let updated = DayLog {
             entries: vec![entry(
@@ -130,6 +131,7 @@ mod tests {
                 ["300", "0.0", "0.0", "0.0", "0.0", "0.0"],
             )],
             exercise_calories: Calories::from_str("200").unwrap(),
+            weights: Vec::new(),
         };
 
         write_day_checked(dir.path(), date, None, original.clone())?;
@@ -153,6 +155,7 @@ mod tests {
                 ["12", "0.0", "0.0", "0.0", "0.0", "0.0"],
             )],
             exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
         };
         write_day_checked(dir.path(), date, None, original.clone())?;
 
@@ -163,6 +166,7 @@ mod tests {
                 ["300", "0.0", "0.0", "0.0", "0.0", "0.0"],
             )],
             exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
         };
         write_day_checked(dir.path(), date, Some(&original), changed.clone())?;
 
@@ -187,6 +191,7 @@ mod tests {
                 ["12", "0.0", "0.0", "0.0", "0.0", "0.0"],
             )],
             exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
         };
         write_day_checked(dir.path(), date, None, day.clone())?;
 
@@ -208,15 +213,67 @@ mod tests {
                 ["12", "0.0", "0.0", "0.0", "0.0", "0.0"],
             )],
             exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
         };
         write_day_checked(dir.path(), date, None, original.clone())?;
 
         let empty = DayLog {
             entries: Vec::new(),
             exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
         };
         write_day_checked(dir.path(), date, Some(&original), empty.clone())?;
         assert_eq!(load_day(dir.path(), date)?, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_day_checked_empty_day_keeps_file_with_weights() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+
+        let weight = crate::log::WeightEntry {
+            kg: crate::amount::Kilograms::from_str("75.5").unwrap(),
+            timestamp: crate::log::Timestamp::from_local(
+                date,
+                chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+            )
+            .unwrap(),
+        };
+        let original = DayLog {
+            entries: vec![entry(
+                "coffee",
+                "1.0",
+                ["12", "0.0", "0.0", "0.0", "0.0", "0.0"],
+            )],
+            exercise_calories: Calories::ZERO,
+            weights: vec![weight.clone()],
+        };
+        write_day_checked(dir.path(), date, None, original.clone())?;
+
+        // The AI clearing every entry must not delete the day: it still
+        // holds a weight.
+        let cleared = DayLog {
+            entries: Vec::new(),
+            exercise_calories: Calories::ZERO,
+            weights: vec![weight],
+        };
+        write_day_checked(dir.path(), date, Some(&original), cleared)?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day with a weight must persist");
+        assert!(loaded.entries.is_empty());
+        assert_eq!(
+            loaded.weights,
+            vec![crate::log::WeightEntry {
+                kg: crate::amount::Kilograms::from_str("75.5").unwrap(),
+                timestamp: crate::log::Timestamp::from_local(
+                    date,
+                    chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+                )
+                .unwrap(),
+            }]
+        );
 
         Ok(())
     }
@@ -229,6 +286,7 @@ mod tests {
         let empty = DayLog {
             entries: Vec::new(),
             exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
         };
         write_day_checked(dir.path(), date, None, empty)?;
         assert_eq!(load_day(dir.path(), date)?, None);
@@ -248,12 +306,14 @@ mod tests {
                 ["12", "0.0", "0.0", "0.0", "0.0", "0.0"],
             )],
             exercise_calories: Calories::from_str("300").unwrap(),
+            weights: Vec::new(),
         };
         write_day_checked(dir.path(), date, None, original.clone())?;
 
         let empty_with_exercise = DayLog {
             entries: Vec::new(),
             exercise_calories: Calories::from_str("300").unwrap(),
+            weights: Vec::new(),
         };
         write_day_checked(
             dir.path(),
@@ -284,6 +344,7 @@ mod tests {
                 ["12", "0.0", "0.0", "0.0", "0.0", "0.0"],
             )],
             exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let dir_path = dir.path().to_path_buf();
@@ -314,6 +375,7 @@ mod tests {
             day: DayLog {
                 entries,
                 exercise_calories: Calories::ZERO,
+                weights: Vec::new(),
             },
             add_ops,
         }

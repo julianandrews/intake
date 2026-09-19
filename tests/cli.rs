@@ -2634,3 +2634,418 @@ fn test_retime_dst_ambiguous_errors() {
         "the day file must be unchanged: {file}"
     );
 }
+
+#[test]
+fn test_weight_records_timestamped_entry() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "weight",
+        "75.5",
+    ]);
+    assert!(success, "weight failed: {stdout}");
+    assert!(stdout.contains("Recorded 75.5 kg for"), "got: {stdout}");
+    let stripped = strip_ansi(&stdout);
+    assert!(
+        stripped.contains("Weights:"),
+        "day view must show the weights footer: {stdout}"
+    );
+    assert!(
+        stripped.contains("  1. 75.5 kg ("),
+        "first weigh-in line missing: {stdout}"
+    );
+    let log_file = today_file(dir.path());
+    assert!(
+        log_file.contains("[[weights]]") && log_file.contains("kg = 75.5"),
+        "weight entry missing: {log_file}"
+    );
+    assert!(
+        log_file.contains("timestamp = \""),
+        "no stamp written: {log_file}"
+    );
+}
+
+#[test]
+fn test_weight_time_and_date_compose() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run_in_env(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "75.5",
+            "--time",
+            "08:00",
+            "--date",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+        &[("TZ", "UTC")],
+    );
+    assert!(success, "weight failed: {stdout}");
+    assert!(
+        stdout.contains("Recorded 75.5 kg for 2026-08-02"),
+        "got: {stdout}"
+    );
+    let file = std::fs::read_to_string(dir.path().join("2026-08-02.toml")).unwrap();
+    assert!(
+        file.contains("timestamp = \"2026-08-02T08:00:00Z\""),
+        "exact stamp missing: {file}"
+    );
+    assert!(
+        !dir.path().join("2026-08-01.toml").exists(),
+        "must not write any other day file"
+    );
+}
+
+#[test]
+fn test_weight_days_ago_targets_previous_day() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "75.5",
+            "--days-ago",
+            "1",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "weight failed: {stdout}");
+    let yesterday = chrono::Local::now()
+        .date_naive()
+        .checked_sub_days(chrono::Days::new(1))
+        .unwrap()
+        .format("%Y-%m-%d")
+        .to_string();
+    assert!(
+        dir.path().join(format!("{yesterday}.toml")).exists(),
+        "must write yesterday's file"
+    );
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    assert!(
+        !dir.path().join(format!("{today}.toml")).exists(),
+        "must not write today's file"
+    );
+}
+
+#[test]
+fn test_weight_lbs_config_converts_input_and_display() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    write_config(config_dir.path(), "weight_unit = \"lbs\"\n");
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "233.8",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "weight failed: {stdout}");
+    assert!(
+        stdout.contains("Recorded 233.8 lbs for"),
+        "input must be interpreted in pounds: {stdout}"
+    );
+    let stripped = strip_ansi(&stdout);
+    assert!(
+        stripped.contains("  1. 233.8 lbs ("),
+        "display must be in pounds: {stdout}"
+    );
+    let log_file = today_file(dir.path());
+    assert!(
+        log_file.contains("kg = 106.05"),
+        "storage must be canonical kg: {log_file}"
+    );
+}
+
+#[test]
+fn test_weight_rm_removes_and_rerenders() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "weight",
+        "75.5",
+    ]);
+    assert!(success, "weight failed: {stdout}");
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "weight",
+        "75.4",
+    ]);
+    assert!(success, "weight failed: {stdout}");
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "rm",
+            "1",
+            "--yes",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "weight rm failed: {stdout}");
+    assert!(stdout.contains("Removed weight 1"), "got: {stdout}");
+    let stripped = strip_ansi(&stdout);
+    assert!(
+        stripped.contains("  1. 75.4 kg ("),
+        "remaining weight must be renumbered: {stdout}"
+    );
+    let log_file = today_file(dir.path());
+    assert!(
+        log_file.matches("[[weights]]").count() == 1 && log_file.contains("kg = 75.4"),
+        "removed weight must be gone: {log_file}"
+    );
+    assert!(!log_file.contains("kg = 75.5"), "got: {log_file}");
+}
+
+#[test]
+fn test_weight_rm_requires_confirmation() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "weight",
+        "75.5",
+    ]);
+    assert!(success, "weight failed: {stdout}");
+
+    let (stdout, success) = run_in_env_stdin(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "rm",
+            "1",
+        ],
+        config_dir.path(),
+        &[],
+        "n\n",
+    );
+    assert!(success, "weight rm failed: {stdout}");
+    assert!(stdout.contains("Nothing removed"), "got: {stdout}");
+    assert!(today_file(dir.path()).contains("kg = 75.5"));
+}
+
+#[test]
+fn test_weight_rm_last_weight_deletes_day_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "weight",
+        "75.5",
+    ]);
+    assert!(success, "weight failed: {stdout}");
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "rm",
+            "1",
+            "--yes",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "weight rm failed: {stdout}");
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    assert!(
+        !dir.path().join(format!("{today}.toml")).exists(),
+        "a day holding only a weight must be deleted after its removal"
+    );
+}
+
+#[test]
+fn test_weight_requires_a_value() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, stderr, code) = run_in_env_full(
+        &["--foods-dir", &fd_str, "--log-dir", &log_dir_str, "weight"],
+        config_dir.path(),
+        &[],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}");
+    assert!(stderr.contains("weight requires a value"), "got: {stderr}");
+}
+
+#[test]
+fn test_weight_rejects_negative_and_bad_values() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, _, code) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "-1",
+        ],
+        tempfile::TempDir::new().unwrap().path(),
+        &[],
+    );
+    assert_eq!(code, Some(2), "stdout: {stdout}");
+
+    let (stdout, _, code) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "abc",
+        ],
+        tempfile::TempDir::new().unwrap().path(),
+        &[],
+    );
+    assert_eq!(code, Some(2), "stdout: {stdout}");
+    assert!(
+        !dir.path().join("2026-08-02.toml").exists(),
+        "no day file may be written for a bad value"
+    );
+}
+
+#[test]
+fn test_weight_value_with_rm_errors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, stderr, code) = run_in_env_full(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "75.5",
+            "rm",
+            "1",
+        ],
+        config_dir.path(),
+        &[],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}");
+    assert!(
+        stderr.contains("cannot record a weight value with `weight rm`"),
+        "got: {stderr}"
+    );
+}
+
+#[test]
+fn test_weight_rm_time_flag_errors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    // `--time` after the subcommand and before it must fail the same way.
+    for args in [
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "rm",
+            "1",
+            "--time",
+            "08:00",
+        ][..],
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "weight",
+            "--time",
+            "08:00",
+            "rm",
+            "1",
+        ][..],
+    ] {
+        let (stdout, stderr, code) = run_in_env_full(args, config_dir.path(), &[]);
+        assert_eq!(code, Some(1), "stdout: {stdout}");
+        assert!(
+            stderr.contains("--time applies to recording a weight, not `weight rm`"),
+            "got: {stderr}"
+        );
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        assert!(
+            !dir.path().join(format!("{today}.toml")).exists(),
+            "no day file may be written"
+        );
+    }
+}
