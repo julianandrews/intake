@@ -55,6 +55,11 @@
           cargoTestFlags = [ "--workspace" ] ++ featureFlags;
           doCheck = true;
 
+          # The DST tests set TZ=America/New_York. The Nix build sandbox has
+          # no system zoneinfo, so point libc at tzdata's copy explicitly.
+          nativeCheckInputs = [ pkgs.tzdata ];
+          TZDIR = "${pkgs.tzdata}/share/zoneinfo";
+
           meta.mainProgram = "intake";
         };
     in
@@ -70,7 +75,9 @@
               rust
               pkgs.stdenv.cc
               pkgs.pkg-config
+              pkgs.tzdata
             ];
+            TZDIR = "${pkgs.tzdata}/share/zoneinfo";
             RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library";
           };
         }
