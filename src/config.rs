@@ -133,6 +133,10 @@ pub struct Config {
     pub summary_days: Option<u32>,
     #[cfg(feature = "ai")]
     pub ai: Option<crate::ai::settings::AiConfig>,
+    /// Directory containing the config file, when one was loaded. Secret
+    /// `file` paths resolve against it; not a user-configurable key.
+    #[serde(skip)]
+    pub config_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -182,8 +186,10 @@ impl Config {
             Some(path) if path.exists() => {
                 let content = std::fs::read_to_string(&path)
                     .with_context(|| format!("failed to read config: {}", path.display()))?;
-                Ok(toml::from_str(&content)
-                    .with_context(|| format!("failed to parse config: {}", path.display()))?)
+                let mut config: Config = toml::from_str(&content)
+                    .with_context(|| format!("failed to parse config: {}", path.display()))?;
+                config.config_dir = path.parent().map(PathBuf::from);
+                Ok(config)
             }
             _ => Ok(Config::default()),
         }

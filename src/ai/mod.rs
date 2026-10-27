@@ -167,11 +167,13 @@ fn resolve_settings(config: &Config, flags: &cli::AiFlags) -> Result<Settings> {
             "no base_url configured: set `[ai] base_url`, INTAKE_AI_BASE_URL, or --base-url"
         )
     })?;
-    let api_key = resolve_value(
-        ai.and_then(|ai| ai.api_key.clone()),
+    let api_key = resolve_secret(
+        ai.and_then(|ai| ai.api_key.as_ref()),
+        "api_key",
         "INTAKE_AI_API_KEY",
         flags.api_key.clone(),
-    );
+        config.config_dir.as_deref(),
+    )?;
     let mut settings = Settings::new(base_url, model, api_key);
     settings.user_agent = USER_AGENT.to_string();
     if let Some(max_retries) = ai.and_then(|ai| ai.max_retries) {
@@ -200,6 +202,31 @@ fn resolve_value(
 ) -> Option<String> {
     flag.or_else(|| std::env::var(env_name).ok().filter(|v| !v.is_empty()))
         .or(from_config)
+}
+
+/// Resolve a secret with the same flag → env → config precedence as
+/// `resolve_value`, but only touch the config source (file or command) when
+/// neither a flag nor a non-empty environment variable supplied the value.
+/// This keeps a configured command from running when it isn't needed and
+/// avoids failing on an unreadable file that would be overridden anyway.
+fn resolve_secret(
+    from_config: Option<&settings::Secret>,
+    label: &str,
+    env_name: &str,
+    flag: Option<String>,
+    base_dir: Option<&Path>,
+) -> Result<Option<String>> {
+    if let Some(flag) = flag {
+        return Ok(Some(flag));
+    }
+    if let Ok(value) = std::env::var(env_name) {
+        if !value.is_empty() {
+            return Ok(Some(value));
+        }
+    }
+    from_config
+        .map(|secret| secret.resolve(label, base_dir))
+        .transpose()
 }
 
 fn prompt_override(
@@ -249,22 +276,18 @@ impl AiSession {
     }
 }
 
-fn usda_key(config: &Config) -> String {
-    let mut key = config
-        .ai
-        .as_ref()
-        .and_then(|ai| ai.usda_api_key.as_deref())
-        .unwrap_or("")
-        .to_string();
-    if let Ok(value) = std::env::var("INTAKE_AI_USDA_API_KEY") {
-        if !value.is_empty() {
-            key = value;
-        }
-    }
-    key
+fn usda_key(config: &Config) -> Result<String> {
+    let key = resolve_secret(
+        config.ai.as_ref().and_then(|ai| ai.usda_api_key.as_ref()),
+        "usda_api_key",
+        "INTAKE_AI_USDA_API_KEY",
+        None,
+        config.config_dir.as_deref(),
+    )?;
+    Ok(key.unwrap_or_default())
 }
 
-fn usda_tools(config: &Config) -> usda::UsdaSearch {
+fn usda_tools(config: &Config) -> Result<usda::UsdaSearch> {
     let timeout = Duration::from_secs(
         config
             .ai
@@ -272,7 +295,7 @@ fn usda_tools(config: &Config) -> usda::UsdaSearch {
             .and_then(|ai| ai.usda_timeout_secs)
             .unwrap_or(settings::DEFAULT_USDA_TIMEOUT_SECS),
     );
-    usda::UsdaSearch::new(&usda_key(config), timeout)
+    Ok(usda::UsdaSearch::new(&usda_key(config)?, timeout))
 }
 
 fn sample_foods_context(foods_dir: &Path) -> Result<String> {
@@ -396,7 +419,7 @@ fn cmd_ai_log(
         prompt_override(config, |ai| &ai.log_prompt),
         &context_text,
     );
-    let usda_search = usda_tools(config);
+    let usda_search = usda_tools(config)?;
     let status = spinner::StatusLine::new(settings);
     let warn = |msg: &str| status.warn(msg);
     let food_lookup = food_lookup::FoodLookup::new(foods_dir).with_warn(&warn);
@@ -518,7 +541,7 @@ fn cmd_ai_food_new(
         prompt_override(config, |ai| &ai.food_new_prompt),
         &samples,
     );
-    let usda_search = usda_tools(config);
+    let usda_search = usda_tools(config)?;
     let status = spinner::StatusLine::new(settings);
     let columns = config.columns()?;
 
@@ -593,7 +616,7 @@ fn cmd_ai_food_edit(
         prompt_override(config, |ai| &ai.food_edit_prompt),
         &context_text,
     );
-    let usda_search = usda_tools(config);
+    let usda_search = usda_tools(config)?;
     let status = spinner::StatusLine::new(settings);
     let columns = config.columns()?;
 
@@ -1002,8 +1025,8 @@ mod tests {
     fn test_usda_key_from_config() {
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config: Config = toml::from_str("[ai]\nusda_api_key = \"k\"\n").unwrap();
-        assert_eq!(usda_key(&config), "k");
-        assert_eq!(usda_key(&Config::default()), "");
+        assert_eq!(usda_key(&config).unwrap(), "k");
+        assert_eq!(usda_key(&Config::default()).unwrap(), "");
     }
 
     #[test]
@@ -1011,7 +1034,7 @@ mod tests {
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config: Config = toml::from_str("[ai]\nusda_api_key = \"k\"\n").unwrap();
         std::env::set_var("INTAKE_AI_USDA_API_KEY", "usda-key");
-        let key = usda_key(&config);
+        let key = usda_key(&config).unwrap();
         std::env::remove_var("INTAKE_AI_USDA_API_KEY");
         assert_eq!(key, "usda-key");
     }
@@ -1021,9 +1044,126 @@ mod tests {
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config = Config::default();
         std::env::set_var("INTAKE_AI_USDA_API_KEY", "usda-key");
-        let key = usda_key(&config);
+        let key = usda_key(&config).unwrap();
         std::env::remove_var("INTAKE_AI_USDA_API_KEY");
         assert_eq!(key, "usda-key");
+    }
+
+    #[test]
+    fn test_usda_key_from_file() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("INTAKE_AI_USDA_API_KEY");
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("usda-key");
+        std::fs::write(&path, "file-key\n").unwrap();
+        let config: Config = toml::from_str(&format!(
+            "[ai]\nusda_api_key = {{ file = {:?} }}\n",
+            path.to_string_lossy()
+        ))
+        .unwrap();
+        assert_eq!(usda_key(&config).unwrap(), "file-key");
+    }
+
+    #[test]
+    fn test_usda_key_broken_source_errors() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("INTAKE_AI_USDA_API_KEY");
+        let config: Config =
+            toml::from_str("[ai]\nusda_api_key = { file = \"/definitely/missing\" }\n").unwrap();
+        let err = usda_key(&config).unwrap_err().to_string();
+        assert!(
+            err.contains("failed to read usda_api_key file"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_secret_flag_wins_without_resolving_config() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("INTAKE_AI_API_KEY");
+        let config: Config = toml::from_str(
+            "[ai]\napi_key = { file = \"/definitely/missing\" }\nmodel = \"m\"\nbase_url = \"http://x/v1\"\n",
+        )
+        .unwrap();
+        let flags = cli::AiFlags {
+            api_key: Some("cli".to_string()),
+            model: None,
+            base_url: None,
+            yes: false,
+            trace_requests: false,
+            trace_responses: false,
+            prompt_arg: None,
+        };
+        let settings = resolve_settings(&config, &flags).unwrap();
+        assert_eq!(settings.api_key.as_deref(), Some("cli"));
+    }
+
+    #[test]
+    fn test_resolve_secret_env_skips_broken_config_source() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let config: Config = toml::from_str(
+            "[ai]\napi_key = { command = \"exit 1\" }\nmodel = \"m\"\nbase_url = \"http://x/v1\"\n",
+        )
+        .unwrap();
+        let flags = cli::AiFlags {
+            api_key: None,
+            model: None,
+            base_url: None,
+            yes: false,
+            trace_requests: false,
+            trace_responses: false,
+            prompt_arg: None,
+        };
+        std::env::set_var("INTAKE_AI_API_KEY", "env");
+        let settings = resolve_settings(&config, &flags).unwrap();
+        std::env::remove_var("INTAKE_AI_API_KEY");
+        assert_eq!(settings.api_key.as_deref(), Some("env"));
+    }
+
+    #[test]
+    fn test_resolve_settings_api_key_from_file_config() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("INTAKE_AI_API_KEY");
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("key");
+        std::fs::write(&path, "file-key\n").unwrap();
+        let config: Config = toml::from_str(&format!(
+            "[ai]\napi_key = {{ file = {:?} }}\nmodel = \"m\"\nbase_url = \"http://x/v1\"\n",
+            path.to_string_lossy()
+        ))
+        .unwrap();
+        let flags = cli::AiFlags {
+            api_key: None,
+            model: None,
+            base_url: None,
+            yes: false,
+            trace_requests: false,
+            trace_responses: false,
+            prompt_arg: None,
+        };
+        let settings = resolve_settings(&config, &flags).unwrap();
+        assert_eq!(settings.api_key.as_deref(), Some("file-key"));
+    }
+
+    #[test]
+    fn test_resolve_settings_broken_api_key_source_errors() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("INTAKE_AI_API_KEY");
+        let config: Config = toml::from_str(
+            "[ai]\napi_key = { command = \"exit 1\" }\nmodel = \"m\"\nbase_url = \"http://x/v1\"\n",
+        )
+        .unwrap();
+        let flags = cli::AiFlags {
+            api_key: None,
+            model: None,
+            base_url: None,
+            yes: false,
+            trace_requests: false,
+            trace_responses: false,
+            prompt_arg: None,
+        };
+        let err = resolve_settings(&config, &flags).unwrap_err().to_string();
+        assert!(err.contains("api_key command failed"), "got: {err}");
     }
 
     #[test]

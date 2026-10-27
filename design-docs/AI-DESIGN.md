@@ -702,12 +702,12 @@ so both confirmers behave identically.
 [ai]
 model = "..."            # required; or INTAKE_AI_MODEL / --model
 base_url = "..."         # required; any OpenAI-compatible endpoint; or INTAKE_AI_BASE_URL / --base-url
-api_key = "..."          # or INTAKE_AI_API_KEY / --api-key; optional for endpoints without auth
+api_key = "..."          # or { file = "..." } / { command = "..." }; or INTAKE_AI_API_KEY / --api-key
 session_header = "..."   # optional; fresh random ID per run under this header name (e.g. "x-opencode-session")
 max_retries = 3
 max_tool_calls = 20      # tool executions per resolve attempt; exhaustion → one "answer now" round
 timeout_secs = 60        # per LLM API call
-usda_api_key = "..."     # or INTAKE_AI_USDA_API_KEY
+usda_api_key = "..."     # or { file = "..." } / { command = "..." }; or INTAKE_AI_USDA_API_KEY
 usda_timeout_secs = 15   # per USDA backend fetch
 trace_requests = false   # or --trace-requests; print request messages to stderr
 trace_responses = false  # or --trace-responses; print model responses to stderr
@@ -731,6 +731,15 @@ food_edit_prompt = "..."
   `model` and `base_url` must resolve somewhere in that chain — a missing
   value is a friendly error, not a default. `usda_api_key` resolves config →
   env only — no CLI flag.
+- Both keys deserialize to a `Secret` enum: `Inline`, `File`, or `Command`.
+  A TOML string is inline; a one-key table selects `{ file = "..." }`
+  (read UTF-8, trimmed) or `{ command = "..." }` (run through `sh -c` /
+  `cmd /C`, trimmed stdout; nonzero exit or empty output is an error).
+  Relative file paths resolve against the config file's directory. The
+  file/command is touched only when the config source is actually selected:
+  a CLI flag or non-empty env var wins without reading the file or running
+  the command. Command errors never echo the command line, since it may
+  itself contain a secret.
 - The API keys (LLM and USDA) are never logged or printed.
 - Timeouts: `timeout_secs` (default 60) bounds each LLM API call;
   `usda_timeout_secs` (default 15) bounds each `usda_search`

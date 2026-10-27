@@ -167,16 +167,30 @@ Configure the provider in `~/.config/intake/config.toml`:
 [ai]
 model = "..."            # required; or INTAKE_AI_MODEL / --model
 base_url = "..."         # required; any OpenAI-compatible endpoint; or INTAKE_AI_BASE_URL / --base-url
-api_key = "..."          # or INTAKE_AI_API_KEY / --api-key; optional for local endpoints without auth
+api_key = "..."          # or { file = "..." } / { command = "..." }; or INTAKE_AI_API_KEY / --api-key
 session_header = "..."   # optional; send a fresh random ID per run under this header (e.g. "x-opencode-session")
-usda_api_key = "..."     # or INTAKE_AI_USDA_API_KEY (free at fdc.nal.usda.gov)
+usda_api_key = "..."     # or { file = "..." } / { command = "..." }; or INTAKE_AI_USDA_API_KEY (free at fdc.nal.usda.gov)
 history_days = 14        # ai log context window
 ```
 
 Settings resolve config file → environment → CLI flags (`--api-key`,
 `--model`, `--base-url`, `--yes`, `--trace-requests`, `--trace-responses`,
 `--prompt`). `model` and `base_url` are required — an `ai` command errors
-with a setup hint until both are set. Tracing is off by default;
+with a setup hint until both are set. `api_key` is optional — omit it for
+endpoints without auth. `api_key` and `usda_api_key` can be
+given inline or as a table with one source:
+
+```toml
+api_key = { file = "keys/openai" }                  # read UTF-8, trim whitespace
+api_key = { command = "op read op://private/openai" } # trimmed stdout
+```
+
+Relative `file` paths resolve against the config file's directory. File and
+command secrets are only resolved when the config value is actually selected:
+a non-empty environment variable or CLI flag wins and the file is not read /
+the command is not run. Commands run through `sh -c` (Unix) or `cmd /C`
+(Windows); a nonzero exit or empty output is an error. Resolved keys are
+never logged or printed. Tracing is off by default;
 `--trace-requests` prints each message sent to
 the model once, on the round it first appears (stderr, in `--- to model ---`
 blocks), and `--trace-responses` prints the model's output in

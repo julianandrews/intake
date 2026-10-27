@@ -236,6 +236,56 @@ fn test_ai_log_confirmed_proposal_writes_day() {
 }
 
 #[test]
+fn test_ai_log_uses_api_key_file_relative_to_config() {
+    let fake = FakeLlm::start(&[ADD_OATMEAL_OPS]);
+    let config_dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(config_dir.path().join("intake")).unwrap();
+    std::fs::write(
+        config_dir.path().join("intake").join("api-key"),
+        "file-secret\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.path().join("intake").join("config.toml"),
+        format!(
+            "[ai]\nbase_url = \"{}\"\nmodel = \"fake\"\napi_key = {{ file = \"api-key\" }}\n",
+            fake.address
+        ),
+    )
+    .unwrap();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    write_day_log(log_dir.path(), "2026-08-10", true);
+    let foods = foods_dir().to_string_lossy().to_string();
+    let logs = log_dir.path().to_string_lossy().to_string();
+
+    let (stdout, stderr, success) = run_ai(
+        &[
+            "--foods-dir",
+            &foods,
+            "--log-dir",
+            &logs,
+            "ai",
+            "log",
+            "add oatmeal",
+            "--date",
+            "2026-08-10",
+            "--yes",
+        ],
+        config_dir.path(),
+        None,
+    );
+    assert!(success, "stdout: {stdout}\nstderr: {stderr}");
+    let bodies = fake.request_bodies();
+    assert_eq!(bodies.len(), 1, "expected exactly one LLM request");
+    let request = bodies[0].to_ascii_lowercase();
+    assert!(
+        request.contains("authorization: bearer file-secret"),
+        "request must use the key from the config-relative file: {}",
+        bodies[0]
+    );
+}
+
+#[test]
 fn test_ai_log_rejected_proposal_writes_nothing() {
     let fake = FakeLlm::start(&[ADD_OATMEAL_OPS]);
     let config_dir = tempfile::TempDir::new().unwrap();
