@@ -54,6 +54,17 @@
           cargoBuildFlags = featureFlags;
           cargoTestFlags = [ "--workspace" ] ++ featureFlags;
           doCheck = true;
+          nativeBuildInputs = [ pkgs.installShellFiles ];
+
+          # Use the dynamic completers (`COMPLETE=<shell> intake`), not the
+          # static `intake completions <shell>` output: only the former
+          # completes food names and logged dates.
+          postInstall = ''
+            installShellCompletion --cmd intake \
+              --bash <(COMPLETE=bash "$out/bin/intake") \
+              --zsh  <(COMPLETE=zsh  "$out/bin/intake") \
+              --fish <(COMPLETE=fish "$out/bin/intake")
+          '';
 
           meta.mainProgram = "intake";
         };
