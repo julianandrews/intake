@@ -1,4 +1,7 @@
 target/
+.direnv/
+result
+result-*
 .DS_Store
 *.swp
 *.swo
