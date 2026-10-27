@@ -2563,6 +2563,12 @@ fn test_retime_overwrites_existing_stamp() {
     );
 }
 
+// POSIX TZ rules for US Eastern: EST/EDT with DST from the second Sunday in
+// March to the first Sunday in November. Spelling out the rules keeps these
+// tests independent of a system tzdata database (the Nix build sandbox has
+// none).
+const US_EASTERN_TZ: &str = "EST5EDT,M3.2.0/2:00:00,M11.1.0/2:00:00";
+
 #[test]
 fn test_log_time_dst_gap_errors() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -2570,7 +2576,7 @@ fn test_log_time_dst_gap_errors() {
     let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
 
-    // 2026-03-08 02:30 does not exist in America/New_York (spring forward).
+    // 2026-03-08 02:30 does not exist in US Eastern time (spring forward).
     let (stdout, stderr, code) = run_in_env_full(
         &[
             "--foods-dir",
@@ -2585,7 +2591,7 @@ fn test_log_time_dst_gap_errors() {
             "2026-03-08",
         ],
         config_dir.path(),
-        &[("TZ", "America/New_York")],
+        &[("TZ", US_EASTERN_TZ)],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}");
     assert!(
@@ -2606,7 +2612,7 @@ fn test_retime_dst_ambiguous_errors() {
     let fd_str = foods_dir().to_string_lossy().to_string();
     write_day_log(dir.path(), "2026-11-01", "100", "10.0", "4.0", 0);
 
-    // 2026-11-01 01:30 is ambiguous in America/New_York (fall back).
+    // 2026-11-01 01:30 is ambiguous in US Eastern time (fall back).
     let (stdout, stderr, code) = run_in_env_full(
         &[
             "--foods-dir",
@@ -2621,7 +2627,7 @@ fn test_retime_dst_ambiguous_errors() {
             "2026-11-01",
         ],
         config_dir.path(),
-        &[("TZ", "America/New_York")],
+        &[("TZ", US_EASTERN_TZ)],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}");
     assert!(
