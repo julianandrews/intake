@@ -263,6 +263,10 @@ pub fn apply_ops(
         entries,
         exercise_calories: day.exercise_calories,
         weights: day.weights.clone(),
+        // Completeness is a user judgment, not part of the edit: ops never
+        // change it, and the apply path must preserve it so an AI edit on a
+        // complete day leaves the day complete.
+        complete: day.complete,
     })
 }
 
@@ -294,6 +298,7 @@ mod tests {
             entries,
             exercise_calories: Calories::from_str("300").unwrap(),
             weights: Vec::new(),
+            complete: false,
         }
     }
 
@@ -616,6 +621,16 @@ mod tests {
             "[[ops]]\nkind = \"add-food\"\nname = \"x\"\nservings = \"1\"\n"
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_apply_ops_preserves_complete_mark() {
+        let dir = foods_dir_with_oatmeal();
+        let mut day = day(vec![entry("coffee", "1", "12")]);
+        day.complete = true;
+
+        let applied = apply_ops(&day, &[], dir.path()).unwrap();
+        assert!(applied.complete);
     }
 
     #[test]

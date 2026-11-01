@@ -428,6 +428,7 @@ fn cmd_ai_log(
         entries: Vec::new(),
         exercise_calories: Calories::ZERO,
         weights: Vec::new(),
+        complete: false,
     });
     let parse = |s: &str| -> Result<write::AppliedDay, String> {
         let day_ops: ops::DayLogOps = toml::from_str(s).map_err(|e| e.to_string())?;
@@ -795,6 +796,7 @@ mod tests {
             entries,
             exercise_calories: crate::amount::Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         };
         std::fs::write(
             dir.join(format!("{}.toml", date.format("%Y-%m-%d"))),

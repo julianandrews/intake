@@ -140,6 +140,17 @@ pub struct DayLog {
     /// out of rewritten files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub weights: Vec<WeightEntry>,
+    /// Whether the user has explicitly marked the day's food log complete.
+    /// Absent in older day files, and in days never marked, which reads as
+    /// `false` (not complete) — the conservative default: a day is never
+    /// assumed complete. Marking is a deliberate user action; intake never
+    /// sets or clears it implicitly.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub complete: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub(crate) fn log_path(log_dir: &Path, date: NaiveDate) -> PathBuf {
@@ -201,6 +212,7 @@ where
             entries: Vec::new(),
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         }
     };
 
@@ -251,6 +263,58 @@ pub fn load_day(log_dir: &Path, date: NaiveDate) -> Result<Option<DayLog>> {
 
 pub fn set_exercise_calories(log_dir: &Path, date: NaiveDate, calories: Calories) -> Result<()> {
     update_day(log_dir, date, |day| day.exercise_calories = calories)
+}
+
+/// Set or clear the day's `complete` mark, holding the directory lock across
+/// the read-modify-write. Marking a day with no file creates one (an
+/// explicitly complete empty day is a fasting day, not a missing log);
+/// clearing the mark on a day that becomes empty deletes the file. Clearing a
+/// missing day, or re-marking an already-complete day, is a no-op. Returns
+/// whether the mark actually changed.
+///
+/// Writes to a complete day (`log`, `rm`, `exercise`, `weight`, AI edits)
+/// never clear the mark: completing a day is a deliberate user action, undone
+/// only with `complete --undo`.
+pub fn set_day_complete(log_dir: &Path, date: NaiveDate, complete: bool) -> Result<bool> {
+    let dir_lock = lock_log_dir(log_dir)?;
+    let path = log_path(log_dir, date);
+
+    let mut day_log: DayLog = if path.exists() {
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read log: {}", path.display()))?;
+        toml::from_str(&content)
+            .with_context(|| format!("failed to parse log: {}", path.display()))?
+    } else if complete {
+        DayLog {
+            entries: Vec::new(),
+            exercise_calories: Calories::ZERO,
+            weights: Vec::new(),
+            complete: false,
+        }
+    } else {
+        return Ok(false);
+    };
+
+    let changed = day_log.complete != complete;
+    day_log.complete = complete;
+
+    if day_is_empty(&day_log) {
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove log: {}", path.display()))?;
+            // Sync the directory so the unlink is durable, matching the other
+            // removal paths.
+            dir_lock
+                .sync_all()
+                .with_context(|| format!("failed to sync log directory: {}", log_dir.display()))?;
+        }
+        return Ok(changed);
+    }
+
+    if changed || !path.exists() {
+        write_day_locked(log_dir, date, &day_log)?;
+    }
+    Ok(changed)
 }
 
 /// Remove the entry at 1-based `index` from the day log for `date`, holding
@@ -387,13 +451,16 @@ pub(crate) fn weight_count_label(count: usize) -> String {
 }
 
 /// Whether the day holds nothing at all — no entries, no exercise, no
-/// weights. An empty day file is deleted rather than kept around. Shared
-/// with the AI write path, which must not delete a day that still holds
-/// weights.
+/// weights — and is not explicitly marked complete. An empty day file is
+/// deleted rather than kept around, except for a complete day: marking an
+/// empty day complete records a fasting day, which is content. Shared with
+/// the AI write path, which must not delete a day that still holds weights or
+/// a completion mark.
 pub(crate) fn day_is_empty(day_log: &DayLog) -> bool {
     day_log.entries.is_empty()
         && day_log.exercise_calories == Calories::ZERO
         && day_log.weights.is_empty()
+        && !day_log.complete
 }
 
 /// Remove the weight at 1-based `index` from the day log for `date`, holding
@@ -1629,6 +1696,142 @@ mod tests {
         let loaded = load_day(dir.path(), date)?.expect("day should exist");
         assert_eq!(loaded.weights.len(), 1);
         assert_eq!(loaded.weights[0].kg, Kilograms::from_str("75.5").unwrap());
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_day_without_complete_loads_incomplete() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))),
+            "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 12\nprotein_g = 0\nfiber_g = 0\nfat_g = 0\ncarbs_g = 0\nalcohol_g = 0\ntitle = \"Coffee\"\n",
+        )?;
+        let loaded = load_day(dir.path(), date)?.expect("day log should exist");
+        assert!(!loaded.complete);
+        Ok(())
+    }
+
+    #[test]
+    fn test_incomplete_flag_not_serialized() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        let content =
+            std::fs::read_to_string(dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))))?;
+        assert!(!content.contains("complete ="), "got: {content}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_day_complete_roundtrip() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+
+        assert!(set_day_complete(dir.path(), date, true)?);
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert!(loaded.complete);
+        let content =
+            std::fs::read_to_string(dir.path().join(format!("{}.toml", date.format("%Y-%m-%d"))))?;
+        assert!(content.contains("complete = true"), "got: {content}");
+
+        // Re-marking is a no-op.
+        assert!(!set_day_complete(dir.path(), date, true)?);
+
+        assert!(set_day_complete(dir.path(), date, false)?);
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        assert!(!loaded.complete);
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_day_complete_on_missing_day_creates_fasting_day() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+
+        assert!(set_day_complete(dir.path(), date, true)?);
+        let loaded = load_day(dir.path(), date)?.expect("fasting day must persist");
+        assert!(loaded.complete);
+        assert!(loaded.entries.is_empty());
+        assert_eq!(loaded.exercise_calories, Calories::ZERO);
+        assert!(loaded.weights.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_complete_on_empty_day_deletes_file() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        set_day_complete(dir.path(), date, true)?;
+
+        assert!(set_day_complete(dir.path(), date, false)?);
+        assert!(load_day(dir.path(), date)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_complete_on_missing_day_is_noop() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        assert!(!set_day_complete(dir.path(), date, false)?);
+        assert!(load_day(dir.path(), date)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_last_entry_keeps_complete_day_file() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        append_entry(
+            dir.path(),
+            date,
+            &entry("coffee", "1.0", ["12", "0.0", "0.0", "0.0", "0.0", "0.0"]),
+        )?;
+        set_day_complete(dir.path(), date, true)?;
+
+        let loaded = load_day(dir.path(), date)?.expect("day should exist");
+        remove_entry(dir.path(), date, 1, &loaded.entries[0])?;
+
+        let loaded = load_day(dir.path(), date)?.expect("complete day must persist");
+        assert!(loaded.complete);
+        assert!(loaded.entries.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_day_complete_waits_for_lock() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+
+        let dir_handle = std::fs::File::open(dir.path())?;
+        dir_handle.lock()?;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir_path = dir.path().to_path_buf();
+        let thread = std::thread::spawn(move || {
+            let result = set_day_complete(&dir_path, date, true);
+            tx.send(result).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            rx.try_recv().is_err(),
+            "set_day_complete completed while the lock was held"
+        );
+
+        drop(dir_handle);
+
+        assert!(rx.recv().unwrap().is_ok());
+        thread.join().unwrap();
         Ok(())
     }
 }

@@ -21,6 +21,14 @@ command records and `weight rm` removes them; entries and weights are
 independent — `rm` / `retime` never touch weights and `ai log` ignores
 them.
 
+A day's food log can be marked complete with `intake complete`
+(`complete = true` in the day file); only `complete --undo` clears it —
+entry, exercise, weight, and AI writes never change the mark. Summary
+totals, averages, and deficits cover complete days only; partial days still
+render their recorded rows but have a blank deficit and are excluded from
+the aggregates. Completeness is user-only: the AI model never sees an op
+for it and `apply_ops` preserves it.
+
 ## Workspace
 
 `intake` is a Cargo workspace. The binary lives at the root; `intake-ai` is

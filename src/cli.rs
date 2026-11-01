@@ -127,6 +127,14 @@ pub(crate) enum Commands {
         #[command(flatten)]
         date: DateArgs,
     },
+    /// Mark a day's food log as complete, or clear the mark with --undo
+    Complete {
+        /// Clear the complete mark instead of setting it
+        #[arg(long)]
+        undo: bool,
+        #[command(flatten)]
+        date: DateArgs,
+    },
     /// Remove an entry from a day's log
     Rm {
         /// Entry number to remove (see the # column in the day view, `intake`)
@@ -495,6 +503,41 @@ mod tests {
             _ => panic!("expected Summary command"),
         }
         assert_eq!(cli.date.days_ago, None);
+    }
+
+    #[test]
+    fn test_complete_parses_date_and_undo() {
+        let cli = Cli::try_parse_from(["intake", "complete"]).unwrap();
+        match cli.command {
+            Some(Commands::Complete { undo, date }) => {
+                assert!(!undo);
+                assert_eq!(date.date, None);
+                assert_eq!(date.days_ago, None);
+            }
+            _ => panic!("expected Complete command"),
+        }
+
+        let cli = Cli::try_parse_from(["intake", "complete", "--undo", "-d", "1"]).unwrap();
+        match cli.command {
+            Some(Commands::Complete { undo, date }) => {
+                assert!(undo);
+                assert_eq!(date.days_ago, Some(1));
+            }
+            _ => panic!("expected Complete command"),
+        }
+    }
+
+    #[test]
+    fn test_complete_rejects_date_and_days_ago_together() {
+        assert!(Cli::try_parse_from([
+            "intake",
+            "complete",
+            "--date",
+            "2026-08-01",
+            "--days-ago",
+            "1"
+        ])
+        .is_err());
     }
 
     #[test]

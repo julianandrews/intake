@@ -123,6 +123,7 @@ mod tests {
             )],
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         };
         let updated = DayLog {
             entries: vec![entry(
@@ -132,6 +133,7 @@ mod tests {
             )],
             exercise_calories: Calories::from_str("200").unwrap(),
             weights: Vec::new(),
+            complete: false,
         };
 
         write_day_checked(dir.path(), date, None, original.clone())?;
@@ -156,6 +158,7 @@ mod tests {
             )],
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         };
         write_day_checked(dir.path(), date, None, original.clone())?;
 
@@ -167,6 +170,7 @@ mod tests {
             )],
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         };
         write_day_checked(dir.path(), date, Some(&original), changed.clone())?;
 
@@ -192,6 +196,7 @@ mod tests {
             )],
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         };
         write_day_checked(dir.path(), date, None, day.clone())?;
 
@@ -214,6 +219,7 @@ mod tests {
             )],
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         };
         write_day_checked(dir.path(), date, None, original.clone())?;
 
@@ -221,6 +227,7 @@ mod tests {
             entries: Vec::new(),
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         };
         write_day_checked(dir.path(), date, Some(&original), empty.clone())?;
         assert_eq!(load_day(dir.path(), date)?, None);
@@ -249,6 +256,7 @@ mod tests {
             )],
             exercise_calories: Calories::ZERO,
             weights: vec![weight.clone()],
+            complete: false,
         };
         write_day_checked(dir.path(), date, None, original.clone())?;
 
@@ -258,6 +266,7 @@ mod tests {
             entries: Vec::new(),
             exercise_calories: Calories::ZERO,
             weights: vec![weight],
+            complete: false,
         };
         write_day_checked(dir.path(), date, Some(&original), cleared)?;
 
@@ -287,6 +296,7 @@ mod tests {
             entries: Vec::new(),
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         };
         write_day_checked(dir.path(), date, None, empty)?;
         assert_eq!(load_day(dir.path(), date)?, None);
@@ -307,6 +317,7 @@ mod tests {
             )],
             exercise_calories: Calories::from_str("300").unwrap(),
             weights: Vec::new(),
+            complete: false,
         };
         write_day_checked(dir.path(), date, None, original.clone())?;
 
@@ -314,6 +325,7 @@ mod tests {
             entries: Vec::new(),
             exercise_calories: Calories::from_str("300").unwrap(),
             weights: Vec::new(),
+            complete: false,
         };
         write_day_checked(
             dir.path(),
@@ -345,6 +357,7 @@ mod tests {
             )],
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let dir_path = dir.path().to_path_buf();
@@ -376,6 +389,7 @@ mod tests {
                 entries,
                 exercise_calories: Calories::ZERO,
                 weights: Vec::new(),
+                complete: false,
             },
             add_ops,
         }

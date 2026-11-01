@@ -28,6 +28,33 @@ pub(crate) fn cmd_exercise(
     Ok(())
 }
 
+/// Mark `date`'s food log complete, or clear the mark with `undo`. Completing
+/// a day is a deliberate user action; no other command sets or clears it.
+/// Then show the updated day.
+pub(crate) fn cmd_complete(
+    writer: &mut impl Write,
+    log_dir: &Path,
+    date: NaiveDate,
+    undo: bool,
+    config: &Config,
+) -> Result<()> {
+    let changed = log::set_day_complete(log_dir, date, !undo)?;
+    if undo {
+        if changed {
+            writeln!(writer, "Reopened {}", date)?;
+        } else {
+            writeln!(writer, "{} is not marked complete", date)?;
+        }
+    } else if changed {
+        writeln!(writer, "Marked {} complete", date)?;
+    } else {
+        writeln!(writer, "{} is already complete", date)?;
+    }
+    writeln!(writer)?;
+    cmd_day(writer, log_dir, date, config)?;
+    Ok(())
+}
+
 /// Record a body weight for `date`: `value` is interpreted in the configured
 /// unit and stored canonically in kilograms; the timestamp is `now` unless
 /// an explicit `--time` was given (local time on the target date). Then show
@@ -399,7 +426,11 @@ pub(crate) fn render_day(
     headers.extend(columns.iter().map(|c| c.label()));
     aligns.extend(columns.iter().map(|_| Align::Right));
     let mut table = Table::with_align(&headers, &aligns);
-    table.set_title(&date.to_string());
+    table.set_title(&if day_log.complete {
+        format!("{date} (complete)")
+    } else {
+        date.to_string()
+    });
 
     let rows = build_rows(&day_log.entries)?;
 
@@ -429,7 +460,13 @@ pub(crate) fn render_day(
     )?;
 
     let now = Local::now();
-    let now_time = (date == now.date_naive()).then(|| now.time());
+    let is_today = date == now.date_naive();
+    // A complete day is judged against the full-day targets, even when it is
+    // today (you closed it early on purpose). Today still in progress keeps
+    // the time-of-day scaling. A past day that was never marked complete has
+    // no meaningful intake total to judge, so it gets no target colors at all
+    // rather than a false green/yellow.
+    let now_time = (!day_log.complete && is_today).then(|| now.time());
     let targets = config.targets()?;
     let show_exercise =
         day_log.exercise_calories > Calories::ZERO && columns.contains(&Column::Calories);
@@ -444,7 +481,11 @@ pub(crate) fn render_day(
         } else {
             total
         };
-        let color = display::column_color(now_time, colored, &targets.for_column(*column));
+        let color = if day_log.complete || is_today {
+            display::column_color(now_time, colored, &targets.for_column(*column))
+        } else {
+            None
+        };
         plain_cells.push(display::log_cell(*column, total));
         colored_cells.push(display::wrap_color(
             &display::log_cell(*column, colored),
@@ -692,6 +733,7 @@ mod tests {
             entries,
             exercise_calories: Calories::ZERO,
             weights: Vec::new(),
+            complete: false,
         }
     }
 
@@ -835,6 +877,120 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("no entries"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_cmd_complete_marks_and_rerenders() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 11).unwrap();
+        log::append_entry(dir.path(), date, &entry("coffee", "1.0"))?;
+
+        let mut out = Vec::new();
+        cmd_complete(&mut out, dir.path(), date, false, &Config::default())?;
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("Marked 2026-08-11 complete"), "got: {text}");
+        assert!(
+            text.contains("(complete)"),
+            "day view marker missing: {text}"
+        );
+
+        let loaded = log::load_day(dir.path(), date)?.expect("day should exist");
+        assert!(loaded.complete);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cmd_complete_undo_reopens() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 11).unwrap();
+        log::append_entry(dir.path(), date, &entry("coffee", "1.0"))?;
+        log::set_day_complete(dir.path(), date, true)?;
+
+        let mut out = Vec::new();
+        cmd_complete(&mut out, dir.path(), date, true, &Config::default())?;
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("Reopened 2026-08-11"), "got: {text}");
+        assert!(!text.contains("(complete)"), "got: {text}");
+
+        let loaded = log::load_day(dir.path(), date)?.expect("day should exist");
+        assert!(!loaded.complete);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cmd_complete_is_idempotent() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 11).unwrap();
+        log::append_entry(dir.path(), date, &entry("coffee", "1.0"))?;
+
+        let mut out = Vec::new();
+        cmd_complete(&mut out, dir.path(), date, false, &Config::default())?;
+        out.clear();
+        cmd_complete(&mut out, dir.path(), date, false, &Config::default())?;
+        assert!(
+            String::from_utf8_lossy(&out).contains("is already complete"),
+            "got: {}",
+            String::from_utf8_lossy(&out)
+        );
+
+        out.clear();
+        cmd_complete(&mut out, dir.path(), date, true, &Config::default())?;
+        out.clear();
+        cmd_complete(&mut out, dir.path(), date, true, &Config::default())?;
+        assert!(
+            String::from_utf8_lossy(&out).contains("is not marked complete"),
+            "got: {}",
+            String::from_utf8_lossy(&out)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_cmd_complete_empty_day_creates_and_undo_deletes() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 11).unwrap();
+
+        let mut out = Vec::new();
+        cmd_complete(&mut out, dir.path(), date, false, &Config::default())?;
+        let loaded = log::load_day(dir.path(), date)?.expect("fasting day must persist");
+        assert!(loaded.complete);
+        assert!(loaded.entries.is_empty());
+
+        out.clear();
+        cmd_complete(&mut out, dir.path(), date, true, &Config::default())?;
+        assert!(
+            log::load_day(dir.path(), date)?.is_none(),
+            "reopening an empty complete day must delete the file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_render_day_partial_past_day_has_no_target_colors() -> Result<()> {
+        let date = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+        let mut e = entry("coffee", "1.0");
+        e.calories = Calories::from_str("100").unwrap();
+        let config: Config = toml::from_str("max_calories = 2000\n").unwrap();
+
+        let out = render_day(&day_log(vec![e]), date, &config)?;
+        assert!(!out.contains(display::ANSI_GREEN), "got: {out:?}");
+        assert!(!out.contains(display::ANSI_YELLOW), "got: {out:?}");
+        assert!(!out.contains(display::ANSI_RED), "got: {out:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_render_day_complete_past_day_uses_full_day_targets() -> Result<()> {
+        let date = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+        let mut e = entry("coffee", "1.0");
+        e.calories = Calories::from_str("100").unwrap();
+        let config: Config = toml::from_str("max_calories = 2000\n").unwrap();
+        let mut day = day_log(vec![e]);
+        day.complete = true;
+
+        let out = render_day(&day, date, &config)?;
+        assert!(out.contains(display::ANSI_GREEN), "got: {out:?}");
         Ok(())
     }
 

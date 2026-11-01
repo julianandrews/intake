@@ -126,10 +126,16 @@ pub fn day_context(
         entries: Vec::new(),
         exercise_calories: Calories::ZERO,
         weights: Vec::new(),
+        complete: false,
     };
     let day = day.unwrap_or(&empty);
 
-    let mut out = format!("Day {date}:\n");
+    let state = if day.complete {
+        "complete"
+    } else {
+        "not complete"
+    };
+    let mut out = format!("Day {date} ({state}):\n");
     if day.entries.is_empty() {
         out.push_str("  (no entries)\n");
     } else {
@@ -214,6 +220,7 @@ mod tests {
             entries,
             exercise_calories: Calories::from_str("0").unwrap(),
             weights: Vec::new(),
+            complete: false,
         }
     }
 
@@ -248,6 +255,7 @@ mod tests {
             entries: vec![entry("coffee", "2", "100"), entry("chili", "1", "300")],
             exercise_calories: Calories::from_str("200").unwrap(),
             weights: Vec::new(),
+            complete: false,
         };
         let config = Config::default();
         let line = totals_line(&d, &config).unwrap();
@@ -377,7 +385,7 @@ mod tests {
             &config,
         )
         .unwrap();
-        assert!(ctx.contains("Day 2026-08-10:"));
+        assert!(ctx.contains("Day 2026-08-10 (not complete):"));
         assert!(ctx.contains("  1. coffee | 1 | 12, 0, 0, 0, 0, 0"));
         assert!(ctx.contains("  2. chili | 1 | 300, 0, 0, 0, 0, 0"));
         assert!(ctx.contains("totals: 312"));
@@ -397,6 +405,17 @@ mod tests {
         assert!(ctx.contains("(no entries)"));
         assert!(ctx.contains("totals: 0"));
         assert!(!ctx.contains("History"));
+    }
+
+    #[test]
+    fn test_day_context_marks_complete_day() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+        let mut d = day(vec![entry("coffee", "1", "12")]);
+        d.complete = true;
+        let config = Config::default();
+        let ctx = day_context(date, Some(&d), dir.path(), &config).unwrap();
+        assert!(ctx.contains("Day 2026-08-09 (complete):"), "got: {ctx}");
     }
 
     #[test]

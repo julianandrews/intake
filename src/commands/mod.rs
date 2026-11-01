@@ -74,6 +74,11 @@ pub(crate) fn run(command: Option<Commands>, root_date: DateArgs, config: &Confi
             let date = resolve_date(merged.date, merged.days_ago)?;
             log::cmd_exercise(&mut stdout, &log_dir, date, calories)?;
         }
+        Some(Commands::Complete { undo, date }) => {
+            let merged = merged_date(&root_date, &date);
+            let date = resolve_date(merged.date, merged.days_ago)?;
+            log::cmd_complete(&mut stdout, &log_dir, date, undo, config)?;
+        }
         Some(Commands::Rm { index, yes, date }) => {
             let merged = merged_date(&root_date, &date);
             let date = resolve_date(merged.date, merged.days_ago)?;
@@ -193,7 +198,7 @@ fn reject_root_date(root: &DateArgs, name: &str) -> Result<()> {
     if root.date.is_some() || root.days_ago.is_some() {
         bail!(
             "--date/--days-ago target the day view (bare `intake`) or a date-targeting \
-             command (log, summary, exercise, rm, retime, weight, ai log); `{name}` doesn't take them"
+             command (log, summary, exercise, complete, rm, retime, weight, ai log); `{name}` doesn't take them"
         );
     }
     Ok(())

@@ -30,6 +30,8 @@ intake summary [--date D | --days-ago N] [--days N]
                                               Multi-day summary of macros and deficit (default: config summary_days, or 7 days)
 intake exercise <calories> [--date D | --days-ago N]
                                               Record exercise calories for a day (default: today)
+intake complete [--undo] [--date D | --days-ago N]
+                                              Mark a day's food log complete (or clear the mark)
 intake weight <value> [--time HH:MM] [--date D | --days-ago N]
                                               Record a body weight (default: today)
 intake weight rm <n> [--yes] [--date D | --days-ago N]
@@ -51,9 +53,9 @@ intake completions <shell>                    Generate or install completion scr
 Flags like `--foods-dir` and `--log-dir` are root-level: accepted before
 the subcommand on every invocation.
 `--date D` and `--days-ago N` (or `-d N`) target a day the same way on every
-date-targeting command — bare `intake`, `log`, `exercise`, `weight`, `rm`,
-`ai log`, and `summary` (where `--days-ago` positions the end of the
-window). Omitting both targets today; supplying both is an error. Date flags
+date-targeting command — bare `intake`, `log`, `exercise`, `complete`,
+`weight`, `rm`, `ai log`, and `summary` (where `--days-ago` positions the end
+of the window). Omitting both targets today; supplying both is an error. Date flags
 on a subcommand win over date flags on the bare command, and with a
 non-date command like `food` they are an error. For example,
 `intake --days-ago 1` shows yesterday, `intake log coffee -d 1` logs coffee
@@ -61,11 +63,15 @@ to yesterday, and `intake --days-ago 1 log coffee` does the same with the
 flag before the command, and `intake exercise 300 -d 2` records exercise two
 days ago.
 `intake summary` shows one row per logged day (unlogged days in the window
-are skipped) with period totals and per-day averages; the averages and
-totals are over the logged days only, not the full window length. The
-window defaults to 7 days, overridable with `summary_days` in config or
-`--days` on the command line (CLI wins). The Deficit column appears when
-`maintenance_calories` is configured.
+are skipped) with a Status column, period totals, and per-day averages. A
+row is `complete` only when the day was explicitly marked with
+`intake complete`; otherwise it is `partial`. Totals, averages, and deficits
+cover complete days only — a partial day's recorded intake is a lower bound,
+so its Deficit cell is blank and it is excluded from the period aggregates.
+The footer reports how many days in the window are complete, partial, and
+not logged. The window defaults to 7 days, overridable with `summary_days` in
+config or `--days` on the command line (CLI wins). The Deficit column appears
+when `maintenance_calories` is configured.
 
 The day view numbers its rows (the `#` column); `intake rm <n> --date D`
 removes that entry (default: today's log) after a confirmation prompt,
@@ -88,6 +94,20 @@ the day view shows them under a `Weights:` footer section (numbered 1-based,
 unit per the `weight_unit` config key), and `intake weight rm <n> --yes`
 removes one. A day file with only weights survives an entry `rm`; removing
 the last weigh-in of an otherwise-empty day deletes the day file.
+
+### Day completeness
+
+`intake complete` marks the target day's food log complete;
+`intake complete --undo` clears the mark. Completing is a deliberate user
+action: `log`, `rm`, `exercise`, `weight`, and `ai log` never set or clear it.
+A complete day with no entries is a recorded fasting day and persists; undoing
+the mark on an empty day deletes the day file.
+
+The day view title shows `(complete)` on a marked day. A past partial day is
+not colored against daily targets (its recorded intake is not a finished
+total); a complete day uses full-day targets, while today still scales targets
+by time of day until marked complete. Days written before this feature have no
+mark, so they read as partial — there is no automatic backfill.
 
 Bare `intake` with no subcommand shows today's log.
 
@@ -267,4 +287,16 @@ created.
 
 Each day is stored as `YYYY-MM-DD.toml` in the log directory. Parsing is
 strict: like food files, unknown fields or malformed values in a day log
-error loudly instead of being ignored.
+error loudly instead of being ignored. A day marked with `intake complete`
+carries `complete = true`:
+
+```toml
+complete = true
+exercise_calories = 0
+
+[[entries]]
+# ... unchanged ...
+```
+
+The field is omitted for partial days, so day files that were never marked
+read back as incomplete.

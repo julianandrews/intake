@@ -116,8 +116,32 @@ fn write_day_log(
     fiber: &str,
     exercise: u32,
 ) {
+    write_day_log_with_complete(dir, date, calories, protein, fiber, exercise, true);
+}
+
+fn write_incomplete_day_log(
+    dir: &std::path::Path,
+    date: &str,
+    calories: &str,
+    protein: &str,
+    fiber: &str,
+    exercise: u32,
+) {
+    write_day_log_with_complete(dir, date, calories, protein, fiber, exercise, false);
+}
+
+fn write_day_log_with_complete(
+    dir: &std::path::Path,
+    date: &str,
+    calories: &str,
+    protein: &str,
+    fiber: &str,
+    exercise: u32,
+    complete: bool,
+) {
+    let complete_line = if complete { "complete = true\n" } else { "" };
     let content = format!(
-        "exercise_calories = {exercise}\n\n[[entries]]\nservings = 1.0\ncalories = {calories}\nprotein_g = {protein}\nfiber_g = {fiber}\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Coffee\"\n"
+        "{complete_line}exercise_calories = {exercise}\n\n[[entries]]\nservings = 1.0\ncalories = {calories}\nprotein_g = {protein}\nfiber_g = {fiber}\nfat_g = 0.0\ncarbs_g = 0.0\nalcohol_g = 0.0\ntitle = \"Coffee\"\n"
     );
     std::fs::write(dir.join(format!("{date}.toml")), content).unwrap();
 }
@@ -1021,6 +1045,186 @@ fn test_summary_no_entries() {
 }
 
 #[test]
+fn test_summary_excludes_partial_days_from_totals() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    write_day_log(dir.path(), "2026-08-01", "1000", "10.0", "4.0", 0);
+    write_incomplete_day_log(dir.path(), "2026-08-02", "500", "10.0", "4.0", 0);
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(
+        intake_config.join("config.toml"),
+        "maintenance_calories = 2400\n",
+    )
+    .unwrap();
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "summary",
+            "--date",
+            "2026-08-03",
+            "--days",
+            "3",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "summary failed: {}", stdout);
+    assert!(stdout.contains("Status"), "status column missing: {stdout}");
+    assert!(
+        stdout.contains("complete"),
+        "status value missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("partial"),
+        "partial marker missing: {stdout}"
+    );
+    assert!(stdout.contains("1 of 3 days complete"), "got: {stdout}");
+
+    // The partial day's 500 kcal is not in the total or average.
+    let total = stdout
+        .lines()
+        .find(|l| l.contains("Total"))
+        .expect("total footer missing");
+    assert!(
+        total.contains("1000"),
+        "complete day total missing: {total}"
+    );
+    assert!(
+        !total.contains("1500"),
+        "partial day leaked into total: {total}"
+    );
+    let avg = stdout
+        .lines()
+        .find(|l| l.contains("Avg/day"))
+        .expect("average footer missing");
+    assert!(
+        avg.contains("1000"),
+        "average must use complete days: {avg}"
+    );
+    // The partial row's deficit cell is blank, so the fake deficit is absent.
+    assert!(!stdout.contains("1900"), "partial deficit leaked: {stdout}");
+}
+
+#[test]
+fn test_complete_marks_and_undo_reopens() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+    write_incomplete_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
+
+    let args = [
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "complete",
+        "--date",
+        "2026-08-02",
+    ];
+    let (stdout, success) = run(&args);
+    assert!(success, "complete failed: {}", stdout);
+    assert!(
+        stdout.contains("Marked 2026-08-02 complete"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("(complete)"),
+        "day view marker missing: {stdout}"
+    );
+    let content = std::fs::read_to_string(dir.path().join("2026-08-02.toml")).unwrap();
+    assert!(content.contains("complete = true"), "got: {content}");
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "complete",
+        "--undo",
+        "--date",
+        "2026-08-02",
+    ]);
+    assert!(success, "undo failed: {}", stdout);
+    assert!(stdout.contains("Reopened 2026-08-02"), "got: {stdout}");
+    let content = std::fs::read_to_string(dir.path().join("2026-08-02.toml")).unwrap();
+    assert!(!content.contains("complete = true"), "got: {content}");
+}
+
+#[test]
+fn test_complete_empty_day_persists_until_undo() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "complete",
+        "--date",
+        "2026-08-02",
+    ]);
+    assert!(success, "complete failed: {}", stdout);
+    let content = std::fs::read_to_string(dir.path().join("2026-08-02.toml")).unwrap();
+    assert!(content.contains("complete = true"), "got: {content}");
+
+    let (stdout, success) = run(&[
+        "--foods-dir",
+        &fd_str,
+        "--log-dir",
+        &log_dir_str,
+        "complete",
+        "--undo",
+        "--date",
+        "2026-08-02",
+    ]);
+    assert!(success, "undo failed: {}", stdout);
+    assert!(
+        !dir.path().join("2026-08-02.toml").exists(),
+        "reopening an empty complete day must delete the file"
+    );
+}
+
+#[test]
+fn test_partial_day_has_no_target_colors() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_dir_str = dir.path().to_string_lossy().to_string();
+    let fd_str = foods_dir().to_string_lossy().to_string();
+
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let intake_config = config_dir.path().join("intake");
+    std::fs::create_dir_all(&intake_config).unwrap();
+    std::fs::write(intake_config.join("config.toml"), "max_calories = 2000\n").unwrap();
+
+    write_incomplete_day_log(dir.path(), "2026-08-02", "500", "10.0", "4.0", 0);
+
+    let (stdout, success) = run_in(
+        &[
+            "--foods-dir",
+            &fd_str,
+            "--log-dir",
+            &log_dir_str,
+            "--date",
+            "2026-08-02",
+        ],
+        config_dir.path(),
+    );
+    assert!(success, "view failed: {}", stdout);
+    assert!(!stdout.contains("\u{1b}[32m"), "false green: {stdout:?}");
+    assert!(!stdout.contains("\u{1b}[33m"), "false yellow: {stdout:?}");
+    assert!(!stdout.contains("\u{1b}[31m"), "false red: {stdout:?}");
+}
+
+#[test]
 fn test_summary_default_days_and_date() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_dir_str = dir.path().to_string_lossy().to_string();
@@ -1315,7 +1519,7 @@ fn test_min_fat_target_colors_total_row() {
     // day log with 30g fat total -> below min_fat -> yellow
     std::fs::write(
         dir.path().join("2026-08-02.toml"),
-        "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 30\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
+        "complete = true\nexercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 30\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
     )
     .unwrap();
 
@@ -1348,7 +1552,7 @@ fn test_max_fat_target_colors_total_row_red() {
     // day log with 60g fat total -> above max_fat -> red
     std::fs::write(
         dir.path().join("2026-08-02.toml"),
-        "exercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 60\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
+        "complete = true\nexercise_calories = 0\n\n[[entries]]\nservings = 1.0\ncalories = 500\nprotein_g = 10\nfiber_g = 2\nfat_g = 60\ncarbs_g = 20\nalcohol_g = 0\ntitle = \"Nuts\"\n",
     )
     .unwrap();
 
@@ -2091,7 +2295,7 @@ fn test_rm_last_entry_removes_day_file() {
     let log_dir_str = dir.path().to_string_lossy().to_string();
     let fd_str = foods_dir().to_string_lossy().to_string();
 
-    write_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
+    write_incomplete_day_log(dir.path(), "2026-08-02", "1800", "50.0", "15.0", 0);
 
     let (rm_out, rm_ok) = run(&[
         "--foods-dir",
