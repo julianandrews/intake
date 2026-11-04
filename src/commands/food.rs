@@ -12,6 +12,15 @@ use std::path::Path;
 use std::str::FromStr;
 
 pub(crate) fn render_food(food: &food::Food, columns: &[Column]) -> Result<String> {
+    Ok(render_food_and_width(food, columns)?.0)
+}
+
+/// Like [`render_food`], but also returns the visible width of the table grid
+/// (excluding the title and the appended recipe notes).
+pub(crate) fn render_food_and_width(
+    food: &food::Food,
+    columns: &[Column],
+) -> Result<(String, usize)> {
     let serving_label = if food.servings.get() == 1 {
         "serving"
     } else {
@@ -55,6 +64,7 @@ pub(crate) fn render_food(food: &food::Food, columns: &[Column]) -> Result<Strin
     }
     table.add_footer(per_serving);
 
+    let table_width = table.width();
     let mut out = table.format();
     if !food.notes.trim().is_empty() {
         out.push('\n');
@@ -64,7 +74,7 @@ pub(crate) fn render_food(food: &food::Food, columns: &[Column]) -> Result<Strin
         out.push('\n');
     }
 
-    Ok(out)
+    Ok((out, table_width))
 }
 
 pub(crate) fn cmd_show_food(
@@ -450,6 +460,18 @@ mod tests {
     fn test_render_food_hides_notes_when_whitespace() {
         let md = render_food(&test_food("   "), DEFAULT_COLUMNS).unwrap();
         assert!(!md.contains("Notes:"));
+    }
+
+    #[test]
+    fn test_render_food_and_width_matches_table_grid() {
+        let food = test_food("Best eaten warm with salt.");
+        let (out, width) = render_food_and_width(&food, DEFAULT_COLUMNS).unwrap();
+        let separator = out
+            .lines()
+            .find(|line| line.contains("---"))
+            .expect("table separator");
+        assert_eq!(width, display::visible_width(separator));
+        assert_eq!(render_food(&food, DEFAULT_COLUMNS).unwrap(), out);
     }
 
     #[test]

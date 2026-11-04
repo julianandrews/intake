@@ -6,12 +6,15 @@ use std::path::Path;
 use std::str::FromStr;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DayLogOps {
+    #[serde(default)]
+    pub message: Option<String>,
     pub ops: Vec<DayLogOp>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum DayLogOp {
     AddFood {
         name: String,
@@ -305,6 +308,35 @@ mod tests {
     fn parse_ops(s: &str) -> Vec<DayLogOp> {
         let ops: DayLogOps = toml::from_str(s).unwrap();
         ops.ops
+    }
+
+    #[test]
+    fn test_message_is_optional_and_parsed() {
+        let missing: DayLogOps = toml::from_str("ops = []\n").unwrap();
+        assert_eq!(missing.message, None);
+
+        let present: DayLogOps =
+            toml::from_str("message = \"Assumed 2% milk.\"\nops = []\n").unwrap();
+        assert_eq!(present.message.as_deref(), Some("Assumed 2% milk."));
+    }
+
+    #[test]
+    fn test_message_must_be_a_string() {
+        let result: Result<DayLogOps, _> = toml::from_str("message = [\"x\"]\nops = []\n");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_message_after_ops_table_is_rejected() {
+        let result: Result<DayLogOps, _> =
+            toml::from_str("[[ops]]\nkind = \"remove\"\nrow = 1\nmessage = \"misplaced\"\n");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unknown_top_level_field_is_rejected() {
+        let result: Result<DayLogOps, _> = toml::from_str("notes = \"x\"\nops = []\n");
+        assert!(result.is_err());
     }
 
     fn foods_dir_with_oatmeal() -> tempfile::TempDir {

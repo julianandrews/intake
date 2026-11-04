@@ -152,6 +152,7 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 }
 
 const ADD_OATMEAL_OPS: &str = "[[ops]]\nkind = \"add-food\"\nname = \"oatmeal\"\nservings = 1\n";
+const ADD_OATMEAL_WITH_MESSAGE: &str = "message = \"Assumed plain oatmeal.\"\n\n[[ops]]\nkind = \"add-food\"\nname = \"oatmeal\"\nservings = 1\n";
 
 /// Per-serving macros for the oatmeal fixture: 418 cal, 22 protein, 9
 /// fiber, 12.2 fat, 56.5 carbs, 0 alcohol.
@@ -232,6 +233,51 @@ fn test_ai_log_confirmed_proposal_writes_day() {
         bodies[0].contains("add oatmeal"),
         "request must carry the prompt: {}",
         bodies[0]
+    );
+}
+
+#[test]
+fn test_ai_log_shows_message_with_proposal() {
+    let fake = FakeLlm::start(&[ADD_OATMEAL_WITH_MESSAGE]);
+    let config_dir = tempfile::TempDir::new().unwrap();
+    fake.config(config_dir.path());
+    let log_dir = tempfile::TempDir::new().unwrap();
+    write_day_log(log_dir.path(), "2026-08-10", true);
+    let foods = foods_dir().to_string_lossy().to_string();
+    let logs = log_dir.path().to_string_lossy().to_string();
+
+    let (stdout, _, success) = run_ai(
+        &[
+            "--foods-dir",
+            &foods,
+            "--log-dir",
+            &logs,
+            "ai",
+            "log",
+            "add oatmeal",
+            "--date",
+            "2026-08-10",
+        ],
+        config_dir.path(),
+        Some("y\n"),
+    );
+    assert!(success, "stdout: {stdout}");
+    assert!(
+        stdout.contains("Note: Assumed plain oatmeal."),
+        "message block missing: {stdout}"
+    );
+    assert!(
+        stdout.find("Note: Assumed plain oatmeal.").unwrap() > stdout.find("Total").unwrap(),
+        "message must follow the proposal body: {stdout}"
+    );
+    assert!(
+        stdout.contains("Logged to 2026-08-10"),
+        "confirmation line missing: {stdout}"
+    );
+    let day = std::fs::read_to_string(log_dir.path().join("2026-08-10.toml")).unwrap();
+    assert!(
+        !day.contains("Assumed plain oatmeal."),
+        "message must not be written: {day}"
     );
 }
 
@@ -388,4 +434,39 @@ fn test_ai_food_new_writes_food_file() {
         "--yes must not print the confirmation line: {stdout}"
     );
     assert!(stdout.contains("E2e Food"), "stdout: {stdout}");
+}
+
+#[test]
+fn test_ai_food_new_shows_message_without_writing_it() {
+    let toml = "message = \"Used chicken breast.\"\ntitle = \"E2e Food\"\nservings = 2\n\n[[ingredients]]\nname = \"X\"\ncalories = 100\nprotein_g = 10\nfiber_g = 1\nfat_g = 2\ncarbs_g = 3\nalcohol_g = 0\n";
+    let fake = FakeLlm::start(&[toml]);
+    let config_dir = tempfile::TempDir::new().unwrap();
+    fake.config(config_dir.path());
+    let foods = tempfile::TempDir::new().unwrap();
+    let foods_str = foods.path().to_string_lossy().to_string();
+
+    let (stdout, _, success) = run_ai(
+        &[
+            "--foods-dir",
+            &foods_str,
+            "ai",
+            "food",
+            "new",
+            "e2e-food",
+            "make it",
+        ],
+        config_dir.path(),
+        Some("y\n"),
+    );
+    assert!(success, "stdout: {stdout}");
+    assert!(
+        stdout.contains("Note: Used chicken breast."),
+        "message block missing: {stdout}"
+    );
+    let saved = std::fs::read_to_string(foods.path().join("e2e-food.toml")).unwrap();
+    assert!(
+        !saved.contains("message"),
+        "message must not be written: {saved}"
+    );
+    assert!(saved.contains("title = \"E2e Food\""), "saved: {saved}");
 }

@@ -414,6 +414,16 @@ pub(crate) fn render_day(
     date: chrono::NaiveDate,
     config: &Config,
 ) -> Result<String> {
+    Ok(render_day_and_width(day_log, date, config)?.0)
+}
+
+/// Like [`render_day`], but also returns the visible width of the table grid
+/// (excluding the title and the appended summary/weights lines).
+pub(crate) fn render_day_and_width(
+    day_log: &log::DayLog,
+    date: chrono::NaiveDate,
+    config: &Config,
+) -> Result<(String, usize)> {
     let columns = config.columns()?;
     let show_time = config.show_timestamp();
     let time_format = config.time_format();
@@ -527,6 +537,7 @@ pub(crate) fn render_day(
         table.add_footer_custom(total_row);
     }
 
+    let table_width = table.width();
     let mut out = table.format();
 
     let summary = display::render_day_summary(
@@ -545,7 +556,7 @@ pub(crate) fn render_day(
         out.push('\n');
         out.push_str(&footer);
     }
-    Ok(out)
+    Ok((out, table_width))
 }
 
 /// The day's weigh-ins, one per line under a `Weights:` heading, e.g.
@@ -746,6 +757,22 @@ mod tests {
         assert!(out.contains("Time"), "time header missing: {out}");
         // The cell is the local-time rendering of the stamp (empty here).
         assert!(out.contains("Total"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_render_day_and_width_matches_table_grid() -> Result<()> {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 11).unwrap();
+        let mut e = entry("coffee", "1.0");
+        e.calories = Calories::from_str("12").unwrap();
+        let day = day_log(vec![e]);
+        let (out, width) = render_day_and_width(&day, date, &Config::default())?;
+        let separator = out
+            .lines()
+            .find(|line| line.contains("---"))
+            .expect("table separator");
+        assert_eq!(width, display::visible_width(separator));
+        assert_eq!(render_day(&day, date, &Config::default())?, out);
         Ok(())
     }
 

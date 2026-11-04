@@ -5,6 +5,7 @@ mod context;
 mod food_lookup;
 mod ops;
 mod prompts;
+mod proposal;
 pub(crate) mod settings;
 mod spinner;
 mod trace;
@@ -430,7 +431,7 @@ fn cmd_ai_log(
         weights: Vec::new(),
         complete: false,
     });
-    let parse = |s: &str| -> Result<write::AppliedDay, String> {
+    let parse = |s: &str| -> Result<proposal::Proposal<write::AppliedDay>, String> {
         let day_ops: ops::DayLogOps = toml::from_str(s).map_err(|e| e.to_string())?;
         let add_ops = day_ops
             .ops
@@ -443,9 +444,13 @@ fn cmd_ai_log(
             })
             .count();
         let day = ops::apply_ops(&base, &day_ops.ops, foods_dir)?;
-        Ok(write::AppliedDay { day, add_ops })
+        Ok(proposal::Proposal::new(
+            write::AppliedDay { day, add_ops },
+            day_ops.message,
+        ))
     };
-    let present = |applied: &write::AppliedDay| -> String {
+    let present = |proposal: &proposal::Proposal<write::AppliedDay>| -> String {
+        let applied = &proposal.value;
         let diff = row_diff(
             original
                 .as_ref()
@@ -453,12 +458,15 @@ fn cmd_ai_log(
                 .unwrap_or(&[]),
             &applied.day.entries,
         );
-        if diff.is_empty() {
-            return confirm::NO_CHANGES_PROPOSAL.to_string();
-        }
-        let table = crate::commands::log::render_day(&applied.day, date, config)
-            .unwrap_or_else(|e| format!("(day table unavailable: {e})"));
-        format!("{diff}\n\n{table}")
+        let (body, table_width) = if diff.is_empty() {
+            (confirm::NO_CHANGES_PROPOSAL.to_string(), None)
+        } else {
+            match crate::commands::log::render_day_and_width(&applied.day, date, config) {
+                Ok((table, width)) => (format!("{diff}\n\n{table}"), Some(width)),
+                Err(e) => (format!("{diff}\n\n(day table unavailable: {e})"), None),
+            }
+        };
+        proposal.render_with_table_width(body, table_width)
     };
 
     let (outcome, presented) = {
@@ -482,7 +490,8 @@ fn cmd_ai_log(
     };
 
     match outcome {
-        Ok(applied) => {
+        Ok(proposal) => {
+            let applied = proposal.value;
             let changed = match &original {
                 Some(d) => d != &applied.day,
                 None => !log::day_is_empty(&applied.day),
@@ -547,10 +556,14 @@ fn cmd_ai_food_new(
     let columns = config.columns()?;
 
     let parse =
-        |s: &str| -> Result<food::Food, String> { toml::from_str(s).map_err(|e| e.to_string()) };
-    let present = |f: &food::Food| -> String {
-        crate::commands::food::render_food(f, &columns)
-            .unwrap_or_else(|e| format!("(unavailable: {e})"))
+        |s: &str| -> Result<proposal::Proposal<food::Food>, String> { proposal::parse_food(s) };
+    let present = |proposal: &proposal::Proposal<food::Food>| -> String {
+        let (body, table_width) =
+            match crate::commands::food::render_food_and_width(&proposal.value, &columns) {
+                Ok((text, width)) => (text, Some(width)),
+                Err(e) => (format!("(unavailable: {e})"), None),
+            };
+        proposal.render_with_table_width(body, table_width)
     };
 
     let (outcome, presented) = {
@@ -574,7 +587,8 @@ fn cmd_ai_food_new(
     };
 
     match outcome {
-        Ok(new_food) => {
+        Ok(proposal) => {
+            let new_food = proposal.value;
             food::create_food(foods_dir, name, &new_food)?;
             if presented {
                 writeln!(writer, "Wrote {}", path.display())?;
@@ -622,13 +636,23 @@ fn cmd_ai_food_edit(
     let columns = config.columns()?;
 
     let parse =
-        |s: &str| -> Result<food::Food, String> { toml::from_str(s).map_err(|e| e.to_string()) };
-    let present = |f: &food::Food| -> String {
-        let before = crate::commands::food::render_food(&original, &columns)
-            .unwrap_or_else(|e| format!("(unavailable: {e})"));
-        let after = crate::commands::food::render_food(f, &columns)
-            .unwrap_or_else(|e| format!("(unavailable: {e})"));
-        format!("Before:\n{before}\nAfter:\n{after}")
+        |s: &str| -> Result<proposal::Proposal<food::Food>, String> { proposal::parse_food(s) };
+    let present = |proposal: &proposal::Proposal<food::Food>| -> String {
+        let before = match crate::commands::food::render_food_and_width(&original, &columns) {
+            Ok((text, width)) => (text, Some(width)),
+            Err(e) => (format!("(unavailable: {e})"), None),
+        };
+        let after = match crate::commands::food::render_food_and_width(&proposal.value, &columns) {
+            Ok((text, width)) => (text, Some(width)),
+            Err(e) => (format!("(unavailable: {e})"), None),
+        };
+        let table_width = match (before.1, after.1) {
+            (Some(before), Some(after)) => Some(before.max(after)),
+            (Some(width), None) | (None, Some(width)) => Some(width),
+            (None, None) => None,
+        };
+        let body = format!("Before:\n{}\nAfter:\n{}", before.0, after.0);
+        proposal.render_with_table_width(body, table_width)
     };
 
     let (outcome, presented) = {
@@ -652,7 +676,8 @@ fn cmd_ai_food_edit(
     };
 
     match outcome {
-        Ok(new_food) => {
+        Ok(proposal) => {
+            let new_food = proposal.value;
             let current =
                 food::load_food(&path).with_context(|| format!("food '{}' not found", name))?;
             if current != original {
@@ -1282,6 +1307,132 @@ mod tests {
     }
 
     #[test]
+    fn test_ai_log_renders_message_with_proposal() {
+        let dir = foods_dir();
+        let log_dir = tempfile::TempDir::new().unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+        write_day(log_dir.path(), date, vec![entry("coffee", "1", "12")]);
+        let ops = "message = \"Assumed the oatmeal was plain.\"\n\n[[ops]]\nkind = \"add-food\"\nname = \"oatmeal\"\nservings = 1\n";
+        let backend = FakeBackend::new(vec![Ok(AssistantMessage::text(ops))]);
+        let mut out = Vec::new();
+        let config = Config::default();
+        let settings = settings();
+        let env = AiEnv {
+            settings: &settings,
+            backend: &backend,
+            config: &config,
+        };
+        cmd_ai_log(
+            &mut out,
+            &env,
+            dir.path(),
+            log_dir.path(),
+            date,
+            "add oatmeal",
+            |w| Box::new(Scripted::with_writer(w, vec![ConfirmDecision::Accept])),
+            false,
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("Note: Assumed the oatmeal was plain."),
+            "message block missing: {text}"
+        );
+        assert!(
+            text.find("Note:").unwrap() > text.find("Total").unwrap(),
+            "message must follow the proposal body: {text}"
+        );
+        let day = std::fs::read_to_string(log_dir.path().join("2026-08-09.toml")).unwrap();
+        assert!(
+            !day.contains("Assumed the oatmeal was plain."),
+            "message must not be written: {day}"
+        );
+    }
+
+    #[test]
+    fn test_ai_log_message_wraps_to_table_width() {
+        let dir = foods_dir();
+        let log_dir = tempfile::TempDir::new().unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+        write_day(log_dir.path(), date, vec![entry("coffee", "1", "12")]);
+        let response = "message = \"Assumed the oatmeal was plain and made with water rather than milk, and used the same serving size as the previous entry.\"\n\n[[ops]]\nkind = \"add-food\"\nname = \"oatmeal\"\nservings = 1\n";
+        let backend = FakeBackend::new(vec![Ok(AssistantMessage::text(response))]);
+        let mut out = Vec::new();
+        let config: Config = toml::from_str("show_columns = []\n").unwrap();
+        let settings = settings();
+        let env = AiEnv {
+            settings: &settings,
+            backend: &backend,
+            config: &config,
+        };
+        cmd_ai_log(
+            &mut out,
+            &env,
+            dir.path(),
+            log_dir.path(),
+            date,
+            "add oatmeal",
+            |w| Box::new(Scripted::with_writer(w, vec![ConfirmDecision::Accept])),
+            false,
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        let table_width = text
+            .lines()
+            .find(|line| line.contains("---"))
+            .map(crate::display::visible_width)
+            .expect("table separator");
+        let note = &text[text.find("Note:").expect("message")..];
+        let note_lines: Vec<&str> = note.lines().take_while(|line| !line.is_empty()).collect();
+        assert!(note_lines.len() > 1, "message should wrap: {text}");
+        for line in note_lines {
+            assert!(
+                crate::display::visible_width(line) <= table_width,
+                "message wider than table ({table_width}): {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ai_log_noop_keeps_message() {
+        let dir = foods_dir();
+        let log_dir = tempfile::TempDir::new().unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+        write_day(log_dir.path(), date, vec![entry("coffee", "1", "12")]);
+        let response = "message = \"Should the latte be whole milk?\"\nops = []\n";
+        let backend = FakeBackend::new(vec![Ok(AssistantMessage::text(response))]);
+        let mut out = Vec::new();
+        let config = Config::default();
+        let settings = settings();
+        let env = AiEnv {
+            settings: &settings,
+            backend: &backend,
+            config: &config,
+        };
+        cmd_ai_log(
+            &mut out,
+            &env,
+            dir.path(),
+            log_dir.path(),
+            date,
+            "no changes",
+            |w| Box::new(Scripted::with_writer(w, vec![ConfirmDecision::Reject])),
+            false,
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("No changes."), "got: {text}");
+        assert!(
+            text.contains("Note: Should the latte be whole milk?"),
+            "no-op message missing: {text}"
+        );
+        assert!(
+            text.find("No changes.").unwrap() < text.find("Note:").unwrap(),
+            "message must follow the proposal body: {text}"
+        );
+    }
+
+    #[test]
     fn test_ai_log_yes_auto_accepts_and_writes() {
         let dir = foods_dir();
         let log_dir = tempfile::TempDir::new().unwrap();
@@ -1608,6 +1759,46 @@ mod tests {
         let loaded = food::load_food(&name.file_path(dir.path())).unwrap();
         assert_eq!(loaded.title, "My Food");
         assert_eq!(loaded.ingredients.len(), 1);
+    }
+
+    #[test]
+    fn test_ai_food_new_renders_message_without_persisting_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let name = FoodName::from_str("my-food").unwrap();
+        let toml = "message = \"Used chicken breast.\"\ntitle = \"My Food\"\nservings = 1\n\n[[ingredients]]\nname = \"Chicken\"\ncalories = 165\nprotein_g = 31\nfiber_g = 0\nfat_g = 3.6\ncarbs_g = 0\nalcohol_g = 0\n";
+        let backend = FakeBackend::new(vec![Ok(AssistantMessage::text(toml))]);
+        let mut out = Vec::new();
+        let config = Config::default();
+        let settings = settings();
+        let env = AiEnv {
+            settings: &settings,
+            backend: &backend,
+            config: &config,
+        };
+        cmd_ai_food_new(
+            &mut out,
+            &env,
+            dir.path(),
+            &name,
+            "make it",
+            |w| Box::new(Scripted::with_writer(w, vec![ConfirmDecision::Accept])),
+            false,
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("Note: Used chicken breast."),
+            "message block missing: {text}"
+        );
+        assert!(
+            text.find("Note:").unwrap() < text.find("Wrote").unwrap(),
+            "message must precede the write confirmation: {text}"
+        );
+        let saved = std::fs::read_to_string(name.file_path(dir.path())).unwrap();
+        assert!(
+            !saved.contains("message"),
+            "message must not be written to the food file: {saved}"
+        );
     }
 
     #[test]
@@ -1945,13 +2136,34 @@ mod tests {
             ("food_edit", prompts::FOOD_EDIT),
         ] {
             assert!(text.contains("identifying words"), "{name}");
-            assert!(text.contains("never quantities, units, or"), "{name}");
+            assert!(
+                text.contains("quantities, units, or portion words"),
+                "{name}"
+            );
             assert!(text.contains("scale its per-100g values"), "{name}");
-            assert!(text.contains("round trips are expensive"), "{name}");
+            assert!(text.contains("trips are expensive"), "{name}");
+            assert!(text.contains("only when you need nutrition data"), "{name}");
+            assert!(!text.contains("Query `usda_search` with"), "{name}");
         }
         assert!(prompts::LOG.contains("strip portion suffixes"));
         assert!(!prompts::FOOD_NEW.contains("strip portion suffixes"));
         assert!(!prompts::FOOD_EDIT.contains("strip portion suffixes"));
+    }
+
+    #[test]
+    fn test_prompt_templates_include_message_rules() {
+        for (name, text) in [
+            ("log", prompts::LOG),
+            ("food_new", prompts::FOOD_NEW),
+            ("food_edit", prompts::FOOD_EDIT),
+        ] {
+            assert!(text.contains("optional top-level `message`"), "{name}");
+            assert!(text.contains("one or two"), "{name}");
+            assert!(text.contains("Most proposals need no message"), "{name}");
+        }
+        assert!(prompts::LOG.contains("history digest already has a matching entry"));
+        assert!(prompts::LOG.contains("use remove or replace on"));
+        assert!(prompts::LOG.contains("Prefer a `food_lookup` match over a fresh USDA lookup"));
     }
 
     #[test]

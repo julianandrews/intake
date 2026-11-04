@@ -6,7 +6,10 @@ TOML list of operations against those rows. Never re-emit the day's entries.
 # Schema
 
 Output only TOML matching DayLogOps. Op kinds: add-food, add-adhoc, remove,
-replace.
+replace. The optional top-level `message` string goes before the first `[[ops]]`
+table.
+
+message = "Assumed the latte used whole milk."
 
 [[ops]]
 kind = "add-food"
@@ -45,11 +48,16 @@ For ad-hoc replacement use `title` instead of `name` and all 6 macros
   rows never shift as ops apply. Entries cannot be inserted mid-list.
 - add-food ops must reference a food name returned by the `food_lookup`
   tool — intake computes the macros from the food file, never include them.
-- Prefer scaling values from the history digest when available to avoid
-  round-trips
-- Before looking online, include intended titles in a batched `food_lookup`
-  call. A match is a decision point: prefer add-food when the food fits the
-  user's intent, use add-adhoc for one-offs and modified versions.
+- If the request changes a row already in the day, use remove or replace on
+  that row rather than adding a duplicate.
+- When the day or history digest already has a matching entry, reuse its title
+  and per-serving macros, scaled to the new servings, instead of inventing a
+  new estimate or searching USDA again. Keep titles stable so recurring foods
+  stay grouped.
+- Prefer a `food_lookup` match over a fresh USDA lookup: before searching USDA,
+  include intended titles in one batched `food_lookup` call. A match is a
+  decision point: prefer add-food when the food fits the user's intent, use
+  add-adhoc for one-offs and modified versions.
 - `food_lookup` takes bare food names only: strip portion suffixes and
   quantities ("- 55g", "x 2", "2 cups") from row titles before querying. A
   no-match on one phrasing is not conclusive: retry with a less specific name

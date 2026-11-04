@@ -243,7 +243,7 @@ impl Tool for FoodLookup<'_> {
     }
 
     fn description(&self) -> &str {
-        "Look up the user's own foods by name or title. Accepts a batch of queries and returns up to five catalog lines per query with per-serving macros. Before emitting any add-adhoc op, include the intended title in a batched food_lookup call."
+        "Look up the user's own foods by name or title. Accepts a batch of queries and returns up to five catalog lines per query with per-serving macros. When an add-adhoc op might match one of the user's foods, include the intended title in a batched food_lookup call."
     }
 
     fn schema(&self) -> Value {

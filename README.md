@@ -166,14 +166,15 @@ variables, or `--foods-dir` / `--log-dir` CLI flags (CLI wins).
 
 `ai log`, `ai food new`, and `ai food edit` route a prompt through an LLM,
 show the proposed change, and write it only after your confirmation
-(`--yes` skips the proposal and confirmation). The prompt can be given as a
-positional, via `--prompt "..."`, or by opening `$VISUAL` / `$EDITOR` /
-`nano` on a temp file (leave it unchanged to abort). Nutrition data comes
-from the USDA FoodData Central API via the `usda_search`
-tool; `ai log` also looks up your own foods (`food_lookup`). Anything a
-model returns is validated and re-requested on failure, and the day or food
-file is re-checked before writing so a concurrent change aborts instead of
-being overwritten.
+(`--yes` skips the proposal and confirmation). The proposal may include a short
+`message` from the model, shown with it but never written to your files. The
+prompt can be given as a positional, via `--prompt "..."`, or by opening
+`$VISUAL` / `$EDITOR` / `nano` on a temp file (leave it unchanged to abort).
+Nutrition data can come from the USDA FoodData Central API via the
+`usda_search` tool when needed; `ai log` first looks up your own foods
+(`food_lookup`) and prior entries. Anything a model returns is validated and
+re-requested on failure, and the day or food file is re-checked before writing
+so a concurrent change aborts instead of being overwritten.
 
 ```sh
 intake ai log "add a late snack under 200 cal"

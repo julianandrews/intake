@@ -113,6 +113,12 @@ pub fn visible_width(s: &str) -> usize {
     len
 }
 
+fn table_body_width(widths: &[usize]) -> usize {
+    let n = widths.len();
+    let sep_total = if n <= 1 { 0 } else { 1 + 2 * (n - 2) };
+    2 + widths.iter().sum::<usize>() + sep_total
+}
+
 fn format_cells(cells: &[String], widths: &[usize], align: &[Align]) -> String {
     let mut line = String::new();
     for (i, (cell, width)) in cells.iter().zip(widths).enumerate() {
@@ -219,15 +225,19 @@ impl Table {
         widths
     }
 
+    /// The visible width of the table's separator and data lines. The title
+    /// is not included; it may be wider or narrower than the grid.
+    pub(crate) fn width(&self) -> usize {
+        table_body_width(&self.col_widths())
+    }
+
     pub fn format(&self) -> String {
         self.format_with(colors_on())
     }
 
     fn format_with(&self, colors: bool) -> String {
         let widths = self.col_widths();
-        let n = widths.len();
-        let sep_total = if n <= 1 { 0 } else { 1 + 2 * (n - 2) };
-        let sep_width = 2 + widths.iter().sum::<usize>() + sep_total;
+        let sep_width = table_body_width(&widths);
 
         let mut out = String::new();
 
@@ -531,6 +541,19 @@ mod tests {
         let md = table.format();
         assert!(md.starts_with("\u{1b}[1;36mCoffee (1 serving)\u{1b}[0m\n"));
         assert!(md.contains("  Cold Brew"));
+    }
+
+    #[test]
+    fn test_table_width_matches_separator_line() {
+        let mut table = Table::new(&["Item", "Calories"]);
+        table.set_title("A title that is longer than the table grid");
+        table.add_row(vec!["Oatmeal".to_string(), "200".to_string()]);
+        let rendered = table.format_with(false);
+        let separator = rendered
+            .lines()
+            .find(|line| line.starts_with('-'))
+            .expect("separator line");
+        assert_eq!(table.width(), visible_width(separator));
     }
 
     #[test]

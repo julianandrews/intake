@@ -4,10 +4,10 @@ the command line; the `title` may change.
 
 # Schema
 
-Output only TOML matching a Food file: a `title`, a positive whole-number
-`servings`, and one or more `[[ingredients]]` entries. Every ingredient
-carries the six macro fields. The example food at the end of this prompt
-shows the exact shape.
+Output only TOML matching a Food file with an optional top-level `message`
+string (see Message below): a `title`, a positive whole-number `servings`, and
+one or more `[[ingredients]]` entries. Every ingredient carries the six macro
+fields. The example food at the end of this prompt shows the exact shape.
 
 # Rules
 
@@ -15,6 +15,8 @@ shows the exact shape.
   alcohol_g) are required on every ingredient; never omit one.
 - `servings` must be a positive whole number.
 - Keep `notes`, `quantity`, ingredient names, and the overall structure
-  unless the user asks to change them.
-- Ingredient macros must come from a tool result where one exists:
-  `usda_search` to find the right variant.
+  unless the user asks to change them. `message` is response-only and is never
+  written to the file.
+- Use `usda_search` when an ingredient's nutrition or variant matters and the
+  context above does not already answer it; when a result exists, use its
+  values.
